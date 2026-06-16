@@ -1,0 +1,6 @@
+# Núcleo determinista (gate, lint, métricas, MCP): solo stdlib + pyyaml.
+pyyaml>=6.0
+
+# Opcional — solo para el backend `anthropic` de los runners advisory.
+# Los backends ollama / openai-compatible (LM Studio, vLLM) usan urllib (stdlib), sin deps.
+# anthropic>=0.40

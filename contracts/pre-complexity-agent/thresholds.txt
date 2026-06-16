@@ -1,0 +1,61 @@
+UMBRALES DE SEÑALES DE DISEÑO (versionados — cambiar requiere quórum de 2 revisores)
+
+SEÑALES LINGÜÍSTICAS:
+  Conectores "y además" por requisito:
+    verde:    0–1   (responsabilidad única clara)
+    amarillo: 2     (revisar si se puede dividir)
+    rojo:     3     (reportar como ALTA — casi seguro genera ciclomática ≥ 6)
+    crítico:  ≥ 4   (reportar como CRÍTICA — garantiza complejidad ciclomática alta)
+
+  Verbos de acción distintos por función en el diseño:
+    verde:    1–2
+    amarillo: 3
+    rojo:     4     (reportar como ALTA — SRP violado)
+    crítico:  ≥ 5   (reportar como CRÍTICA)
+
+SEÑALES EN SIGNATURAS:
+  Parámetros por función:
+    verde:    1–3
+    amarillo: 4–5
+    rojo:     6–7   (reportar como MEDIA — evaluar objeto de parámetros)
+    crítico:  ≥ 8   (reportar como ALTA)
+
+  Tipos de retorno alternativos no estructurados ("X o Y"):
+    verde:    0
+    amarillo: 1     (reportar como INFO — evaluar tipo unión explícito)
+    rojo:     ≥ 2   (reportar como ALTA — complejidad desplazada al caller)
+
+SEÑALES ESTRUCTURALES:
+  Responsabilidades declaradas por módulo:
+    verde:    1–2
+    amarillo: 3
+    rojo:     4–5   (reportar como ALTA)
+    crítico:  ≥ 6   (reportar como CRÍTICA — candidato a dividir en múltiples módulos)
+
+  Dependencias entre módulos (fan-out del módulo en el diagrama):
+    verde:    1–4
+    amarillo: 5–7
+    rojo:     ≥ 8   (reportar como ALTA — acoplamiento alto predecible)
+
+  Dependencias cíclicas detectadas:
+    cualquier ciclo → CRÍTICA, sin importar su longitud
+
+SEÑALES DE FLUJO (Event Storming / proceso):
+  Eventos consecutivos sin checkpoint o estado intermedio:
+    verde:    1–4
+    amarillo: 5
+    rojo:     6–8   (reportar como ALTA)
+    crítico:  ≥ 9   (reportar como CRÍTICA)
+
+  Consecuencias paralelas por evento sin coordinador explícito:
+    verde:    1
+    amarillo: 2
+    rojo:     ≥ 3   (reportar como ALTA — orquestación implícita)
+
+  Ciclos en el flujo de eventos:
+    cualquier ciclo sin condición de salida explícita → CRÍTICA
+
+NOTA: estos umbrales son predictivos, no deterministas. Una señal CRÍTICA no garantiza
+que el código resultante sea malo: garantiza que requiere una decisión consciente de diseño.
+La clasificación ESENCIAL/ACCIDENTAL en el análisis es la que determina si se requiere
+rediseño o simplemente documentación explícita de la complejidad aceptada.

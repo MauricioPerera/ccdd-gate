@@ -1,0 +1,106 @@
+ccdd_version: "0.3"
+contract:
+  name: "pre-complexity-agent"
+  budget:
+    model: "claude-sonnet-4-6"
+    max_tokens: 100000
+    reserve_output: 6000
+
+  slots:
+
+    # ── CAPA 0: entorno ───────────────────────────────────────────────────────
+    - id: environment
+      priority: 0
+      source: { type: static, path: "env.txt", sign: true }
+      compaction: none
+      min_tokens: 20
+
+    # ── CAPA 1: rol e instrucciones de análisis (críticos, firmados) ──────────
+    - id: system
+      priority: 1
+      source: { type: static, path: "system.txt", sign: true }
+      compaction: none
+      min_tokens: 100
+      review_quorum: 1
+
+    - id: policies
+      priority: 1
+      source: { type: static, path: "policies.txt", sign: true }
+      compaction: none
+      min_tokens: 60
+      review_quorum: 1
+
+    # ── CAPA 2: umbrales y señales de alerta (firmados, quórum 2) ─────────────
+    #   Mismo principio que en complexity-agent: cambiar un umbral de diseño
+    #   es una decisión de equipo, no un cambio técnico.
+    - id: thresholds
+      priority: 2
+      source: { type: static, path: "thresholds.txt", sign: true }
+      compaction: none
+      min_tokens: 40
+      review_quorum: 2
+
+    # ── CAPA 3: artefacto de diseño a analizar (runtime) ─────────────────────
+    #   Acepta PRD, diagrama en texto, pseudocódigo, Event Storming en texto,
+    #   lista de requisitos, o signaturas de funciones aún sin implementar.
+    #   min_tokens: 300 → si el documento es tan pequeño que hay menos de 300
+    #   tokens, no hay suficiente información para analizar. Abortar.
+    - id: design_document
+      priority: 3
+      source: { type: runtime }
+      compaction: truncate
+      min_tokens: 300
+      max_tokens: 60000
+
+    # ── CAPA 4: contexto del dominio (dinámico, opcional) ─────────────────────
+    #   Glosario, descripción del dominio, bounded contexts ya definidos,
+    #   restricciones de negocio conocidas. Permite distinguir complejidad
+    #   esencial de accidental con más precisión.
+    #   Si no está disponible, el agente lo declara explícitamente en el reporte.
+    - id: domain_context
+      priority: 4
+      source: { type: dynamic, provider: "domain_store" }
+      compaction: summarize
+      max_tokens: 8000
+
+    # ── CAPA 5: patrones del proyecto existente (dinámico, opcional) ──────────
+    #   Convenciones ya establecidas en el codebase (stack, estructura de módulos,
+    #   convenciones de naming). Permite detectar desviaciones de diseño antes
+    #   de que existan como código.
+    - id: project_patterns
+      priority: 5
+      source: { type: dynamic, provider: "repo_indexer" }
+      compaction: summarize
+      max_tokens: 6000
+
+    # ── CAPA 6: historial de decisiones de diseño previas (dinámico) ──────────
+    #   ADRs (Architecture Decision Records) u otros registros de decisiones.
+    #   El de menor prioridad: se sacrifica primero bajo presión de tokens.
+    - id: decision_history
+      priority: 6
+      source: { type: dynamic, provider: "adr_store" }
+      compaction: summarize
+      max_tokens: 4000
+
+  guardrails:
+
+    # G1 — Secretos en documentos de diseño (ocurre más de lo esperado)
+    - id: no-secrets
+      type: regex_deny
+      pattern: "(sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{36}|password\\s*[:=]\\s*['\"][^'\"]{8,})"
+      on_fail: abort
+
+    # G2 — Detección determinista de requisito compuesto sin LLM
+    #   Un requisito con 3 o más conectores "y además / and also / y también /
+    #   además de" en la misma oración predice función con alta ciclomática.
+    #   Se redirige al flujo de alerta-sin-inferencia para ahorrar tokens.
+    - id: compound-requirement
+      type: regex_deny
+      pattern: '(?i)(?:y además|and also|y también|además de|as well as|and then also).{0,120}(?:y además|and also|y también|además de|as well as|and then also)'
+      on_fail: reroute
+      reroute_to: "compound_requirement_alert"
+
+    # G3 — Referencias cruzadas entre slots
+    - id: slot-references
+      type: reference_check
+      on_fail: abort

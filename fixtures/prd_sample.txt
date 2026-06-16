@@ -1,0 +1,40 @@
+PRD: Sistema de Gestión de Pedidos (módulo de procesamiento)
+
+Objetivo
+Construir el subsistema que recibe pedidos del front, los valida, calcula totales y coordina
+inventario, facturación y notificaciones. Debe soportar pedidos web, telefónicos y de mayoristas.
+
+Requisito principal — función procesarPedido
+La función central procesarPedido recibe un pedido y debe validar los datos del cliente y además
+calcular los impuestos según la región y además aplicar los descuentos por volumen y además reservar
+el inventario en el almacén más cercano y además generar la factura y además notificar al cliente por
+correo. Todo esto ocurre dentro de la misma operación para garantizar consistencia.
+
+Signatura propuesta
+procesarPedido(cliente, lineasPedido, direccionEnvio, metodoPago, cuponDescuento, almacenPreferido,
+canalOrigen, flagUrgente) retorna un objeto Pedido confirmado o, dependiendo del estado del inventario,
+retorna un objeto Backorder con la fecha estimada de reposición.
+
+Módulos y responsabilidades
+- Módulo Pedidos: orquesta el flujo, valida entradas, calcula totales, aplica descuentos, decide el
+  almacén, escribe el log de auditoría y expone la API REST.
+- Módulo Inventario: reserva stock y consulta disponibilidad. Para reservar consulta a Facturación si
+  el cliente tiene crédito disponible.
+- Módulo Facturación: emite facturas y, para calcular impuestos por región, consulta al módulo Pedidos
+  la dirección de envío ya normalizada.
+
+Flujo de eventos (Event Storming)
+PedidoRecibido → PedidoValidado → ImpuestosCalculados → DescuentoAplicado → InventarioReservado →
+FacturaEmitida → ClienteNotificado → PedidoConfirmado → MétricasActualizadas. Si la reserva de
+inventario falla, el evento InventarioReservado vuelve a disparar PedidoValidado para reintentar.
+
+Reglas de negocio
+Los pedidos de mayoristas tienen un flujo de aprobación distinto que no comparte tabla con los pedidos
+web, pero ambos leen y escriben sobre la misma entidad Pedido sin una frontera de contexto explícita.
+El cálculo de impuestos depende de la jurisdicción del cliente, que es inherente al dominio fiscal y
+no puede simplificarse: cada región tiene su propia tabla de tasas y exenciones.
+
+Criterios de aceptación
+- Un pedido válido produce una confirmación en menos de 2 segundos.
+- Un pedido sin stock genera un Backorder con fecha estimada.
+- Las facturas cumplen el formato fiscal de cada región soportada.

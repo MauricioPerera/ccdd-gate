@@ -1,0 +1,18 @@
+POLÍTICAS DE AUTORÍA (verificadas por tc_lint — escribe para pasarlas a la primera)
+
+P1. intent atómico: una sola responsabilidad. Prohibido encadenar con "y además / y también".
+P2. signature: una firma Python válida SIN dos puntos finales ni cuerpo. Tipos concretos.
+P3. budget presente y sano: cyclomatic_max, nesting_max, params_max, lines_max; cada uno ≤ su
+    máximo global (ver thresholds). params_max coherente con la aridad de la firma.
+P4. tests: ruta a un archivo de property-tests que existe y trae oráculo independiente +
+    ejemplos fijos. Sin tests no hay contrato.
+P5. deps_allowed explícito (lista, puede ser vacía). El implementador no añade dependencias
+    fuera de ella.
+P6. secciones del cuerpo obligatorias y en orden: Intent, Interface, Invariants, Examples,
+    Do/Don't, Tests, Constraints. Sin prosa justificativa: voz imperativa.
+P7. NO algoritmo: el cuerpo no contiene pseudocódigo paso-a-paso ni implementación. Describe
+    QUÉ, no CÓMO.
+P8. Constraints debe incluir una cláusula "PARAR y reportar si el budget no se cumple sin
+    violar la interfaz" — sin workarounds silenciosos.
+P9. require_test_approval: true cuando los tests deban llevar firma humana (tests_sha256) antes
+    de que task_gate corra. Recomendado por defecto.

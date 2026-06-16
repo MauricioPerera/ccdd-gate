@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ccdd-complexity": {
+      "command": "python",
+      "args": ["runners/complexity_mcp.py"]
+    }
+  }
+}

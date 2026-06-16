@@ -1,0 +1,77 @@
+ccdd_version: "0.3"
+contract:
+  name: "task-author-agent"
+  budget:
+    model: "claude-sonnet-4-6"
+    max_tokens: 100000
+    reserve_output: 8000
+
+  slots:
+
+    # ── CAPA 0: entorno ───────────────────────────────────────────────────────
+    - id: environment
+      priority: 0
+      source: { type: static, path: "env.txt", sign: true }
+      compaction: none
+      min_tokens: 20
+
+    # ── CAPA 1: rol e instrucciones de autoría (críticos, firmados) ───────────
+    - id: system
+      priority: 1
+      source: { type: static, path: "system.txt", sign: true }
+      compaction: none
+      min_tokens: 100
+      review_quorum: 1
+
+    - id: policies
+      priority: 1
+      source: { type: static, path: "policies.txt", sign: true }
+      compaction: none
+      min_tokens: 60
+      review_quorum: 1
+
+    # ── CAPA 2: schema y máximos de budget (firmados, quórum 2) ───────────────
+    #   Cambiar el schema o un máximo global es decisión de equipo, no técnica.
+    - id: thresholds
+      priority: 2
+      source: { type: static, path: "thresholds.txt", sign: true }
+      compaction: none
+      min_tokens: 40
+      review_quorum: 2
+
+    # ── CAPA 3: subproblema a convertir en task-contract (runtime) ────────────
+    #   Subproblema ya acotado de lógica baja: descripción + interfaz deseada.
+    #   Si trae menos de 80 tokens, no hay suficiente para autorar una task. Abortar.
+    - id: subproblem
+      priority: 3
+      source: { type: runtime }
+      compaction: truncate
+      min_tokens: 80
+      max_tokens: 40000
+
+    # ── CAPA 4: patrones del proyecto a imitar (dinámico, opcional) ───────────
+    - id: project_patterns
+      priority: 4
+      source: { type: dynamic, provider: "repo_indexer" }
+      compaction: summarize
+      max_tokens: 6000
+
+  guardrails:
+
+    # G1 — Secretos en el subproblema
+    - id: no-secrets
+      type: regex_deny
+      pattern: "(sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{36}|password\\s*[:=]\\s*['\"][^'\"]{8,})"
+      on_fail: abort
+
+    # G2 — Requisito compuesto: el subproblema no es atómico, debería dividirse antes
+    - id: compound-requirement
+      type: regex_deny
+      pattern: '(?i)(?:y además|and also|y también|además de|as well as|and then also).{0,120}(?:y además|and also|y también|además de|as well as|and then also)'
+      on_fail: reroute
+      reroute_to: "compound_requirement_alert"
+
+    # G3 — Referencias cruzadas entre slots
+    - id: slot-references
+      type: reference_check
+      on_fail: abort

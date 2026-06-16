@@ -1,0 +1,110 @@
+ccdd_version: "0.3"
+contract:
+  name: "complexity-agent"
+  budget:
+    model: "claude-sonnet-4-6"
+    max_tokens: 100000
+    reserve_output: 4000
+
+  slots:
+
+    # ── CAPA 0: entorno (quién soy, dónde corro) ─────────────────────────────
+    - id: environment
+      priority: 0
+      source: { type: static, path: "env.txt", sign: true }
+      compaction: none
+      min_tokens: 20
+
+    # ── CAPA 1: instrucciones del rol (críticas, firmadas) ────────────────────
+    - id: system
+      priority: 1
+      source: { type: static, path: "system.txt", sign: true }
+      compaction: none
+      min_tokens: 80
+      review_quorum: 1
+
+    - id: policies
+      priority: 1
+      source: { type: static, path: "policies.txt", sign: true }
+      compaction: none
+      min_tokens: 60
+      review_quorum: 1
+
+    # ── CAPA 2: umbrales versionados (cambiar un umbral = R4 + R6) ───────────
+    #   Un cambio de umbral es una decisión de política de calidad, no un
+    #   cambio técnico. review_quorum: 2 obliga a consenso de equipo.
+    - id: thresholds
+      priority: 2
+      source: { type: static, path: "thresholds.txt", sign: true }
+      compaction: none
+      min_tokens: 40
+      review_quorum: 2
+
+    # ── CAPA 3: datos del análisis (runtime, alta prioridad, truncable) ───────
+    #   El código a analizar. min_tokens: 500 → si el diff es tan grande que
+    #   el ensamblador solo puede meter 500 tokens, abortar: no tiene sentido
+    #   analizar una astilla del archivo.
+    - id: code_under_review
+      priority: 3
+      source: { type: runtime }
+      compaction: truncate
+      min_tokens: 500
+      max_tokens: 80000
+
+    # ── CAPA 4: resultados de herramientas deterministas (dinámico) ───────────
+    #   JSON emitido por el linter (ESLint complexity, Pylint, SonarQube, etc.)
+    #   Se valida contra lint_results.schema.json antes de ensamblarse.
+    - id: lint_results
+      priority: 4
+      source: { type: dynamic, provider: "linter_runner" }
+      compaction: truncate
+      max_tokens: 3000
+
+    # ── CAPA 5: mapa de dependencias del módulo (dinámico, summarizable) ─────
+    #   Grafo de importaciones del archivo bajo revisión. Permite razonar
+    #   sobre acoplamiento y rigidez. Se resume si hay presión de tokens.
+    - id: repo_map
+      priority: 5
+      source: { type: dynamic, provider: "repo_indexer" }
+      compaction: summarize
+      max_tokens: 4000
+
+    # ── CAPA 6: historial de deuda técnica del módulo (dinámico, opcional) ───
+    #   Hallazgos anteriores sobre el mismo archivo (de corridas pasadas).
+    #   El de menor prioridad: si el presupuesto colapsa, se descarta primero.
+    - id: debt_history
+      priority: 6
+      source: { type: dynamic, provider: "debt_store" }
+      compaction: summarize
+      max_tokens: 2000
+
+  guardrails:
+
+    # G1 — Bloqueo de secretos: nunca llegar al LLM con credenciales
+    - id: no-secrets
+      type: regex_deny
+      pattern: "(sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{36}|xoxb-[0-9]+-[A-Za-z0-9]+)"
+      on_fail: abort
+
+    # G2 — Anidamiento excesivo detectado en el diff sin LLM
+    #   Cuatro o más niveles de indentación (tabs o 4-space) en líneas de código.
+    #   Si el guardrail dispara, el payload incluye el hallazgo directamente
+    #   y se redirige al flujo de hallazgo-sin-inferencia (ahorra tokens).
+    - id: deep-nesting
+      type: regex_deny
+      pattern: '^(?:\t{4,}| {16,})[^\s#*\-/]'
+      on_fail: reroute
+      reroute_to: "complexity_guardrail_report"
+
+    # G3 — Validación estructural de los resultados del linter
+    #   Si el linter devolvió error o formato inesperado, falla cerrado.
+    - id: lint-results-schema
+      type: json_schema
+      target_slot: lint_results
+      schema_path: "lint_results.schema.json"
+      on_fail: warn
+
+    # G4 — Referencias cruzadas entre slots
+    - id: slot-references
+      type: reference_check
+      on_fail: abort

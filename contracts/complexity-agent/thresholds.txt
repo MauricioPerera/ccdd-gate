@@ -1,0 +1,42 @@
+UMBRALES DE COMPLEJIDAD (versionados — cambiar estos valores requiere quórum de 2 revisores)
+
+COMPLEJIDAD CICLOMÁTICA:
+  verde:    1–5    (función simple, lineal o con pocas ramas)
+  amarillo: 6–10   (aceptable, revisable)
+  rojo:     11–20  (alta — reportar como ALTA)
+  crítico:  > 20   (inaceptable — reportar como CRÍTICA)
+
+COMPLEJIDAD COGNITIVA (escala SonarSource):
+  verde:    1–7
+  amarillo: 8–15
+  rojo:     16–25  (reportar como ALTA)
+  crítico:  > 25   (reportar como CRÍTICA)
+
+PROFUNDIDAD DE ANIDAMIENTO (niveles de indentación):
+  verde:    1–2
+  amarillo: 3
+  rojo:     4      (reportar como ALTA; el guardrail G2 también lo detecta)
+  crítico:  ≥ 5    (reportar como CRÍTICA)
+
+LONGITUD DE FUNCIÓN (líneas de código, sin contar comentarios ni líneas en blanco):
+  verde:    1–20
+  amarillo: 21–40
+  rojo:     41–80  (reportar como MEDIA)
+  crítico:  > 80   (reportar como ALTA)
+
+NÚMERO DE PARÁMETROS DE FUNCIÓN:
+  verde:    1–3
+  amarillo: 4–5
+  rojo:     ≥ 6    (reportar como MEDIA — señal de que la función hace demasiado)
+
+ACOPLAMIENTO AFERENTE (fan-in, módulos que dependen de este):
+  solo informativo — reportar como INFO si > 10 (módulo de alto impacto)
+
+ACOPLAMIENTO EFERENTE (fan-out, módulos de los que depende este):
+  verde:    1–5
+  rojo:     ≥ 10   (reportar como MEDIA — señal de baja cohesión)
+
+NOTA: estos umbrales son el resultado de una decisión de equipo. No reflejan
+verdades absolutas. Un hallazgo ALTA en un módulo de dominio complejo puede ser
+ESENCIAL y no requerir acción inmediata — la clasificación ESENCIAL/ACCIDENTAL
+en el análisis es la que decide si se requiere refactorización.

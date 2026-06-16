@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Runtime artifacts
+analysis_report.json
+last-assembly.json
+
+# CCDD keys / quorum (never commit private keys)
+*.key
+keys/
+reviewers.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,24 @@
+SCHEMA DEL FRONT-MATTER (claves)
+  task            str   identificador kebab-case
+  intent          str   una frase, responsabilidad única
+  target          str   archivo .py donde vive la función
+  signature       str   firma Python válida sin ':' final
+  budget          map   { cyclomatic_max, nesting_max, params_max, lines_max }  (todos int)
+  deps_allowed    list  dependencias permitidas (puede ser [])
+  tests           str   archivo de property-tests congelados
+  spec_version    str   p.ej. "0.1"
+  forbids         list  (opcional) construcciones prohibidas
+  depends_on      list  (opcional) símbolos/recursos ya existentes
+  require_test_approval  bool  (opcional, recomendado true)
+  tests_sha256    str   (lo escribe approve_tests.py, NO el autor)
+
+MÁXIMOS GLOBALES DE BUDGET (el budget de la task debe ser ≤ a estos)
+  cyclomatic_max  ≤ 20
+  nesting_max     ≤ 4
+  params_max      ≤ 5
+  lines_max       ≤ 80
+Un subproblema que no quepa holgado dentro de estos máximos NO es de lógica baja:
+devolverlo para más descomposición en vez de inflar el budget.
+
+SECCIONES OBLIGATORIAS DEL CUERPO (en este orden)
+  Intent · Interface · Invariants · Examples · Do/Don't · Tests · Constraints

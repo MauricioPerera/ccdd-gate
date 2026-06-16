@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LintResults",
+  "description": "Estructura esperada del slot lint_results emitida por el linter runner.",
+  "type": "object",
+  "required": ["tool", "version", "timestamp", "findings"],
+  "additionalProperties": true,
+  "properties": {
+    "tool": {
+      "type": "string",
+      "description": "Nombre del linter (eslint, pylint, sonarqube, etc.)"
+    },
+    "version": {
+      "type": "string",
+      "description": "Versión del linter."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Momento en que se ejecutó el análisis."
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "line", "metric", "value", "threshold"],
+        "properties": {
+          "file":      { "type": "string" },
+          "line":      { "type": "integer", "minimum": 1 },
+          "metric":    { "type": "string", "enum": ["cyclomatic", "cognitive", "nesting_depth", "function_length", "parameter_count", "fan_in", "fan_out"] },
+          "value":     { "type": "number" },
+          "threshold": { "type": "number" },
+          "function":  { "type": "string", "description": "Nombre de la función afectada, si aplica." }
+        }
+      }
+    }
+  }
+}
