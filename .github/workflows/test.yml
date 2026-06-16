@@ -15,8 +15,8 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
-      - name: Frozen gate tests (deterministic, no LLM)
-        run: python -m unittest tests.test_gates -v
+      - name: Frozen tests — gate + L2 governance (deterministic, no LLM)
+        run: python -m unittest tests.test_gates tests.test_l2_governance -v
 
       - name: ccdd.py lint contracts (signed)
         run: |

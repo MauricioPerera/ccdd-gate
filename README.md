@@ -47,8 +47,8 @@ pip install -r requirements.txt
 # 1) Gate determinista sobre un task-contract de ejemplo (PASS)
 python runners/task_gate.py examples/sandbox/task.md
 
-# 2) Tests congelados del propio núcleo (deterministas, sin LLM)
-python -m unittest tests.test_gates -v
+# 2) Tests congelados (deterministas, sin LLM): gate + gobernanza L2 (firmas Ed25519 reales)
+python -m unittest tests.test_gates tests.test_l2_governance -v
 
 # 3) Linter de un task-contract
 python runners/tc_lint.py examples/sandbox/task.md

@@ -2,13 +2,11 @@
 # Solo necesita pyyaml. Es lo único que hace falta para el producto determinista.
 pyyaml>=6.0
 
-# --- Motor CCDD (ccdd.py: lint/assemble/export de contratos + runners advisory) ---
-# Requerido si usás ccdd.py o los runners pre/complexity-agent.
-jsonschema>=4.0
+# --- Motor CCDD (ccdd.py: lint/assemble/export + gate L2 de gobernanza) ---
+jsonschema>=4.0      # validación de contratos contra el schema
+cryptography>=42     # firmas Ed25519 de revisores (keygen/attest/quórum en diff L2)
 
-# --- Opcionales ---
-# cryptography : solo para ccdd.py keygen/attest/quorum (firmas Ed25519 de revisores).
-# anthropic    : solo para el backend `anthropic` de los runners advisory.
-#                Los backends ollama / openai-compatible (LM Studio, vLLM) usan urllib (stdlib).
-# cryptography>=42
+# --- Opcional ---
+# anthropic : solo para el backend `anthropic` de los runners advisory.
+#             Los backends ollama / openai-compatible (LM Studio, vLLM) usan urllib (stdlib).
 # anthropic>=0.40
