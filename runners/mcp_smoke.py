@@ -1,5 +1,5 @@
 """mcp_smoke.py — cliente de humo: arranca complexity_mcp.py y ejerce el protocolo MCP real
-(initialize -> tools/list -> tools/call x3) por stdio JSON-RPC. Verifica el servidor end-to-end."""
+(initialize -> tools/list -> tools/call x4) por stdio JSON-RPC. Verifica el servidor end-to-end."""
 import json
 import subprocess
 import sys
@@ -69,9 +69,15 @@ def main():
     print("scan_guardrails (con secreto) ->", "blocked" if g["blocked"] else "ok",
           [f"{x['id']}={'X' if x['fired'] else 'ok'}" for x in g["guardrails"]])
 
+    broken = ("---\ntask: x\nintent: hace algo y ademas otra cosa\n"
+              "budget: { cyclomatic_max: 99 }\n---\n# sin secciones\n")
+    r = rpc(6, "tools/call", {"name": "lint_task_contract", "arguments": {"contract_text": broken}})
+    lt = json.loads(r["result"]["content"][0]["text"])
+    print(f"lint_task_contract (contrato roto) -> ok={lt['ok']} errors={lt['errors']}")
+
     proc.stdin.close()
     proc.wait(timeout=5)
-    print("\nOK — el servidor MCP responde el protocolo y las 3 tools funcionan.")
+    print("\nOK — el servidor MCP responde el protocolo y las 4 tools funcionan.")
 
 
 if __name__ == "__main__":

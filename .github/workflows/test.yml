@@ -14,5 +14,25 @@ jobs:
           python-version: "3.12"
       - name: Install deps
         run: pip install -r requirements.txt
+
       - name: Frozen gate tests (deterministic, no LLM)
         run: python -m unittest tests.test_gates -v
+
+      - name: ccdd.py lint contracts (signed)
+        run: |
+          for c in complexity-agent pre-complexity-agent task-author-agent; do
+            python ccdd.py lint "contracts/$c"
+          done
+
+      - name: task_gate over example contracts
+        run: |
+          python runners/task_gate.py examples/sandbox/task.md
+          for t in clamp popcount hamming chunk; do
+            python runners/task_gate.py "examples/batch/$t/task.md"
+          done
+
+      - name: MCP server smoke (protocol + 4 tools)
+        run: python runners/mcp_smoke.py
+
+      - name: Deterministic gate benchmark
+        run: python benchmarks/bench_gate.py
