@@ -1,6 +1,14 @@
-# Núcleo determinista (gate, lint, métricas, MCP): solo stdlib + pyyaml.
+# --- Núcleo del gate (gate, tc_lint, task_gate, métricas, orchestrator, MCP) ---
+# Solo necesita pyyaml. Es lo único que hace falta para el producto determinista.
 pyyaml>=6.0
 
-# Opcional — solo para el backend `anthropic` de los runners advisory.
-# Los backends ollama / openai-compatible (LM Studio, vLLM) usan urllib (stdlib), sin deps.
+# --- Motor CCDD (ccdd.py: lint/assemble/export de contratos + runners advisory) ---
+# Requerido si usás ccdd.py o los runners pre/complexity-agent.
+jsonschema>=4.0
+
+# --- Opcionales ---
+# cryptography : solo para ccdd.py keygen/attest/quorum (firmas Ed25519 de revisores).
+# anthropic    : solo para el backend `anthropic` de los runners advisory.
+#                Los backends ollama / openai-compatible (LM Studio, vLLM) usan urllib (stdlib).
+# cryptography>=42
 # anthropic>=0.40

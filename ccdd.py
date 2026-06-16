@@ -30,7 +30,7 @@ except ImportError:
     sys.exit("Falta jsonschema: pip install jsonschema")
 
 HERE = Path(__file__).resolve().parent
-SCHEMA_PATH = HERE.parent / "ccdd_context.schema.json"
+SCHEMA_PATH = HERE / "ccdd_context.schema.json"
 
 
 # ---- aproximación de tokens (reemplazable por un tokenizador real) ----------

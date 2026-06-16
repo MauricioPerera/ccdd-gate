@@ -111,6 +111,7 @@ NO el algoritmo**. Los tests se congelan y firman *antes* de que el implementado
 
 ## Licencia
 
-MIT © 2026 Mauricio Perera. Incluye `ccdd.py` del proyecto
-[CCDD](https://github.com/MauricioPerera/ccdd) (mismo autor, MIT).
-Publicado *as-is*, sin garantía ni soporte.
+MIT © 2026 Mauricio Perera. Incluye `ccdd.py` y `ccdd_context.schema.json` del proyecto
+[CCDD](https://github.com/MauricioPerera/ccdd) (mismo autor, MIT), con una única adaptación
+para uso standalone: `ccdd.py` resuelve su schema junto a sí mismo (upstream lo busca en el
+directorio padre). Publicado *as-is*, sin garantía ni soporte.
