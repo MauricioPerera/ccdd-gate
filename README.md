@@ -1,5 +1,8 @@
 # ccdd-gate
 
+[![tests](https://github.com/MauricioPerera/ccdd-gate/actions/workflows/test.yml/badge.svg)](https://github.com/MauricioPerera/ccdd-gate/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **Gates deterministas que mantienen honesto al código escrito por IA.**
 Un modelo pequeño implementa; un árbitro que no se puede sobornar decide si pasó.
 
