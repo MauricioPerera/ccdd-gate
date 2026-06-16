@@ -99,6 +99,13 @@ Front-matter YAML (machine-checkable) + cuerpo Markdown (prescriptivo). Ver
 Regla central: **especifica el contrato y los property-tests con oráculo independiente,
 NO el algoritmo**. Los tests se congelan y firman *antes* de que el implementador toque la tarea.
 
+## Benchmarks
+
+Ver [`BENCHMARKS.md`](BENCHMARKS.md). En resumen: el gate determinista cuesta **0 tokens** y
+su lógica es **sub-milisegundo** (`python benchmarks/bench_gate.py`). La economía grande/pequeño
+está medida y **honestamente etiquetada como ilustrativa** — gana por reuso/volumen, no en el
+one-shot trivial (ahí es más caro).
+
 ## Honestidades (léelas antes de creerle a nadie)
 
 - **El ahorro de tokens es condicional, no universal.** En una tarea trivial de un tiro,
