@@ -5,11 +5,10 @@ name: ccdd-gate
 # Copiable a cualquier repo consumidor: ver README ("Integración GitHub").
 
 on:
+  # Corre en TODOS los PRs (sin filtro de paths) para poder exigirlo como required check en
+  # branch protection: un required check con filtro de paths queda "pending" en PRs que no tocan
+  # esos paths y bloquea el merge. El driver es barato: si el PR no afecta contratos, PASS no-op.
   pull_request:
-    paths:
-      - "**/*.md"
-      - "**/*.py"
-      - "runners/**"
   # Reutilizable desde otros workflows (mismo repo) si se quiere componer.
   workflow_call:
 
