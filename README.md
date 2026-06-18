@@ -133,6 +133,9 @@ funciona en local. Usa `gh` CLI; tokens por entorno, nunca en el repo.
 - `reporter.py` — toma el JSON de `task_gate`/`complexity_gate` y genera un comentario Markdown
   determinista (PASS/FAIL, métricas vs budget, motivo). Idempotente: actualiza un comentario
   "marcado" en vez de spamear. Offline imprime el Markdown; `--post` lo publica vía `gh`.
+- `scaffold.py` — genera el esqueleto de un task-contract desde un issue (`--issue owner/repo#N`
+  o `--from-json` offline). Captura la intención (título/cuerpo/labels) con placeholders `TODO`;
+  el resultado es **incompleto a propósito** (`tc_lint` lo marca, no falsamente verde).
 - `link.py` — vínculo bidireccional contrato↔issue: `status --contract` (estado + labels) o
   `status --issue owner/repo#N` (contratos que lo referencian), y `sync-labels` (refleja el estado
   como labels `ccdd:*`, idempotente, sin pisar labels ajenas). El campo `issue` del front-matter es
