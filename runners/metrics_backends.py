@@ -105,7 +105,8 @@ def register(backend):
     """Registra un backend por su `language` y cada una de sus `extensions`. Idempotente."""
     _BY_LANG[backend.language] = backend
     for ext in backend.extensions:
-        _BY_EXT[ext.lower()] = backend
+        normalized_ext = ext.lower() if ext.startswith(".") else "." + ext.lower()
+        _BY_EXT[normalized_ext] = backend
     return backend
 
 
