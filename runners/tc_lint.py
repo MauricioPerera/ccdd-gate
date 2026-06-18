@@ -245,7 +245,16 @@ def err(rule, msg):
     return {"level": "error", "rule": rule, "msg": msg}
 
 
-RULES = [r_required, r_language, r_intent_atomic, r_signature, r_budget_sane, r_tests_frozen,
+def r_target_atomic(ctx):
+    target = ctx["fm"].get("target")
+    if not target:
+        return []
+    if isinstance(target, list) or (isinstance(target, str) and ("," in target or "\n" in target)):
+        return [err("tc-target-atomic", "El campo 'target' debe ser UN SOLO archivo. Para refactors que crucen archivos, crea múltiples Task Contracts.")]
+    return []
+
+
+RULES = [r_required, r_language, r_intent_atomic, r_target_atomic, r_signature, r_budget_sane, r_tests_frozen,
          r_sections, r_stop_rule, r_no_algorithm, r_deps, r_issue_ref]
 
 
