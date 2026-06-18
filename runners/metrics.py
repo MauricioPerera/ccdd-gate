@@ -93,5 +93,9 @@ class PythonBackend(_mb.Backend):
     def measure(self, src):
         return functions_metrics(src)
 
+    def extract_source(self, src, filename="snippet.py"):
+        # delega en el helper del módulo, que captura SyntaxError -> parse_error (back-compat)
+        return extract_source(src, filename)
+
 
 _mb.register(PythonBackend())

@@ -19,7 +19,8 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import metrics    # noqa: E402
+import metrics    # noqa: E402  (registra el backend python)
+import metrics_backends as mb  # noqa: E402
 import tc_lint    # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -36,11 +37,16 @@ for _s in (sys.stdout, sys.stderr):
 TOOLS = [
     {
         "name": "measure_complexity",
-        "description": "Mide complejidad por AST de Python (ciclomática, anidamiento, nº de parámetros, "
-                       "longitud) por función. Determinista, sin LLM. Devuelve valores reales y si superan el umbral firmado.",
+        "description": "Mide complejidad por función (ciclomática, anidamiento, nº de parámetros, longitud) "
+                       "con el backend del LENGUAJE (python con AST nativo; otros lenguajes vía backend "
+                       "registrado, enrutado por 'language' o por la extensión de 'filename'; default python). "
+                       "Determinista, sin LLM. Devuelve valores reales y si superan el umbral firmado.",
         "inputSchema": {"type": "object", "required": ["code"], "properties": {
-            "code": {"type": "string", "description": "Código Python a medir."},
-            "filename": {"type": "string", "description": "Nombre lógico del archivo (opcional)."}}},
+            "code": {"type": "string", "description": "Código a medir."},
+            "filename": {"type": "string", "description": "Nombre lógico del archivo (opcional; su extensión "
+                         "selecciona backend si no se pasa 'language')."},
+            "language": {"type": "string", "description": "Lenguaje del backend (opcional; precede a la "
+                         "extensión). Default python (back-compat)."}}},
     },
     {
         "name": "complexity_rubric",
@@ -52,19 +58,27 @@ TOOLS = [
     },
     {
         "name": "scan_guardrails",
-        "description": "Aplica los guardrails deterministas del contrato (secretos, anidamiento profundo) "
-                       "al código. Sin LLM. Devuelve cuáles dispararon y su on_fail.",
+        "description": "Aplica los guardrails deterministas al código: texto-puro compartidos (secretos), "
+                       "estructurales calculados con el backend del LENGUAJE (anidamiento profundo, no por "
+                       "regex de indentación) y específicos del lenguaje si existen (p. ej. no-eval). El "
+                       "lenguaje se toma de 'language' o de la extensión de 'filename' (default python). "
+                       "Sin LLM. Devuelve cuáles dispararon, su on_fail y el método (regex/backend).",
         "inputSchema": {"type": "object", "required": ["code"], "properties": {
             "code": {"type": "string"},
-            "agent": {"type": "string", "enum": sorted(AGENTS)}}},
+            "agent": {"type": "string", "enum": sorted(AGENTS)},
+            "language": {"type": "string", "description": "Lenguaje (opcional; precede a la extensión)."},
+            "filename": {"type": "string", "description": "Nombre de archivo (opcional; su extensión "
+                         "selecciona lenguaje si no se pasa 'language')."}}},
     },
     {
         "name": "lint_task_contract",
         "description": "Valida un TASK-CONTRACT (front-matter YAML + cuerpo Markdown) con tc_lint determinista, "
                        "ANTES de emitirlo al implementador pequeño. Anti-desvarío del modelo grande que lo autora: "
-                       "campos requeridos, intent atómico, firma válida, budget ≤ topes firmados, secciones "
-                       "obligatorias, regla de parada, tests congelados. Pasa también test_code para validar que "
-                       "los property-tests existen y referencian la firma. Sin LLM. Devuelve {ok, errors, findings}.",
+                       "campos requeridos, intent atómico, firma válida (por lenguaje vía el campo opcional "
+                       "'language' del front-matter; python con parser nativo, el resto por aridad genérica), "
+                       "budget ≤ topes firmados, secciones obligatorias, regla de parada, tests congelados. Pasa "
+                       "también test_code para validar que los property-tests existen y referencian la firma. "
+                       "Sin LLM. Devuelve {ok, errors, findings}.",
         "inputSchema": {"type": "object", "required": ["contract_text"], "properties": {
             "contract_text": {"type": "string", "description": "El task-contract completo (--- yaml --- + cuerpo)."},
             "test_code": {"type": "string", "description": "Código de los property-tests congelados (opcional pero "
@@ -79,7 +93,14 @@ def _agent_dir(agent):
 
 
 def measure_complexity(args):
-    return metrics.extract_source(args["code"], args.get("filename", "snippet.py"))
+    fname = args.get("filename", "snippet.py")
+    try:
+        backend = mb.get_backend(language=args.get("language"), filename=fname)
+    except KeyError:
+        return {"error": "sin backend de métricas para el lenguaje/extensión pedido",
+                "language": args.get("language"), "filename": fname,
+                "available_languages": mb.supported_languages()}
+    return backend.extract_source(args["code"], fname)
 
 
 def complexity_rubric(args):
@@ -90,18 +111,69 @@ def complexity_rubric(args):
             "thresholds": read("thresholds.txt"), "environment": read("env.txt")}
 
 
+# Guardrails ESTRUCTURALES: dependen de las métricas, no de un patrón de texto. Se calculan con
+# el backend del lenguaje (no con el regex de indentación, que asume Python). id -> métrica/umbral.
+STRUCTURAL_GUARDRAILS = {"deep-nesting": ("nesting_depth", mb.RED["nesting_depth"])}
+
+
+def _lang_guardrails(language):
+    """Guardrails específicos del lenguaje (opt-in) desde guardrails_lang.yaml. [] si no hay."""
+    import yaml
+    f = HERE / "guardrails_lang.yaml"
+    if not f.exists():
+        return []
+    return (yaml.safe_load(f.read_text(encoding="utf-8")) or {}).get(language, [])
+
+
+# Mapa extensión -> lenguaje para seleccionar guardrails por lenguaje, INDEPENDIENTE de que
+# exista un backend de métricas (los guardrails de texto/lenguaje aplican aunque no haya backend).
+_EXT_LANG = {".py": "python", ".pyi": "python", ".ts": "typescript", ".tsx": "typescript",
+             ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
+             ".go": "go", ".rs": "rust", ".java": "java", ".rb": "ruby"}
+
+
+def _resolve_language(args):
+    """language explícito > lenguaje por la extensión de filename > default (python)."""
+    if args.get("language"):
+        return args["language"]
+    fn = args.get("filename") or ""
+    if "." in fn:
+        return _EXT_LANG.get("." + fn.rsplit(".", 1)[1].lower(), mb.DEFAULT_LANGUAGE)
+    return mb.DEFAULT_LANGUAGE
+
+
+def _eval_structural(gid, code, language):
+    """Evalúa un guardrail estructural con el backend del lenguaje. None si no hay backend o el
+    código no parsea (el caller cae al regex del propio guardrail)."""
+    metric, limit = STRUCTURAL_GUARDRAILS[gid]
+    try:
+        fns = mb.get_backend(language=language).measure(code)
+    except (KeyError, SyntaxError, ValueError):
+        return None
+    return any(f[metric] >= limit for f in fns)
+
+
 def scan_guardrails(args):
     import yaml
     d, a = _agent_dir(args.get("agent", DEFAULT_AGENT))
     code = args["code"]
+    language = _resolve_language(args)
     c = yaml.safe_load((d / "context.yaml").read_text(encoding="utf-8"))
     results = []
-    for g in c["contract"].get("guardrails", []):
-        if g.get("type") != "regex_deny":
-            continue
-        fired = bool(re.search(g["pattern"], code, re.MULTILINE))
-        results.append({"id": g["id"], "fired": fired, "on_fail": g.get("on_fail")})
-    return {"agent": a, "guardrails": results,
+    for g in list(c["contract"].get("guardrails", [])) + list(_lang_guardrails(language)):
+        gid = g["id"]
+        if gid in STRUCTURAL_GUARDRAILS:  # estructural: backend del lenguaje (no el regex)
+            fired = _eval_structural(gid, code, language)
+            if fired is not None:
+                results.append({"id": gid, "fired": fired, "on_fail": g.get("on_fail"),
+                                "method": "backend", "language": language})
+                continue  # sin backend: cae al regex de abajo (degradación)
+        if g.get("type") == "regex_deny":  # texto-puro compartido (secretos, no-eval, …) o fallback
+            fired = bool(re.search(g["pattern"], code, re.MULTILINE))
+            results.append({"id": gid, "fired": fired, "on_fail": g.get("on_fail"),
+                            "method": "regex", "language": language})
+        # otros tipos (json_schema, reference_check): no los evalúa este scan (igual que antes)
+    return {"agent": a, "language": language, "guardrails": results,
             "blocked": any(r["fired"] and r["on_fail"] == "abort" for r in results)}
 
 
