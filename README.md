@@ -125,6 +125,15 @@ fija por-lenguaje. Un backend nuevo no se acepta hasta pasar `tests/test_conform
 `pip install tree_sitter tree_sitter_typescript`). El gate, el hook y `measure_complexity` miden
 `.ts`/`.js` igual que `.py` cuando la dep está instalada; si no, esos archivos son no-op anunciado.
 
+## Integración GitHub (opcional, `integrations/github/`)
+
+Capa adaptadora **opcional**: el sustrato determinista no depende de GitHub. Sin ella, todo
+funciona en local. Usa `gh` CLI; tokens por entorno, nunca en el repo.
+
+- `reporter.py` — toma el JSON de `task_gate`/`complexity_gate` y genera un comentario Markdown
+  determinista (PASS/FAIL, métricas vs budget, motivo). Idempotente: actualiza un comentario
+  "marcado" en vez de spamear. Offline imprime el Markdown; `--post` lo publica vía `gh`.
+
 ## Benchmarks
 
 Ver [`BENCHMARKS.md`](BENCHMARKS.md). En resumen: el gate determinista cuesta **0 tokens** y
