@@ -1,0 +1,170 @@
+{
+  "description": "Suite de conformancia de métricas cross-lenguaje (#8). Valores oráculo CONGELADOS por fixture; cada backend debe reproducirlos. Python define el baseline.",
+  "metrics_definition": "Ver el docstring de runners/metrics_backends.py (definición neutral de las 4 métricas).",
+  "shape_contract": "contracts/complexity-agent/lint_results.schema.json",
+  "notes": [
+    "Métricas estructurales (cyclomatic, nesting_depth, parameter_count) deben coincidir entre lenguajes para la MISMA estructura lógica.",
+    "function_length depende del formato del lenguaje (llaves añaden líneas): se compara por-lenguaje vía language_overrides, no entre lenguajes.",
+    "Divergencias inevitables se declaran en cross_language_divergence_allowed con su razón en 'note' y se fijan por-lenguaje en language_overrides.",
+    "typescript/tsx/javascript via backend tree-sitter (dep opcional #7); 'comprehension' es sintaxis solo-Python (sin fixture TS)."
+  ],
+  "fixtures": [
+    {
+      "id": "simple",
+      "target": "simple",
+      "expected": {
+        "cyclomatic": 1,
+        "nesting_depth": 0,
+        "parameter_count": 1,
+        "function_length": 2
+      },
+      "language_overrides": {
+        "typescript": {
+          "function_length": 3
+        }
+      },
+      "note": "Función trivial: sin decisiones ni anidamiento.",
+      "cross_language_divergence_allowed": [
+        "function_length"
+      ],
+      "sources": {
+        "python": "python/simple.py",
+        "typescript": "typescript/simple.ts"
+      }
+    },
+    {
+      "id": "deep_nesting",
+      "target": "deep_nesting",
+      "expected": {
+        "cyclomatic": 5,
+        "nesting_depth": 5,
+        "parameter_count": 1,
+        "function_length": 8
+      },
+      "language_overrides": {
+        "typescript": {
+          "function_length": 15
+        }
+      },
+      "note": "Anidamiento profundo (5 niveles: for>if>while>with>if).",
+      "cross_language_divergence_allowed": [
+        "function_length"
+      ],
+      "sources": {
+        "python": "python/deep_nesting.py",
+        "typescript": "typescript/deep_nesting.ts"
+      }
+    },
+    {
+      "id": "many_params",
+      "target": "many_params",
+      "expected": {
+        "cyclomatic": 1,
+        "nesting_depth": 0,
+        "parameter_count": 6,
+        "function_length": 2
+      },
+      "language_overrides": {
+        "typescript": {
+          "function_length": 3
+        }
+      },
+      "note": "Aridad alta (6 parámetros).",
+      "cross_language_divergence_allowed": [
+        "function_length"
+      ],
+      "sources": {
+        "python": "python/many_params.py",
+        "typescript": "typescript/many_params.ts"
+      }
+    },
+    {
+      "id": "long_function",
+      "target": "long_function",
+      "expected": {
+        "cyclomatic": 1,
+        "nesting_depth": 0,
+        "parameter_count": 0,
+        "function_length": 92
+      },
+      "language_overrides": {
+        "typescript": {
+          "function_length": 93
+        }
+      },
+      "note": "Función larga (>80 líneas). function_length depende del formato del lenguaje.",
+      "cross_language_divergence_allowed": [
+        "function_length"
+      ],
+      "sources": {
+        "python": "python/long_function.py",
+        "typescript": "typescript/long_function.ts"
+      }
+    },
+    {
+      "id": "boolop_chain",
+      "target": "boolop_chain",
+      "expected": {
+        "cyclomatic": 4,
+        "nesting_depth": 0,
+        "parameter_count": 4,
+        "function_length": 2
+      },
+      "language_overrides": {
+        "typescript": {
+          "function_length": 3
+        }
+      },
+      "note": "Cadena booleana a and b and c and d: +(operandos-1).",
+      "cross_language_divergence_allowed": [
+        "function_length"
+      ],
+      "sources": {
+        "python": "python/boolop_chain.py",
+        "typescript": "typescript/boolop_chain.ts"
+      }
+    },
+    {
+      "id": "comprehension",
+      "target": "comprehension",
+      "expected": {
+        "cyclomatic": 4,
+        "nesting_depth": 0,
+        "parameter_count": 1,
+        "function_length": 2
+      },
+      "language_overrides": {},
+      "note": "Comprehension con 2 filtros if: +1 (comp) +2 (ifs).",
+      "cross_language_divergence_allowed": [
+        "function_length"
+      ],
+      "sources": {
+        "python": "python/comprehension.py"
+      }
+    },
+    {
+      "id": "switch_case",
+      "target": "switch_case",
+      "expected": {
+        "cyclomatic": 5,
+        "nesting_depth": 0,
+        "parameter_count": 1,
+        "function_length": 10
+      },
+      "language_overrides": {
+        "typescript": {
+          "function_length": 12
+        }
+      },
+      "note": "match/switch: +1 por rama en ciclomática; en el backend Python NO suma a nesting_depth.",
+      "cross_language_divergence_allowed": [
+        "function_length",
+        "nesting_depth"
+      ],
+      "sources": {
+        "python": "python/switch_case.py",
+        "typescript": "typescript/switch_case.ts"
+      }
+    }
+  ]
+}
