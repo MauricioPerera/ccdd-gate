@@ -125,7 +125,13 @@ def parse_sig(signature, language=None):
 # ---- una función por regla; cada una devuelve lista de findings ----
 def r_required(ctx):
     return [err("tc-required", "falta campo requerido: " + f)
-            for f in ["task", "intent", "target", "signature", "budget", "tests"] if f not in ctx["fm"]]
+            for f in ["task", "intent", "target", "signature", "budget", "tests", "test_command"] if f not in ctx["fm"]]
+
+def r_test_command(ctx):
+    cmd = ctx["fm"].get("test_command")
+    if not isinstance(cmd, str) or not cmd.strip():
+        return [err("tc-test-command", "test_command debe ser un string no vacío con el comando de ejecución (ej. 'npm test')")]
+    return []
 
 def r_intent_atomic(ctx):
     intent = str(ctx["fm"].get("intent", ""))
@@ -254,7 +260,7 @@ def r_target_atomic(ctx):
     return []
 
 
-RULES = [r_required, r_language, r_intent_atomic, r_target_atomic, r_signature, r_budget_sane, r_tests_frozen,
+RULES = [r_required, r_test_command, r_language, r_intent_atomic, r_target_atomic, r_signature, r_budget_sane, r_tests_frozen,
          r_sections, r_stop_rule, r_no_algorithm, r_deps, r_issue_ref]
 
 
