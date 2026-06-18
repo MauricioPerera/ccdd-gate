@@ -96,11 +96,22 @@ def run_rounds(p, fm, body, target, provider, model, n, label, attempts, feedbac
     return False, feedback
 
 
-def implement(task_path, provider, model, max_attempts, escalate, esc_attempts, stub_iter):
+def implement(task_path, provider, model, max_attempts, escalate, esc_attempts, stub_iter,
+              on_result=None):
     """Loop de un task: el pequeño intenta hasta max_attempts; si no pasa, escala al grande
     que TAMBIÉN reintenta (esc_attempts) con el mismo feedback determinista.
-    `escalate` es (provider, model) del modelo grande, o None para sólo marcar ESCALATE."""
+    `escalate` es (provider, model) del modelo grande, o None para sólo marcar ESCALATE.
+    `on_result` es un callback OPCIONAL (result_dict, task_path) -> ... para integraciones
+    externas (p.ej. ciclo de vida de un issue de GitHub). El loop en sí NO sabe de GitHub;
+    sin callback (default), corre igual en local."""
     p = Path(task_path)
+    result = _implement(p, provider, model, max_attempts, escalate, esc_attempts, stub_iter)
+    if on_result is not None:
+        on_result(result, str(p))
+    return result
+
+
+def _implement(p, provider, model, max_attempts, escalate, esc_attempts, stub_iter):
     if any(f["level"] == "error" for f in tc_lint.lint(str(p))):
         return {"task": p.name, "result": "INVALID", "attempts": 0}
     fm, body = tc_lint.split_front_matter(p.read_text(encoding="utf-8"))

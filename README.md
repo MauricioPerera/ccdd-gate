@@ -142,6 +142,10 @@ funciona en local. Usa `gh` CLI; tokens por entorno, nunca en el repo.
 - `scaffold.py` — genera el esqueleto de un task-contract desde un issue (`--issue owner/repo#N`
   o `--from-json` offline). Captura la intención (título/cuerpo/labels) con placeholders `TODO`;
   el resultado es **incompleto a propósito** (`tc_lint` lo marca, no falsamente verde).
+- `lifecycle.py` — conecta el **orquestador** con el ciclo de vida del issue: un issue `ccdd:ready`
+  con gate verde abre un PR enlazado (`Closes #N`) y pasa a `ccdd:in-review`; si escala → `ccdd:escalated`;
+  si ni el grande pasa → `ccdd:needs-split`. El loop del orquestador no sabe de GitHub (recibe un
+  callback opcional `on_result`); sin él, corre igual en local. Transiciones de label deterministas y reversibles.
 - `decompose.py` — materializa task-contracts atómicos como **sub-issues** de un issue padre
   (epic/feature), con vínculo bidireccional y marker idempotente (re-ejecutar no duplica). No
   decide la descomposición (la decide el autor): solo la materializa.
