@@ -56,6 +56,7 @@ class TestConformance(unittest.TestCase):
             for language, source_rel in fixture.get("sources", {}).items():
                 if language not in mb.supported_languages():
                     continue  # backend aún no implementado: se valida cuando exista
+                checked += 1
                 with self.subTest(language=language, fixture=fixture["id"]):
                     m = measure_target(language, source_rel, fixture["target"])
                     self.assertIsNotNone(m, f"{language}/{fixture['id']}: target no encontrado")
@@ -64,7 +65,6 @@ class TestConformance(unittest.TestCase):
                         self.assertEqual(
                             m[metric], exp[metric],
                             f"{language}/{fixture['id']}: {metric}={m[metric]} != oráculo {exp[metric]}")
-                    checked += 1
         self.assertGreater(checked, 0, "ningún backend/fixture verificado")
 
     def test_python_baseline_is_complete(self):
