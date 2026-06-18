@@ -1,0 +1,26 @@
+# guardrails_lang.yaml — guardrails ESPECÍFICOS por lenguaje (opt-in), fuera del contrato firmado.
+#
+# scan_guardrails los aplica ADEMÁS de los guardrails del contrato (texto-puro compartidos +
+# estructurales calculados con el backend). Clave = nombre de lenguaje (el de get_backend);
+# cada entrada tiene el mismo shape que un guardrail regex_deny del contrato: {id, type, pattern,
+# on_fail}. Deterministas, sin LLM. Editar aquí NO requiere re-firmar el contrato.
+#
+# Mismo `id` con patrón distinto por lenguaje (p. ej. no-eval): es justo el caso que motiva #6.
+
+python:
+  - id: no-eval
+    type: regex_deny
+    pattern: '\b(eval|exec)\s*\('
+    on_fail: warn
+
+typescript:
+  - id: no-eval
+    type: regex_deny
+    pattern: '\beval\s*\(|\bnew\s+Function\s*\('
+    on_fail: warn
+
+javascript:
+  - id: no-eval
+    type: regex_deny
+    pattern: '\beval\s*\(|\bnew\s+Function\s*\('
+    on_fail: warn

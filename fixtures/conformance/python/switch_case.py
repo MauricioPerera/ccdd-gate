@@ -1,0 +1,10 @@
+def switch_case(x):
+    match x:
+        case 0:
+            return "zero"
+        case 1:
+            return "one"
+        case 2:
+            return "two"
+        case _:
+            return "many"

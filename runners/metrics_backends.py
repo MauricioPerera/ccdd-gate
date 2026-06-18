@@ -112,11 +112,22 @@ def register(backend):
     return backend
 
 
+_optional_loaded = False
+
+
 def _ensure_builtins():
     # El backend Python vive en metrics.py y se registra al importarse. Import perezoso para
     # evitar dependencia circular en tiempo de carga del módulo.
     if DEFAULT_LANGUAGE not in _BY_LANG:
         import metrics  # noqa: F401
+    # Backends OPCIONALES (tree-sitter): se cargan si su dependencia está instalada; si no, no-op.
+    global _optional_loaded
+    if not _optional_loaded:
+        _optional_loaded = True
+        try:
+            import metrics_treesitter  # noqa: F401  (register_all() corre al importarse)
+        except ImportError:
+            pass
 
 
 def get_backend(language=None, extension=None, filename=None):

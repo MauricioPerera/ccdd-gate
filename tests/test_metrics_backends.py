@@ -73,9 +73,9 @@ class TestRegistry(unittest.TestCase):
 
     def test_unknown_language_raises(self):
         with self.assertRaises(KeyError):
-            mb.get_backend(language="typescript")
+            mb.get_backend(language="klingon")
         with self.assertRaises(KeyError):
-            mb.get_backend(extension=".ts")
+            mb.get_backend(extension=".cobol")
 
     def test_generic_helpers_match_python_backend(self):
         self.assertEqual(mb.functions_metrics(NESTED), metrics.functions_metrics(NESTED))

@@ -1,0 +1,2 @@
+def boolop_chain(a, b, c, d):
+    return a and b and c and d
