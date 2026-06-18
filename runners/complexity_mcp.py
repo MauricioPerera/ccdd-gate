@@ -19,7 +19,8 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import metrics    # noqa: E402
+import metrics    # noqa: E402  (registra el backend python)
+import metrics_backends as mb  # noqa: E402
 import tc_lint    # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -36,11 +37,16 @@ for _s in (sys.stdout, sys.stderr):
 TOOLS = [
     {
         "name": "measure_complexity",
-        "description": "Mide complejidad por AST de Python (ciclomática, anidamiento, nº de parámetros, "
-                       "longitud) por función. Determinista, sin LLM. Devuelve valores reales y si superan el umbral firmado.",
+        "description": "Mide complejidad por función (ciclomática, anidamiento, nº de parámetros, longitud) "
+                       "con el backend del LENGUAJE (python con AST nativo; otros lenguajes vía backend "
+                       "registrado, enrutado por 'language' o por la extensión de 'filename'; default python). "
+                       "Determinista, sin LLM. Devuelve valores reales y si superan el umbral firmado.",
         "inputSchema": {"type": "object", "required": ["code"], "properties": {
-            "code": {"type": "string", "description": "Código Python a medir."},
-            "filename": {"type": "string", "description": "Nombre lógico del archivo (opcional)."}}},
+            "code": {"type": "string", "description": "Código a medir."},
+            "filename": {"type": "string", "description": "Nombre lógico del archivo (opcional; su extensión "
+                         "selecciona backend si no se pasa 'language')."},
+            "language": {"type": "string", "description": "Lenguaje del backend (opcional; precede a la "
+                         "extensión). Default python (back-compat)."}}},
     },
     {
         "name": "complexity_rubric",
@@ -81,7 +87,14 @@ def _agent_dir(agent):
 
 
 def measure_complexity(args):
-    return metrics.extract_source(args["code"], args.get("filename", "snippet.py"))
+    fname = args.get("filename", "snippet.py")
+    try:
+        backend = mb.get_backend(language=args.get("language"), filename=fname)
+    except KeyError:
+        return {"error": "sin backend de métricas para el lenguaje/extensión pedido",
+                "language": args.get("language"), "filename": fname,
+                "available_languages": mb.supported_languages()}
+    return backend.extract_source(args["code"], fname)
 
 
 def complexity_rubric(args):
