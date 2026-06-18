@@ -32,7 +32,12 @@ def section_body(body, header):
     return body[i + len(header): nxt if nxt != -1 else len(body)]
 
 
-def parse_sig(signature):
+DEFAULT_LANGUAGE = "python"
+# Lenguajes con parser de firma NATIVO (preciso). El resto degrada a aridad genérica.
+_NATIVE_SIG = {"python"}
+
+
+def _parse_sig_python(signature):
     src = str(signature).strip().rstrip(":")  # el contrato no lleva ':' final; lo añadimos
     fn = ast.parse(src + ":\n    pass").body[0]
     if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -40,6 +45,72 @@ def parse_sig(signature):
     a = fn.args
     return fn.name, (len(a.posonlyargs) + len(a.args) + len(a.kwonlyargs)
                      + (1 if a.vararg else 0) + (1 if a.kwarg else 0))
+
+
+_OPEN, _CLOSE = "([{<", ")]}>"
+
+
+def _split_top_level(s):
+    """Parte `s` por comas de nivel 0, respetando ()[]{}<> y comillas. Determinista, sin deps."""
+    out, cur, depth, quote = [], "", 0, None
+    for ch in s:
+        if quote:
+            cur += ch
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "\"'`":
+            quote = ch
+        elif ch in _OPEN:
+            depth += 1
+        elif ch in _CLOSE:
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            out.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    out.append(cur)
+    return out
+
+
+def _match_paren(src, open_i):
+    """Índice del ')' que cierra el '(' en `open_i`, respetando anidamiento. ValueError si falta."""
+    depth = 0
+    for i in range(open_i, len(src)):
+        depth += 1 if src[i] == "(" else (-1 if src[i] == ")" else 0)
+        if depth == 0:
+            return i
+    raise ValueError("paréntesis de parámetros sin cerrar")
+
+
+def _parse_sig_generic(signature):
+    """Extrae (nombre, aridad) de una firma de un lenguaje con sintaxis de llaves (TS/JS/Go/…)
+    sin parser nativo: nombre = identificador antes del grupo de parámetros (quitando genéricos
+    `<...>`); aridad = nº de parámetros top-level del primer grupo `(...)` balanceado."""
+    src = str(signature).strip()
+    open_i = src.find("(")
+    if open_i == -1:
+        raise ValueError("no se encontró el grupo de parámetros '(...)'")
+    close_i = _match_paren(src, open_i)
+    prefix = re.sub(r"<[^<>]*>\s*$", "", src[:open_i].strip()).strip()  # quitar genéricos finales
+    # nombre = último identificador que no sea una keyword de declaración (const/function/func/…)
+    kw = {"const", "let", "var", "function", "async", "export", "default", "public",
+          "private", "protected", "static", "func", "fn", "def", "fun", "final", "override"}
+    idents = [w for w in re.findall(r"[A-Za-z_$][\w$]*", prefix) if w not in kw]
+    if not idents:
+        raise ValueError("no se pudo extraer el nombre de la firma")
+    inner = src[open_i + 1:close_i].strip()
+    n = 0 if not inner else len([p for p in _split_top_level(inner) if p.strip()])
+    return idents[-1], n
+
+
+def parse_sig(signature, language=None):
+    """(nombre, aridad) de una firma. python usa el AST (preciso); el resto, aridad genérica."""
+    lang = (language or DEFAULT_LANGUAGE).lower()
+    if lang in _NATIVE_SIG:
+        return _parse_sig_python(signature)
+    return _parse_sig_generic(signature)
 
 
 # ---- una función por regla; cada una devuelve lista de findings ----
@@ -53,17 +124,31 @@ def r_intent_atomic(ctx):
         return [err("tc-intent-atomic", "intent no es atómico (lleva conector): " + intent)]
     return []
 
+def r_language(ctx):
+    lang = ctx["fm"].get("language")
+    if lang is None:
+        return []  # ausente -> python (back-compat), sin aviso
+    if not isinstance(lang, str) or not lang.strip():
+        return [err("tc-language", "language debe ser un string no vacío (p.ej. python, typescript)")]
+    return []
+
 def r_signature(ctx):
     if "signature" not in ctx["fm"]:
         return []
+    lang = (ctx["language"] or DEFAULT_LANGUAGE).lower()
     try:
-        ctx["fn_name"], n = parse_sig(ctx["fm"]["signature"])
+        ctx["fn_name"], n = parse_sig(ctx["fm"]["signature"], lang)
     except Exception as e:
-        return [err("tc-signature-valid", "signature no parsea como def: " + str(e))]
+        verb = "no parsea como def" if lang in _NATIVE_SIG else "no parsea (firma inválida)"
+        return [err("tc-signature-valid", f"signature {verb}: {e}")]
+    out = []
+    if lang not in _NATIVE_SIG:  # degradación documentada: solo aridad, sin parser nativo
+        out.append({"level": "warn", "rule": "tc-signature-generic",
+                    "msg": f"firma validada por aridad genérica (sin parser nativo para '{lang}')"})
     pmax = ctx["budget"].get("params_max")
     if isinstance(pmax, int) and n > pmax:
-        return [err("tc-signature-valid", f"la firma tiene {n} params > budget.params_max={pmax}")]
-    return []
+        out.append(err("tc-signature-valid", f"la firma tiene {n} params > budget.params_max={pmax}"))
+    return out
 
 def r_budget_sane(ctx):
     b = ctx["budget"]
@@ -125,7 +210,7 @@ def err(rule, msg):
     return {"level": "error", "rule": rule, "msg": msg}
 
 
-RULES = [r_required, r_intent_atomic, r_signature, r_budget_sane, r_tests_frozen,
+RULES = [r_required, r_language, r_intent_atomic, r_signature, r_budget_sane, r_tests_frozen,
          r_sections, r_stop_rule, r_no_algorithm, r_deps]
 
 
@@ -134,7 +219,8 @@ def lint(path):
     fm, body = split_front_matter(p.read_text(encoding="utf-8"))
     if fm is None:
         return [err("tc-required", "sin front-matter YAML (--- ... ---)")]
-    ctx = {"fm": fm, "body": body, "path": p, "budget": fm.get("budget") or {}, "fn_name": None}
+    ctx = {"fm": fm, "body": body, "path": p, "budget": fm.get("budget") or {},
+           "fn_name": None, "language": fm.get("language")}
     findings = []
     for rule in RULES:
         findings += rule(ctx)

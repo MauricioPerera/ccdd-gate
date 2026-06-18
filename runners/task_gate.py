@@ -31,7 +31,7 @@ def gate(task_path):
     target = p.parent / fm["target"]
     tests = p.parent / fm["tests"]
     budget = fm["budget"]
-    fn_name, _n = tc_lint.parse_sig(fm["signature"])
+    fn_name, _n = tc_lint.parse_sig(fm["signature"], fm.get("language"))
 
     # gate 0.5 — OK humano (determinista, a prueba de manipulación): si el contrato exige
     # aprobación, los bytes de los tests deben coincidir con el hash que firmó el humano.

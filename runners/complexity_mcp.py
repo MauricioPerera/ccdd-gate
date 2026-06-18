@@ -62,9 +62,11 @@ TOOLS = [
         "name": "lint_task_contract",
         "description": "Valida un TASK-CONTRACT (front-matter YAML + cuerpo Markdown) con tc_lint determinista, "
                        "ANTES de emitirlo al implementador pequeño. Anti-desvarío del modelo grande que lo autora: "
-                       "campos requeridos, intent atómico, firma válida, budget ≤ topes firmados, secciones "
-                       "obligatorias, regla de parada, tests congelados. Pasa también test_code para validar que "
-                       "los property-tests existen y referencian la firma. Sin LLM. Devuelve {ok, errors, findings}.",
+                       "campos requeridos, intent atómico, firma válida (por lenguaje vía el campo opcional "
+                       "'language' del front-matter; python con parser nativo, el resto por aridad genérica), "
+                       "budget ≤ topes firmados, secciones obligatorias, regla de parada, tests congelados. Pasa "
+                       "también test_code para validar que los property-tests existen y referencian la firma. "
+                       "Sin LLM. Devuelve {ok, errors, findings}.",
         "inputSchema": {"type": "object", "required": ["contract_text"], "properties": {
             "contract_text": {"type": "string", "description": "El task-contract completo (--- yaml --- + cuerpo)."},
             "test_code": {"type": "string", "description": "Código de los property-tests congelados (opcional pero "

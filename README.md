@@ -100,6 +100,13 @@ Front-matter YAML (machine-checkable) + cuerpo Markdown (prescriptivo). Ver
 Regla central: **especifica el contrato y los property-tests con oráculo independiente,
 NO el algoritmo**. Los tests se congelan y firman *antes* de que el implementador toque la tarea.
 
+**Campo `language` (opcional, multi-lenguaje).** Por defecto `python`. Con `language: python`
+la firma se valida con el AST nativo (preciso). Para otros lenguajes (`typescript`, `javascript`,
+`go`, …) `tc_lint` valida la firma por **aridad genérica** (cuenta de parámetros top-level y
+extracción de nombre, respetando `()[]{}<>` y comillas) y emite el warning `tc-signature-generic`
+para señalar que no hay parser nativo. `params_max` y el resto de reglas se aplican igual.
+Sin el campo, el comportamiento es idéntico al actual (Python).
+
 ## Benchmarks
 
 Ver [`BENCHMARKS.md`](BENCHMARKS.md). En resumen: el gate determinista cuesta **0 tokens** y
