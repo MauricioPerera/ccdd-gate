@@ -151,7 +151,7 @@ def _eval_structural(gid, code, language):
     metric, limit = STRUCTURAL_GUARDRAILS[gid]
     try:
         fns = mb.get_backend(language=language).measure(code)
-    except (KeyError, SyntaxError, ValueError):
+    except Exception:
         return None
     return any(f[metric] >= limit for f in fns)
 
