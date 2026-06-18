@@ -28,7 +28,8 @@ veredicto van en código que no se puede engañar.
 
 | Pieza | Qué hace | LLM |
 |---|---|---|
-| `runners/metrics.py` | Métricas de complejidad por AST (ciclomática, anidamiento, params, longitud) | no |
+| `runners/metrics_backends.py` | Capa neutral compartida (umbrales + `severity` + `lint_results`) y registro `get_backend(language\|extension)` para backends por lenguaje | no |
+| `runners/metrics.py` | Backend Python: métricas de complejidad por AST (ciclomática, anidamiento, params, longitud) | no |
 | `runners/complexity_gate.py` | Gate determinista; CLI o hook PostToolUse de Claude Code | no |
 | `runners/tc_lint.py` | Linter del **task-contract** (anti-desvarío del autor) | no |
 | `runners/task_gate.py` | Veredicto unificado: tc_lint + complejidad≤budget + tests congelados + firma | no |
