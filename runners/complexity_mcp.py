@@ -122,7 +122,10 @@ def _lang_guardrails(language):
     f = HERE / "guardrails_lang.yaml"
     if not f.exists():
         return []
-    return (yaml.safe_load(f.read_text(encoding="utf-8")) or {}).get(language, [])
+    try:
+        return (yaml.safe_load(f.read_text(encoding="utf-8")) or {}).get(language, [])
+    except Exception:
+        return []
 
 
 # Mapa extensión -> lenguaje para seleccionar guardrails por lenguaje, INDEPENDIENTE de que
