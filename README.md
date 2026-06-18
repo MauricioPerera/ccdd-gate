@@ -63,8 +63,10 @@ python runners/tc_lint.py examples/sandbox/task.md
 { "command": "python runners/complexity_gate.py" }
 ```
 
-Cada `.py` que el agente escribe se mide; si una métrica entra en CRÍTICA (umbral firmado),
-el hook bloquea y pide refactor. Determinista, sin tokens.
+Cada archivo que el agente escribe se mide con el backend de su lenguaje (por extensión, o
+`--language` en CLI); si una métrica entra en CRÍTICA (umbral firmado), el hook bloquea y pide
+refactor. Determinista, sin tokens. Una extensión sin backend registrado es un **no-op anunciado**
+(aviso por stderr, exit 0), nunca un fallo silencioso. Hoy el único backend es Python.
 
 ### Como MCP
 

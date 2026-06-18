@@ -21,7 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pre_complexity_helpers as H  # noqa: E402  (capa de transformación compartida)
-import metrics  # noqa: E402         (extractor AST determinista)
+import metrics  # noqa: E402         (registra el backend python determinista)
+import metrics_backends as mb  # noqa: E402  (registro de backends por lenguaje)
 
 HERE = Path(__file__).resolve().parent
 CCDD = HERE.parent / "ccdd.py"
@@ -87,7 +88,8 @@ def call_llm(provider, model, system, user):
 def parse_args(argv):
     ap = argparse.ArgumentParser(prog="complexity_runner",
                                  description="Análisis de complejidad sobre código ya implementado (post-código).")
-    ap.add_argument("--input", required=True, help="archivo de código a analizar (.py) — REQUERIDO")
+    ap.add_argument("--input", required=True, help="archivo de código a analizar — REQUERIDO")
+    ap.add_argument("--language", help="lenguaje del backend de métricas (default: por extensión / python)")
     ap.add_argument("--repo-map", dest="repo_map", help="grafo de dependencias opcional")
     ap.add_argument("--debt", help="historial de deuda técnica opcional")
     ap.add_argument("--model", default=DEFAULT_MODEL)
@@ -100,8 +102,14 @@ def build_inputs(a):
     inp = Path(a.input)
     if not inp.exists():
         fail(3, f"input no encontrado: {a.input}")
+    # backend de métricas por --language o extensión (default python). Sin backend: aborto explícito.
+    try:
+        backend = mb.get_backend(language=getattr(a, "language", None), filename=inp.name)
+    except KeyError:
+        fail(3, f"sin backend de métricas para {inp.name} "
+                f"(lenguajes disponibles: {', '.join(mb.supported_languages())})")
     # métricas deterministas -> slot lint_results (validado por el guardrail json_schema) Y base del gate
-    det = metrics.extract(inp)
+    det = backend.extract_source(inp.read_text(encoding="utf-8"), inp.name)
     inputs = {"code_under_review": inp.read_text(encoding="utf-8"),
               "lint_results": json.dumps(det, ensure_ascii=False)}
     for key, path in (("repo_map", a.repo_map), ("debt_history", a.debt)):
