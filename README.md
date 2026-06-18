@@ -136,6 +136,9 @@ funciona en local. Usa `gh` CLI; tokens por entorno, nunca en el repo.
 - `scaffold.py` — genera el esqueleto de un task-contract desde un issue (`--issue owner/repo#N`
   o `--from-json` offline). Captura la intención (título/cuerpo/labels) con placeholders `TODO`;
   el resultado es **incompleto a propósito** (`tc_lint` lo marca, no falsamente verde).
+- `decompose.py` — materializa task-contracts atómicos como **sub-issues** de un issue padre
+  (epic/feature), con vínculo bidireccional y marker idempotente (re-ejecutar no duplica). No
+  decide la descomposición (la decide el autor): solo la materializa.
 - `link.py` — vínculo bidireccional contrato↔issue: `status --contract` (estado + labels) o
   `status --issue owner/repo#N` (contratos que lo referencian), y `sync-labels` (refleja el estado
   como labels `ccdd:*`, idempotente, sin pisar labels ajenas). El campo `issue` del front-matter es
