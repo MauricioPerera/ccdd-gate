@@ -393,11 +393,18 @@ def _check_dsv(g, assembled, contract_dir):
             if not fpath.is_file():
                 return False, f"hallazgo {idx}: archivo no existe -> {finding.get('file')}"
                 
-            lines = fpath.read_text(encoding="utf-8").splitlines()
-            if line_num < 1 or line_num > len(lines):
-                return False, f"hallazgo {idx}: línea {line_num} fuera de rango en {fpath.name}"
+            actual_line = None
+            try:
+                with fpath.open(encoding="utf-8") as f:
+                    for current_line_num, line in enumerate(f, 1):
+                        if current_line_num == line_num:
+                            actual_line = line.strip()
+                            break
+            except Exception as e:
+                return False, f"error leyendo archivo {fpath.name}: {e}"
                 
-            actual_line = lines[line_num - 1].strip()
+            if actual_line is None:
+                return False, f"hallazgo {idx}: línea {line_num} fuera de rango en {fpath.name}"
             expected = snippet.strip()
             if expected not in actual_line:
                 return False, f"hallazgo {idx}: drift detectado. Esperado: '{expected}', Actual: '{actual_line}'"
