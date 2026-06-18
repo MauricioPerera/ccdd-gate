@@ -1,0 +1,43 @@
+name: ccdd-gate
+
+# Gate determinista en PR: ningún PR que toque task-contracts (o su código objetivo) entra sin
+# pasar tc_lint + task_gate (complejidad ≤ budget + tests congelados + firma). Sin LLM en CI.
+# Copiable a cualquier repo consumidor: ver README ("Integración GitHub").
+
+on:
+  pull_request:
+    paths:
+      - "**/*.md"
+      - "**/*.py"
+      - "runners/**"
+  # Reutilizable desde otros workflows (mismo repo) si se quiere componer.
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: write   # comentar el veredicto vía el Reporter (usa el GITHUB_TOKEN del runner)
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # necesario para `git diff` contra la rama base
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: ccdd-gate (tc_lint + task_gate) sobre los contratos del PR
+        env:
+          GH_TOKEN: ${{ github.token }}   # gh CLI usa este token; sin secretos en el repo
+        run: |
+          python integrations/github/ci_gate.py \
+            --changed-against "origin/${{ github.base_ref }}" \
+            --repo "${{ github.repository }}" \
+            --issue "${{ github.event.pull_request.number }}" \
+            --post

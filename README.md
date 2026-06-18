@@ -133,6 +133,12 @@ funciona en local. Usa `gh` CLI; tokens por entorno, nunca en el repo.
 - `reporter.py` — toma el JSON de `task_gate`/`complexity_gate` y genera un comentario Markdown
   determinista (PASS/FAIL, métricas vs budget, motivo). Idempotente: actualiza un comentario
   "marcado" en vez de spamear. Offline imprime el Markdown; `--post` lo publica vía `gh`.
+- `ci_gate.py` + `.github/workflows/ccdd-gate.yml` — **GitHub Action**: en cada PR descubre los
+  task-contracts afectados (el `.md` o su `target`), corre `tc_lint` + `task_gate` y **bloquea el
+  merge** (exit 1) si el veredicto no pasa; publica el resumen como comentario idempotente vía el
+  Reporter. Sin LLM, sin secretos (usa el `GITHUB_TOKEN` del runner). **Copiable a un repo
+  consumidor**: copia `.github/workflows/ccdd-gate.yml` e `integrations/github/` (o vendoriza/instala
+  ccdd-gate) y activa branch protection sobre el check `ccdd-gate`.
 - `scaffold.py` — genera el esqueleto de un task-contract desde un issue (`--issue owner/repo#N`
   o `--from-json` offline). Captura la intención (título/cuerpo/labels) con placeholders `TODO`;
   el resultado es **incompleto a propósito** (`tc_lint` lo marca, no falsamente verde).
