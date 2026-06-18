@@ -33,7 +33,11 @@ def main():
         attest["complexity_exception"] = [attest["complexity_exception"]]
 
     for p in pending_dir.glob("*.json"):
-        data = json.loads(p.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Error al leer o parsear {p.name}: {e}. Saltando...", file=sys.stderr)
+            continue
         print("\n" + "="*60)
         print(f"ARCHIVO: {data.get('filename')}")
         print(f"HASH:    {data.get('hash')}")
