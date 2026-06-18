@@ -72,6 +72,7 @@ class TestConformance(unittest.TestCase):
         for fixture in MANIFEST["fixtures"]:
             self.assertIn("python", fixture.get("sources", {}), fixture["id"])
             m = measure_target("python", fixture["sources"]["python"], fixture["target"])
+            self.assertIsNotNone(m, f"python/{fixture['id']}: target no encontrado")
             exp = expected_for(fixture, "python")
             self.assertEqual({k: m[k] for k in METRICS}, exp, fixture["id"])
 
