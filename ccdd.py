@@ -383,7 +383,10 @@ def _check_dsv(g, assembled, contract_dir):
         if not isinstance(data, list):
             return False, f"slot '{target}' debe ser una lista JSON de hallazgos"
         for idx, finding in enumerate(data):
-            fpath = contract_dir / finding.get("file", "")
+            file_prop = finding.get("file", "")
+            if not file_prop or ".." in Path(file_prop).parts or Path(file_prop).is_absolute():
+                return False, f"hallazgo {idx}: ruta de archivo inválida o fuera de límites"
+            fpath = contract_dir / file_prop
             line_num = int(finding.get("line", 0))
             snippet = str(finding.get("snippet", ""))
             
