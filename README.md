@@ -74,7 +74,9 @@ Copiá `.mcp.json.example` a `.mcp.json`. Expone 4 tools (sin LLM):
 
 - `measure_complexity(code)` — métricas AST reales por función.
 - `complexity_rubric(agent)` — el criterio gobernado (system/policies/thresholds) firmado.
-- `scan_guardrails(code)` — guardrails deterministas (secretos, anidamiento).
+- `scan_guardrails(code, language?, filename?)` — guardrails deterministas: secretos (texto-puro,
+  igual en todo lenguaje), anidamiento (estructural, vía el backend del lenguaje) y específicos por
+  lenguaje opt-in (`runners/guardrails_lang.yaml`, p. ej. `no-eval`). Sin `language`, Python.
 - `lint_task_contract(contract_text, test_code?)` — valida un task-contract antes de emitirlo.
 
 ## El loop grande/pequeño
