@@ -60,8 +60,8 @@ def resolve_backend(path):
 
 def main():
     path = target_path()
-    if not path or not os.path.exists(path):
-        return 0  # no-op: sin ruta o no existe
+    if not path or not os.path.isfile(path):
+        return 0  # no-op: sin ruta o no es un archivo
     backend = resolve_backend(path)
     if backend is None:
         return 0  # no-op anunciado: extensión sin backend
