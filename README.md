@@ -111,6 +111,14 @@ extracción de nombre, respetando `()[]{}<>` y comillas) y emite el warning `tc-
 para señalar que no hay parser nativo. `params_max` y el resto de reglas se aplican igual.
 Sin el campo, el comportamiento es idéntico al actual (Python).
 
+## Conformancia multi-lenguaje
+
+`fixtures/conformance/` define un **oráculo congelado** de las 4 métricas (fixtures equivalentes
+por lenguaje + valores esperados). Todo backend debe reproducirlo: Python es el baseline y un
+backend nuevo (p. ej. el TS de #1) no se acepta hasta pasar `tests/test_conformance.py`. Las
+divergencias inevitables entre lenguajes se documentan explícitamente. Ver
+[`fixtures/conformance/README.md`](fixtures/conformance/README.md).
+
 ## Benchmarks
 
 Ver [`BENCHMARKS.md`](BENCHMARKS.md). En resumen: el gate determinista cuesta **0 tokens** y
