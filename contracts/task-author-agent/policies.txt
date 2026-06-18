@@ -16,3 +16,5 @@ P8. Constraints debe incluir una cláusula "PARAR y reportar si el budget no se 
     violar la interfaz" — sin workarounds silenciosos.
 P9. require_test_approval: true cuando los tests deban llevar firma humana (tests_sha256) antes
     de que task_gate corra. Recomendado por defecto.
+
+- GIT-BLINDNESS: El historial de Git es solo de lectura para contexto de intención; el estado funcional SOLO puede evaluarse leyendo el AST o el sistema de archivos actual (HEAD).

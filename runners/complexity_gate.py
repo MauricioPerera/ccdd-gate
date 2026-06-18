@@ -65,7 +65,33 @@ def main():
     backend = resolve_backend(path)
     if backend is None:
         return 0  # no-op anunciado: extensión sin backend
-    det = backend.extract_source(Path(path).read_text(encoding="utf-8"), os.path.basename(path))
+    code_str = Path(path).read_text(encoding="utf-8")
+    
+    # Check for exceptions
+    import semantic_hash
+    ext = Path(path).suffix or ".py"
+    h = semantic_hash.get_semantic_hash(code_str, ext)
+    
+    # Simple check for exception signatures
+    contract_dir = Path(__file__).resolve().parent.parent / "contracts" / "complexity-agent"
+    attest_path = contract_dir / "attestations.json"
+    is_exempt = False
+    if attest_path.exists():
+        attest = json.loads(attest_path.read_text(encoding="utf-8"))
+        exceptions = attest.get("complexity_exception", [])
+        if isinstance(exceptions, dict):
+            exceptions = [exceptions]
+        for exc in exceptions:
+            if exc.get("content_sha256") == h:
+                is_exempt = True
+                break
+
+    if is_exempt:
+        print(f"[complexity-gate] PASS en {os.path.basename(path)} "
+              f"(EXCEPCIÓN FIRMADA para hash {h[:8]}).", file=sys.stderr)
+        return 0
+
+    det = backend.extract_source(code_str, os.path.basename(path))
     crit = [f for f in det.get("findings", []) if f.get("severity") == "CRÍTICA"]
     high = [f for f in det.get("findings", []) if f.get("severity") == "ALTA"]
     if not crit:
@@ -77,8 +103,8 @@ def main():
     print("[complexity-gate] FAIL en " + os.path.basename(path) +
           " — gate determinista (umbrales firmados). Refactoriza antes de continuar:\n" +
           "\n".join(lines) +
-          "\nSugerencia: aplanar anidamiento (guard clauses), tabla de despacho para if/elif "
-          "largos, o extraer responsabilidades. Vuelve a guardar para re-validar.",
+          "\nSugerencia: aplanar anidamiento (guard clauses). Si esto es una exigencia "
+          "estricta de negocio, usa la tool 'request_human_attestation'.",
           file=sys.stderr)
     return 2
 

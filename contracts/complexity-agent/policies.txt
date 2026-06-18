@@ -25,3 +25,5 @@ P6 — No publiques secretos ni credenciales que encuentres en el código. Repor
 
 P7 — Si lint_results no está disponible o no pasó la validación de esquema, indicalo
      en el análisis y trabajá solo desde el código. No inventés métricas del linter.
+
+- GIT-BLINDNESS: El historial de Git es solo de lectura para contexto de intención; el estado funcional SOLO puede evaluarse leyendo el AST o el sistema de archivos actual (HEAD).

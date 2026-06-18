@@ -14,6 +14,15 @@ from pathlib import Path
 import yaml
 
 GLOBAL_MAX = {"cyclomatic_max": 20, "nesting_max": 4, "lines_max": 80, "params_max": 5}
+try:
+    _tpath = Path(__file__).parent.parent / "contracts" / "task-author-agent" / "thresholds.txt"
+    if _tpath.exists():
+        for _k in GLOBAL_MAX.keys():
+            _m = re.search(rf"{_k}\s*≤\s*(\d+)", _tpath.read_text(encoding="utf-8"))
+            if _m:
+                GLOBAL_MAX[_k] = int(_m.group(1))
+except Exception:
+    pass
 SECTIONS = ["## Intent", "## Interface", "## Invariants", "## Examples",
             "## Do / Don't", "## Tests", "## Constraints"]
 

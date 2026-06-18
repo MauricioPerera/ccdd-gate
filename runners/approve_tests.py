@@ -51,7 +51,8 @@ def main(argv=None):
     if not tests.exists():
         print(f"tests no existe: {fm['tests']}", file=sys.stderr)
         return 2
-    actual = hashlib.sha256(tests.read_bytes()).hexdigest()
+    import semantic_hash
+    actual = semantic_hash.get_semantic_hash(tests.read_text(encoding="utf-8"), tests.suffix)
     approved = fm.get("tests_sha256")
     if a.check:
         state = "FIRMADO-OK" if approved == actual else ("SIN-FIRMAR" if not approved else "DESINCRONIZADO")

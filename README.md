@@ -31,6 +31,9 @@ veredicto van en código que no se puede engañar.
 | `runners/metrics_backends.py` | Capa neutral compartida (umbrales + `severity` + `lint_results`) y registro `get_backend(language\|extension)` para backends por lenguaje | no |
 | `runners/metrics.py` | Backend Python: métricas de complejidad por AST (ciclomática, anidamiento, params, longitud) | no |
 | `runners/metrics_treesitter.py` | Backend universal vía tree-sitter (TS/TSX/JS) — **dep opcional**; sin ella, solo Python | no |
+| `runners/pre_complexity_runner.py` | Orquestador L3 para el contrato `pre-complexity-agent` | no |
+| `runners/pre_complexity_helpers.py` | Data-helpers para inyectar contexto de diseño y negocio | no |
+| `runners/complexity_runner.py` | Orquestador L3 para el contrato `complexity-agent` | no |
 | `runners/complexity_gate.py` | Gate determinista; CLI o hook PostToolUse de Claude Code | no |
 | `runners/tc_lint.py` | Linter del **task-contract** (anti-desvarío del autor) | no |
 | `runners/task_gate.py` | Veredicto unificado: tc_lint + complejidad≤budget + tests congelados + firma | no |
@@ -39,6 +42,8 @@ veredicto van en código que no se puede engañar.
 | `runners/test_audit.py` | Auditoría *advisory* de los tests contra el contrato | sí (advisory) |
 | `runners/measure.py` | Harness de medición: tokens/intentos/escalados, costo vs loop grande | no |
 | `runners/complexity_mcp.py` | Servidor MCP (stdio JSON-RPC) que expone el sustrato | no |
+| `runners/mcp_smoke.py` | Smoke test del MCP | no |
+| `runners/guardrails_lang.yaml` | Guardrails específicos por lenguaje | no |
 | `contracts/` | Rubrics firmados: `pre-complexity-agent`, `complexity-agent`, `task-author-agent` | — |
 
 ## Quickstart
@@ -75,10 +80,11 @@ Copiá `.mcp.json.example` a `.mcp.json`. Expone 4 tools (sin LLM):
 
 - `measure_complexity(code)` — métricas AST reales por función.
 - `complexity_rubric(agent)` — el criterio gobernado (system/policies/thresholds) firmado.
-- `scan_guardrails(code, language?, filename?)` — guardrails deterministas: secretos (texto-puro,
-  igual en todo lenguaje), anidamiento (estructural, vía el backend del lenguaje) y específicos por
-  lenguaje opt-in (`runners/guardrails_lang.yaml`, p. ej. `no-eval`). Sin `language`, Python.
-- `lint_task_contract(contract_text, test_code?)` — valida un task-contract antes de emitirlo.
+- `scan_guardrails(code, agent?, language?, filename?)` — guardrails deterministas: secretos (texto-puro,
+  igual en todo lenguaje), anidamiento (estructural, vía el backend del lenguaje), `dsv_check` (anti-alucinación por "drift", exige coincidencia exacta con HEAD local) y específicos por
+  lenguaje opt-in (`runners/guardrails_lang.yaml`, p. ej. `no-eval`). `agent` evalúa contra ese contrato. Sin `language`, Python.
+- `lint_task_contract(contract_text, test_code?)` - valida un task-contract (anti-desvarío del modelo grande).
+- `request_human_attestation(code, reason)` - permite al agente pedir una excepción firmada cuando no puede reducir la complejidad por reglas de negocio.
 
 ## El loop grande/pequeño
 
@@ -136,7 +142,7 @@ funciona en local. Usa `gh` CLI; tokens por entorno, nunca en el repo.
 - `ci_gate.py` + `.github/workflows/ccdd-gate.yml` — **GitHub Action**: en cada PR descubre los
   task-contracts afectados (el `.md` o su `target`), corre `tc_lint` + `task_gate` y **bloquea el
   merge** (exit 1) si el veredicto no pasa; publica el resumen como comentario idempotente vía el
-  Reporter. Sin LLM, sin secretos (usa el `GITHUB_TOKEN` del runner). **Copiable a un repo
+  Reporter. Sin LLM, sin secretos (usa el `GH_TOKEN` del runner). **Copiable a un repo
   consumidor**: copia `.github/workflows/ccdd-gate.yml` e `integrations/github/` (o vendoriza/instala
   ccdd-gate) y activa branch protection sobre el check `ccdd-gate`.
 - `scaffold.py` — genera el esqueleto de un task-contract desde un issue (`--issue owner/repo#N`
