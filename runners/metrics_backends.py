@@ -59,13 +59,15 @@ def build_findings(funcs, filename, tool, version, timestamp=None):
     Compartido por todos los backends: reporta una métrica solo si entra en AMBER. El orden
     de findings sigue `funcs` y `METRIC_KEYS` (determinista)."""
     out = {"tool": tool, "version": version, "timestamp": timestamp or _ts(), "findings": []}
+    if not funcs:
+        return out
     for f in funcs:
         for metric in METRIC_KEYS:
-            value = f[metric]
-            if value >= AMBER[metric]:
+            value = f.get(metric)
+            if value is not None and value >= AMBER[metric]:
                 out["findings"].append({
-                    "file": filename, "line": f["line"], "metric": metric,
-                    "value": value, "threshold": RED[metric], "function": f["function"],
+                    "file": filename, "line": f.get("line", 1), "metric": metric,
+                    "value": value, "threshold": RED[metric], "function": f.get("function", "unknown"),
                     "exceeds_threshold": value >= RED[metric],
                     "severity": severity(metric, value),
                 })
