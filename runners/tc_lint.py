@@ -197,6 +197,32 @@ def r_no_algorithm(ctx):
                  "msg": "parece describir el algoritmo paso a paso (define el QUÉ, no el CÓMO)"}]
     return []
 
+# formatos válidos de `issue`: owner/repo#N  |  URL de issue/pull de github.com
+_ISSUE_SHORT = re.compile(r"^[\w.-]+/[\w.-]+#\d+$")
+_ISSUE_URL = re.compile(r"^https://github\.com/[\w.-]+/[\w.-]+/(issues|pull)/\d+$")
+
+
+def valid_issue_ref(s):
+    """True si `s` es una referencia de issue válida (owner/repo#N o URL de github.com)."""
+    s = str(s).strip()
+    return bool(_ISSUE_SHORT.match(s) or _ISSUE_URL.match(s))
+
+
+def r_issue_ref(ctx):
+    """Vínculo contrato->issue (opt-in, back-compat): sin `issue` no rompe nada. Con `issue`,
+    valida el formato (error si inválido). Con `require_issue: true`, avisa si falta."""
+    fm = ctx["fm"]
+    issue = fm.get("issue")
+    if issue is None:
+        if fm.get("require_issue"):
+            return [{"level": "warn", "rule": "tc-issue-ref",
+                     "msg": "require_issue=true pero falta el campo 'issue' (owner/repo#N o URL)"}]
+        return []
+    if not valid_issue_ref(issue):
+        return [err("tc-issue-ref", f"formato de 'issue' inválido: {issue} "
+                    "(usa owner/repo#N o https://github.com/owner/repo/issues/N)")]
+    return []
+
 def r_deps(ctx):
     out = []
     if "deps_allowed" not in ctx["fm"]:
@@ -211,7 +237,7 @@ def err(rule, msg):
 
 
 RULES = [r_required, r_language, r_intent_atomic, r_signature, r_budget_sane, r_tests_frozen,
-         r_sections, r_stop_rule, r_no_algorithm, r_deps]
+         r_sections, r_stop_rule, r_no_algorithm, r_deps, r_issue_ref]
 
 
 def lint(path):
