@@ -126,9 +126,12 @@ def get_backend(language=None, extension=None, filename=None):
     _ensure_builtins()
     if language:
         return _BY_LANG[language]
+    import os
     ext = extension
-    if not ext and filename and "." in filename:
-        ext = "." + filename.rsplit(".", 1)[1]
+    if not ext and filename:
+        basename = os.path.basename(filename)
+        if "." in basename:
+            ext = "." + basename.rsplit(".", 1)[1]
     if ext:
         return _BY_EXT[ext.lower()]
     return _BY_LANG[DEFAULT_LANGUAGE]
