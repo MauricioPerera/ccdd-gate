@@ -107,7 +107,8 @@ def _parse_sig_generic(signature):
 
 def parse_sig(signature, language=None):
     """(nombre, aridad) de una firma. python usa el AST (preciso); el resto, aridad genérica."""
-    lang = (language or DEFAULT_LANGUAGE).lower()
+    lang = language if isinstance(language, str) else DEFAULT_LANGUAGE
+    lang = lang.lower()
     if lang in _NATIVE_SIG:
         return _parse_sig_python(signature)
     return _parse_sig_generic(signature)
