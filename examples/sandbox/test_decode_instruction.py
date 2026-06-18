@@ -9,6 +9,7 @@ Endurecido tras auditoría del modelo grande:
   - los 3 ejemplos input->output del contrato como casos fijos table-driven.
 """
 import random
+# Este es un comentario tonto para probar que el Hash Semántico ignora cambios cosméticos
 import unittest
 
 from disassembler import decode_instruction

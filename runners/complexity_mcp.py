@@ -84,6 +84,20 @@ TOOLS = [
             "test_code": {"type": "string", "description": "Código de los property-tests congelados (opcional pero "
                           "recomendado: sin él la regla tc-tests-frozen falla)."}}},
     },
+    {
+        "name": "request_human_attestation",
+        "description": "Herramienta que el agente invoca cuando choca de frente contra un umbral estructural (Complexity Gate) "
+                       "que NO puede ser simplificado por reglas de negocio. Esta herramienta calcula un Hash Semántico del "
+                       "código y emite una petición oficial de firma. Un arquitecto humano revisará el código y, si está "
+                       "de acuerdo, firmará la excepción con su clave Ed25519, desbloqueando el gate.",
+        "inputSchema": {"type": "object", "required": ["code", "reason"], "properties": {
+            "code": {"type": "string", "description": "El código fuente de la función o módulo problemático."},
+            "reason": {"type": "string", "description": "Justificación técnica clara de por qué este código NECESITA "
+                       "violar el umbral actual (ej. 'Requiere anidamiento nivel 5 por el switch case de negocio X')."},
+            "agent": {"type": "string", "enum": sorted(AGENTS), "description": "El agente contra el que corría (default complexity-agent)."},
+            "filename": {"type": "string", "description": "Nombre de archivo (opcional)."}
+        }},
+    },
 ]
 
 
@@ -194,10 +208,45 @@ def lint_task_contract(args):
             "tests_provided": "test_code" in args}
 
 
+def request_human_attestation(args):
+    code = args.get("code", "")
+    reason = args.get("reason", "")
+    agent = args.get("agent", DEFAULT_AGENT)
+    fname = args.get("filename", "snippet.py")
+    if not code or not reason:
+        return {"error": "Falta el código o la justificación (reason)."}
+
+    try:
+        import semantic_hash
+        ext = Path(fname).suffix or ".py"
+        h = semantic_hash.get_semantic_hash(code, ext)
+    except Exception as e:
+        import hashlib
+        h = hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+    out_dir = CONTRACTS / agent / "pending_attestations"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / f"{h}.json"
+
+    data = {
+        "hash": h,
+        "filename": fname,
+        "reason": reason,
+        "code": code
+    }
+    out_file.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    return {
+        "status": "Atestación solicitada",
+        "hash": h,
+        "message": f"Se ha registrado la petición oficial para el hash {h}. Avisa al arquitecto humano que debe revisar esta petición para desbloquear el gate."
+    }
+
 DISPATCH = {"measure_complexity": measure_complexity,
             "complexity_rubric": complexity_rubric,
             "scan_guardrails": scan_guardrails,
-            "lint_task_contract": lint_task_contract}
+            "lint_task_contract": lint_task_contract,
+            "request_human_attestation": request_human_attestation}
 
 
 def send(mid, result=None, error=None):
