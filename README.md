@@ -30,6 +30,7 @@ veredicto van en código que no se puede engañar.
 |---|---|---|
 | `runners/metrics_backends.py` | Capa neutral compartida (umbrales + `severity` + `lint_results`) y registro `get_backend(language\|extension)` para backends por lenguaje | no |
 | `runners/metrics.py` | Backend Python: métricas de complejidad por AST (ciclomática, anidamiento, params, longitud) | no |
+| `runners/metrics_treesitter.py` | Backend universal vía tree-sitter (TS/TSX/JS) — **dep opcional**; sin ella, solo Python | no |
 | `runners/complexity_gate.py` | Gate determinista; CLI o hook PostToolUse de Claude Code | no |
 | `runners/tc_lint.py` | Linter del **task-contract** (anti-desvarío del autor) | no |
 | `runners/task_gate.py` | Veredicto unificado: tc_lint + complejidad≤budget + tests congelados + firma | no |
@@ -114,10 +115,15 @@ Sin el campo, el comportamiento es idéntico al actual (Python).
 ## Conformancia multi-lenguaje
 
 `fixtures/conformance/` define un **oráculo congelado** de las 4 métricas (fixtures equivalentes
-por lenguaje + valores esperados). Todo backend debe reproducirlo: Python es el baseline y un
-backend nuevo (p. ej. el TS de #1) no se acepta hasta pasar `tests/test_conformance.py`. Las
-divergencias inevitables entre lenguajes se documentan explícitamente. Ver
+por lenguaje + valores esperados). Todo backend debe reproducirlo: Python es el baseline y el
+backend **TypeScript/JS** (tree-sitter) pasa la suite con métricas estructurales idénticas
+(`cyclomatic`/`nesting_depth`/`parameter_count`); solo `function_length` diverge por formato y se
+fija por-lenguaje. Un backend nuevo no se acepta hasta pasar `tests/test_conformance.py`. Ver
 [`fixtures/conformance/README.md`](fixtures/conformance/README.md).
+
+**Multi-lenguaje hoy:** Python nativo (sin deps) + TS/TSX/JS vía tree-sitter (dep opcional:
+`pip install tree_sitter tree_sitter_typescript`). El gate, el hook y `measure_complexity` miden
+`.ts`/`.js` igual que `.py` cuando la dep está instalada; si no, esos archivos son no-op anunciado.
 
 ## Benchmarks
 

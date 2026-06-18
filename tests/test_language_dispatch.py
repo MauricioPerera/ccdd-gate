@@ -64,16 +64,16 @@ class TestComplexityGateCLI(unittest.TestCase):
 
     def test_no_backend_extension_is_announced_noop(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "x.ts"
-            p.write_text("function nop() {}\n", encoding="utf-8")
+            p = Path(d) / "x.cobol"                            # extensión sin backend registrado
+            p.write_text("whatever\n", encoding="utf-8")
             r = run_gate(p)
         self.assertEqual(r.returncode, 0, r.stderr)            # no-op, no bloquea
         self.assertIn("sin backend", r.stderr)                 # anunciado, no silencioso
 
     def test_language_flag_forces_backend(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "x.ts"
-            p.write_text(CRIT_PY, encoding="utf-8")            # contenido python en archivo .ts
+            p = Path(d) / "x.cobol"
+            p.write_text(CRIT_PY, encoding="utf-8")            # contenido python en archivo .cobol
             r = run_gate(p, "--language", "python")
         self.assertEqual(r.returncode, 2, r.stderr)            # forzado a python -> mide -> CRÍTICA
 
@@ -120,8 +120,8 @@ class TestComplexityRunnerDispatch(unittest.TestCase):
 
     def test_build_inputs_no_backend_aborts(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "m.ts"
-            p.write_text("function f() {}\n", encoding="utf-8")
+            p = Path(d) / "m.cobol"                            # extensión sin backend registrado
+            p.write_text("whatever\n", encoding="utf-8")
             a = argparse.Namespace(input=str(p), language=None, repo_map=None, debt=None)
             with self.assertRaises(SystemExit) as cm:
                 complexity_runner.build_inputs(a)

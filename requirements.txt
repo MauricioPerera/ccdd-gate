@@ -10,3 +10,9 @@ cryptography>=42     # firmas Ed25519 de revisores (keygen/attest/quórum en dif
 # anthropic : solo para el backend `anthropic` de los runners advisory.
 #             Los backends ollama / openai-compatible (LM Studio, vLLM) usan urllib (stdlib).
 # anthropic>=0.40
+#
+# tree-sitter : backend UNIVERSAL de métricas para lenguajes no-Python (TS/JS/…, decisión #7).
+#               Dep OPCIONAL: sin ella, Python (backend nativo) sigue funcionando igual.
+#               Instalar para medir .ts/.tsx/.js:  pip install tree_sitter tree_sitter_typescript
+# tree_sitter>=0.23
+# tree_sitter_typescript>=0.23
