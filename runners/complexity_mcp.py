@@ -251,225 +251,291 @@ def request_human_attestation(args):
         "message": f"Se ha registrado la petición oficial para el hash {h}. Avisa al arquitecto humano que debe revisar esta petición para desbloquear el gate."
     }
 
-def extract_brace_block(source, signature):
-    idx = source.find(signature)
-    if idx == -1: return None, -1, -1
-    
-    if "{" in signature:
-        start_brace = idx + signature.rfind("{")
-    else:
-        start_brace = source.find("{", idx + len(signature))
-        
-    if start_brace == -1: return None, -1, -1
-    
-    open_braces = 0
-    in_string = False
-    string_char = None
-    escape = False
-    in_line_comment = False
-    in_block_comment = False
-    
-    i = start_brace
-    while i < len(source):
-        c = source[i]
-        
-        if in_line_comment:
-            if c == '\n':
-                in_line_comment = False
-            i += 1
-            continue
-            
-        if in_block_comment:
-            if c == '*' and i + 1 < len(source) and source[i+1] == '/':
-                in_block_comment = False
-                i += 2
-                continue
-            i += 1
-            continue
-            
-        if in_string:
-            if escape:
-                escape = False
-            elif c == '\\':
-                escape = True
-            elif c == string_char:
-                in_string = False
-            i += 1
-            continue
-            
-        if c == '/' and i + 1 < len(source):
-            if source[i+1] == '/':
-                in_line_comment = True
-                i += 2
-                continue
-            elif source[i+1] == '*':
-                in_block_comment = True
-                i += 2
-                continue
-                
-        if c in ["'", '"', '`']:
-            in_string = True
-            string_char = c
-            i += 1
-            continue
-            
-        if c == '{': 
-            open_braces += 1
-        elif c == '}':
-            open_braces -= 1
-            if open_braces == 0:
-                return source[idx:i+1], idx, i+1
-                
-        i += 1
-        
-    return None, -1, -1
+class _BraceScanner:
+    """Recorre `source` desde la llave de apertura hasta su cierre balanceado,
+    ignorando llaves dentro de strings y comentarios (// y /* */). Cada modo
+    (comentario de línea, comentario de bloque, string, código) tiene su propio
+    consumidor pequeño: mantiene la complejidad ciclomática de cada paso baja."""
 
-def run_ephemeral_agent(args):
-    import urllib.request
-    import subprocess
-    import json
-    import re
-    import socket
-    
+    def __init__(self, source, start):
+        self.src = source
+        self.i = start
+        self.depth = 0
+        self.string_char = None
+        self.escape = False
+        self.in_line_comment = False
+        self.in_block_comment = False
+
+    def _peek(self):
+        return self.src[self.i + 1] if self.i + 1 < len(self.src) else ""
+
+    def _consume_line_comment(self, c):
+        if c == "\n":
+            self.in_line_comment = False
+        self.i += 1
+
+    def _consume_block_comment(self, c):
+        if c == "*" and self._peek() == "/":
+            self.in_block_comment = False
+            self.i += 2
+        else:
+            self.i += 1
+
+    def _consume_string(self, c):
+        if self.escape:
+            self.escape = False
+        elif c == "\\":
+            self.escape = True
+        elif c == self.string_char:
+            self.string_char = None
+        self.i += 1
+
+    def _consume_code(self, c):
+        """Devuelve el índice de fin (exclusivo) si se cierra el bloque, si no None.
+        Guard clauses secuenciales (no if/elif) para mantener el anidamiento plano."""
+        nxt = self._peek()
+        if c == "/" and nxt == "/":
+            self.in_line_comment = True
+            self.i += 2
+            return None
+        if c == "/" and nxt == "*":
+            self.in_block_comment = True
+            self.i += 2
+            return None
+        if c in ("'", '"', "`"):
+            self.string_char = c
+            self.i += 1
+            return None
+        if c == "{":
+            self.depth += 1
+            self.i += 1
+            return None
+        if c == "}":
+            self.depth -= 1
+            self.i += 1
+            return self.i if self.depth == 0 else None
+        self.i += 1
+        return None
+
+    def _active_consumer(self):
+        """Selecciona el consumidor según el modo actual (sin anidar ramas)."""
+        if self.in_line_comment:
+            return self._consume_line_comment
+        if self.in_block_comment:
+            return self._consume_block_comment
+        if self.string_char is not None:
+            return self._consume_string
+        return self._consume_code
+
+    def find_end(self):
+        """Índice de fin (exclusivo) del bloque, o -1 si no balancea."""
+        while self.i < len(self.src):
+            end = self._active_consumer()(self.src[self.i])
+            if end is not None:
+                return end
+        return -1
+
+
+def _find_block_start(source, signature):
+    """(idx_firma, idx_llave_apertura). (-1, -1) si no se encuentra."""
+    idx = source.find(signature)
+    if idx == -1:
+        return -1, -1
+    if "{" in signature:
+        return idx, idx + signature.rfind("{")
+    return idx, source.find("{", idx + len(signature))
+
+
+def extract_brace_block(source, signature):
+    idx, start_brace = _find_block_start(source, signature)
+    if idx == -1 or start_brace == -1:
+        return None, -1, -1
+    end = _BraceScanner(source, start_brace).find_end()
+    if end == -1:
+        return None, -1, -1
+    return source[idx:end], idx, end
+
+def _prepare_ephemeral_task(args):
+    """Carga el task-contract y el target. Devuelve (ctx, None) o (None, error_dict)."""
     task_path = args.get("task_path")
-    model = args.get("model", "gemma-4-12b-coder")
-    api_url = args.get("api_url", "http://localhost:1234/v1")
-    
     tp = Path(task_path)
     if not tp.exists():
-        return {"status": "FAIL", "reason": f"Task file no encontrado: {task_path}"}
-        
+        return None, {"status": "FAIL", "reason": f"Task file no encontrado: {task_path}"}
     try:
         task_content = tp.read_text(encoding="utf-8")
-        fm, body = tc_lint.split_front_matter(task_content)
+        fm, _body = tc_lint.split_front_matter(task_content)
         target = tp.parent / fm["target"]
         if not target.exists():
-            return {"status": "FAIL", "reason": f"Target no encontrado: {target}"}
+            return None, {"status": "FAIL", "reason": f"Target no encontrado: {target}"}
         original_source = target.read_text(encoding="utf-8")
     except Exception as e:
-        return {"status": "FAIL", "reason": f"Error parseando: {e}"}
-        
-    signature = fm.get("signature", "")
-    target_block = None
-    start_idx = -1
-    end_idx = -1
-    
+        return None, {"status": "FAIL", "reason": f"Error parseando: {e}"}
+    return {
+        "tp": tp,
+        "model": args.get("model", "gemma-4-12b-coder"),
+        "api_url": args.get("api_url", "http://localhost:1234/v1"),
+        "task_content": task_content,
+        "target": target,
+        "original_source": original_source,
+        "signature": fm.get("signature", ""),
+    }, None
+
+
+def _build_ephemeral_prompts(ctx):
+    """Prompts iniciales + bloque a reemplazar. Devuelve (sys, user, block, start, end)."""
+    signature = ctx["signature"]
+    target = ctx["target"]
+    original_source = ctx["original_source"]
+    task_content = ctx["task_content"]
+
+    target_block, start_idx, end_idx = None, -1, -1
     # Intento de compactación (Tree-shaking estático vía firmas)
     if signature and target.suffix in [".js", ".ts", ".java", ".c", ".cpp", ".cs"]:
         target_block, start_idx, end_idx = extract_brace_block(original_source, signature)
-        
+
     if target_block:
         sys_prompt = "Eres un Small Executor experto en refactorización. Se te dará UNA FUNCIÓN aislada. Devuelve la función refactorizada completa y SI LO NECESITAS, incluye funciones auxiliares ANTES o DESPUÉS de la principal. REGLA CRÍTICA: DEBES MANTENER LA FIRMA DE LA FUNCIÓN ORIGINAL EXACTAMENTE INTACTA."
         user_prompt = f"### TASK CONTRACT:\n{task_content}\n\n### FIRMA ORIGINAL REQUERIDA:\n{signature}\n\n### FUNCIÓN AISLADA (Compactada):\n```\n{target_block}\n```"
     else:
         sys_prompt = "Eres un Small Executor experto en refactorización orientada a métricas de complejidad ciclomática."
         user_prompt = f"### TASK CONTRACT:\\n{task_content}\\n\\n### CODIGO FUENTE COMPLETO:\\n```\\n{original_source}\\n```\\n\\nDevuelve TODO el archivo refactorizado dentro de un bloque markdown de código (```)."
-        
+    return sys_prompt, user_prompt, target_block, start_idx, end_idx
+
+
+def _stream_completion(api_url, model, messages):
+    """Llama al LLM en streaming. Devuelve (partial_content, timed_out, error_dict)."""
+    import urllib.request
+    import socket
+
+    data = json.dumps({"model": model, "messages": messages, "temperature": 0.2,
+                       "max_tokens": 8000, "stream": True}).encode("utf-8")
+    req = urllib.request.Request(f"{api_url}/chat/completions", data=data,
+                                 headers={"Content-Type": "application/json"})
+    partial_content = ""
+    try:
+        with urllib.request.urlopen(req, timeout=300) as response:
+            for line in response:
+                if not line.startswith(b"data: "):
+                    continue
+                data_str = line[6:].decode("utf-8").strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    delta = json.loads(data_str)["choices"][0].get("delta", {})
+                except json.JSONDecodeError:
+                    continue
+                if "content" in delta:
+                    partial_content += delta["content"]
+    except socket.timeout:
+        return partial_content, True, None
+    except Exception as e:
+        return partial_content, False, {"reason": f"Error conectando al LLM: {e}"}
+    return partial_content, False, None
+
+
+def _extract_new_code(messages, partial_content):
+    """Une las continuaciones previas y extrae el bloque de código markdown."""
+    full_answer = "".join(m["content"] for m in messages if m["role"] == "assistant")
+    full_answer += partial_content
+    code_match = re.search(r"```[a-zA-Z]*\n(.*?)```", full_answer, re.DOTALL)
+    new_code = code_match.group(1).strip() if code_match else full_answer.strip()
+    return new_code, full_answer
+
+
+def _apply_new_code(target, new_code, target_block, original_source, start_idx, end_idx):
+    if target_block:
+        merged = original_source[:start_idx] + new_code + original_source[end_idx:]
+        target.write_text(merged, encoding="utf-8")
+    else:
+        target.write_text(new_code, encoding="utf-8")
+
+
+def _complexity_feedback(gate_json, signature):
+    """Feedback específico de gate2-complexity, o '' si no aplica."""
+    over_budget = gate_json.get("over_budget", [])
+    actual = limit = cyclo_delta = 0
+    for ob in over_budget:
+        if "cyclomatic=" in ob and "cyclomatic_max=" in ob:
+            parts = re.findall(r"\d+", ob)
+            if len(parts) >= 2:
+                actual, limit = int(parts[0]), int(parts[1])
+                cyclo_delta = actual - limit
+    if cyclo_delta <= 0:
+        return ""
+    return (
+        "[!] ÉXITO SINTÁCTICO: ¡Tu código superó las pruebas y es válido!\n\n"
+        f"[!] ALERTA MATEMÁTICA: Sin embargo, la complejidad ciclomática actual es {actual}, y el MÁXIMO ESTRICTO permitido es {limit}. ¡ESTÁS EXCEDIDO POR {cyclo_delta} PUNTOS!\n\n"
+        "[!] HEURÍSTICA OBLIGATORIA: Para reducir la complejidad drásticamente, NO intentes reescribir todo en la misma función con retornos tempranos. DEBES EXTRAER bloques lógicos (validaciones, iteraciones, branches complejos) a NUEVAS sub-funciones auxiliares privadas que sean llamadas desde la función principal. Escribe estas sub-funciones en el mismo bloque markdown.\n"
+        f"[!] REGLA CRÍTICA: La función principal DEBE mantener exactamente esta firma: `{signature}`. No la borres, no la renombres, y no la conviertas en arrow function si no lo era. MANTÉN LOS TESTS PASANDO.\n\n"
+    )
+
+
+def _build_feedback(output_str, signature):
+    """Construye el prompt de feedback cuantitativo a partir del output del gate."""
+    feedback = f"El validador matemático rechazó tu código. Output original:\n{output_str}\n\n"
+    try:
+        match = re.search(r'(\{.*"verdict":.*"FAIL".*\})', output_str, re.DOTALL)
+        if match:
+            gate_json = json.loads(match.group(1))
+            stage = gate_json.get("stage")
+            if stage == "gate2-complexity":
+                feedback += _complexity_feedback(gate_json, signature)
+            elif stage == "gate1-tests":
+                error_output = gate_json.get("output", "Error desconocido en los tests.")
+                feedback += f"[!] ALERTA SINTÁCTICA / TESTS: La ejecución del código falló. Revisa el siguiente error que lanzó el validador (puede ser un error de sintaxis o un test fallido):\n\n```\n{error_output}\n```\n\n"
+                feedback += "[!] INSTRUCCIÓN: Corrige EXACTAMENTE este error lógico o de sintaxis. Asegúrate de que el código sea Javascript/TypeScript válido y que cumpla la firma requerida.\n\n"
+    except Exception:
+        pass
+    feedback += "Por favor genera el código DESDE CERO aplicando estas correcciones. NO repitas el código roto."
+    return feedback
+
+
+def run_ephemeral_agent(args):
+    import subprocess
+
+    ctx, error = _prepare_ephemeral_task(args)
+    if error:
+        return error
+
+    sys_prompt, user_prompt, target_block, start_idx, end_idx = _build_ephemeral_prompts(ctx)
     messages = [
         {"role": "system", "content": sys_prompt},
-        {"role": "user", "content": user_prompt}
+        {"role": "user", "content": user_prompt},
     ]
-    
+
+    proc = None
     max_iterations = 3
+    gate_script = HERE / "task_gate.py"
     for i in range(max_iterations):
-        data = json.dumps({"model": model, "messages": messages, "temperature": 0.2, "max_tokens": 8000, "stream": True}).encode("utf-8")
-        req = urllib.request.Request(f"{api_url}/chat/completions", data=data, headers={"Content-Type": "application/json"})
-        
-        partial_content = ""
-        timed_out = False
-        try:
-            with urllib.request.urlopen(req, timeout=300) as response:
-                for line in response:
-                    if line.startswith(b"data: "):
-                        data_str = line[6:].decode("utf-8").strip()
-                        if data_str == "[DONE]": break
-                        try:
-                            chunk = json.loads(data_str)
-                            delta = chunk["choices"][0].get("delta", {})
-                            if "content" in delta:
-                                partial_content += delta["content"]
-                        except json.JSONDecodeError:
-                            pass
-        except socket.timeout:
-            timed_out = True
-        except Exception as e:
-            return {"status": "FAIL", "iteration": i+1, "reason": f"Error conectando al LLM: {e}"}
-            
+        partial_content, timed_out, error = _stream_completion(ctx["api_url"], ctx["model"], messages)
+        if error:
+            return {"status": "FAIL", "iteration": i + 1, **error}
+
         if timed_out and partial_content:
             messages.append({"role": "assistant", "content": partial_content})
             messages.append({"role": "user", "content": "Se alcanzó el timeout. Continúa generando el código EXACTAMENTE donde te quedaste (no repitas el inicio, solo escupe la continuación)."})
-            continue # Reintentar sin consumir el límite lógico del Gate si es posible, o consumiendo una iteración.
-            
-        # Unir si hubo continuación previa
-        full_answer = ""
-        for m in messages:
-            if m["role"] == "assistant":
-                full_answer += m["content"]
-        full_answer += partial_content
-        
-        print(f"\n=== LLM OUTPUT ITERATION {i+1} ===\n{full_answer}\n================================\n", file=sys.stderr)
-        
-        code_match = re.search(r"```[a-zA-Z]*\n(.*?)```", full_answer, re.DOTALL)
-        new_code = code_match.group(1).strip() if code_match else full_answer.strip()
-        
-        if target_block:
-            # Reensamblar el archivo original
-            merged_source = original_source[:start_idx] + new_code + original_source[end_idx:]
-            target.write_text(merged_source, encoding="utf-8")
-        else:
-            target.write_text(new_code, encoding="utf-8")
-            
-        # Ejecutar task_gate.py
-        gate_script = HERE / "task_gate.py"
-        proc = subprocess.run([sys.executable, str(gate_script), str(tp)], capture_output=True, text=True, encoding="utf-8", errors="replace")
-        
-        if proc.returncode == 0:
-            return {"status": "PASS", "iterations": i+1, "gate_output": proc.stdout}
-        else:
-            # Parsear el feedback cuantitativo
-            output_str = proc.stdout or proc.stderr
-            feedback_prompt = f"El validador matemático rechazó tu código. Output original:\n{output_str}\n\n"
-            
-            try:
-                # Tratar de encontrar el JSON dentro del output
-                match = re.search(r'(\{.*"verdict":.*"FAIL".*\})', output_str, re.DOTALL)
-                if match:
-                    gate_json = json.loads(match.group(1))
-                    stage = gate_json.get("stage")
-                    if stage == "gate2-complexity":
-                        over_budget = gate_json.get("over_budget", [])
-                        cyclo_delta = 0
-                        for ob in over_budget:
-                            if "cyclomatic=" in ob and "cyclomatic_max=" in ob:
-                                parts = re.findall(r'\d+', ob)
-                                if len(parts) >= 2:
-                                    actual = int(parts[0])
-                                    limit = int(parts[1])
-                                    cyclo_delta = actual - limit
-                                    
-                        if cyclo_delta > 0:
-                            feedback_prompt += f"[!] ÉXITO SINTÁCTICO: ¡Tu código superó las pruebas y es válido!\n\n"
-                            feedback_prompt += f"[!] ALERTA MATEMÁTICA: Sin embargo, la complejidad ciclomática actual es {actual}, y el MÁXIMO ESTRICTO permitido es {limit}. ¡ESTÁS EXCEDIDO POR {cyclo_delta} PUNTOS!\n\n"
-                            feedback_prompt += f"[!] HEURÍSTICA OBLIGATORIA: Para reducir la complejidad drásticamente, NO intentes reescribir todo en la misma función con retornos tempranos. DEBES EXTRAER bloques lógicos (validaciones, iteraciones, branches complejos) a NUEVAS sub-funciones auxiliares privadas que sean llamadas desde la función principal. Escribe estas sub-funciones en el mismo bloque markdown.\n"
-                            feedback_prompt += f"[!] REGLA CRÍTICA: La función principal DEBE mantener exactamente esta firma: `{signature}`. No la borres, no la renombres, y no la conviertas en arrow function si no lo era. MANTÉN LOS TESTS PASANDO.\n\n"
-                    elif stage == "gate1-tests":
-                        error_output = gate_json.get("output", "Error desconocido en los tests.")
-                        feedback_prompt += f"[!] ALERTA SINTÁCTICA / TESTS: La ejecución del código falló. Revisa el siguiente error que lanzó el validador (puede ser un error de sintaxis o un test fallido):\n\n```\n{error_output}\n```\n\n"
-                        feedback_prompt += f"[!] INSTRUCCIÓN: Corrige EXACTAMENTE este error lógico o de sintaxis. Asegúrate de que el código sea Javascript/TypeScript válido y que cumpla la firma requerida.\n\n"
-            except Exception:
-                pass
-                
-            feedback_prompt += "Por favor genera el código DESDE CERO aplicando estas correcciones. NO repitas el código roto."
+            continue  # consume una iteración del límite lógico del Gate
 
-            # Stateless feedback: no incluimos full_answer para que el LLM no se contamine con su propia basura
-            messages = [
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": user_prompt + "\n\n### FEEDBACK DEL INTENTO ANTERIOR:\n" + feedback_prompt}
-            ]
-            
+        new_code, full_answer = _extract_new_code(messages, partial_content)
+        print(f"\n=== LLM OUTPUT ITERATION {i+1} ===\n{full_answer}\n================================\n", file=sys.stderr)
+        _apply_new_code(ctx["target"], new_code, target_block, ctx["original_source"], start_idx, end_idx)
+
+        proc = subprocess.run([sys.executable, str(gate_script), str(ctx["tp"])],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if proc.returncode == 0:
+            return {"status": "PASS", "iterations": i + 1, "gate_output": proc.stdout}
+
+        feedback_prompt = _build_feedback(proc.stdout or proc.stderr, ctx["signature"])
+        # Stateless feedback: no incluimos full_answer para que el LLM no se contamine con su propia basura
+        messages = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": user_prompt + "\n\n### FEEDBACK DEL INTENTO ANTERIOR:\n" + feedback_prompt},
+        ]
+
     # Restaurar si falló
-    target.write_text(original_source, encoding="utf-8")
-    return {"status": "FAIL", "iterations": max_iterations, "reason": "Max iteraciones", "last_gate": proc.stdout or proc.stderr}
+    ctx["target"].write_text(ctx["original_source"], encoding="utf-8")
+    return {"status": "FAIL", "iterations": max_iterations, "reason": "Max iteraciones",
+            "last_gate": (proc.stdout or proc.stderr) if proc else ""}
 
 
 DISPATCH = {"measure_complexity": measure_complexity,

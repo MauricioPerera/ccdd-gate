@@ -376,43 +376,52 @@ def _check_json_schema(g, assembled, contract_dir):
     except FileNotFoundError:
         return False, f"schema_path no encontrado: {g['schema_path']}"
 
+def _read_line_at(fpath, line_num):
+    """Devuelve la línea `line_num` (1-indexada) strip-eada, o None si fuera de rango."""
+    with fpath.open(encoding="utf-8") as f:
+        for current_line_num, line in enumerate(f, 1):
+            if current_line_num == line_num:
+                return line.strip()
+    return None
+
+
+def _check_dsv_finding(idx, finding, contract_dir):
+    """Valida un único hallazgo contra HEAD. Devuelve (ok, detail)."""
+    file_prop = finding.get("file", "")
+    if not file_prop or ".." in Path(file_prop).parts or Path(file_prop).is_absolute():
+        return False, f"hallazgo {idx}: ruta de archivo inválida o fuera de límites"
+    fpath = contract_dir / file_prop
+    if not fpath.is_file():
+        return False, f"hallazgo {idx}: archivo no existe -> {finding.get('file')}"
+    line_num = int(finding.get("line", 0))
+    try:
+        actual_line = _read_line_at(fpath, line_num)
+    except Exception as e:
+        return False, f"error leyendo archivo {fpath.name}: {e}"
+    if actual_line is None:
+        return False, f"hallazgo {idx}: línea {line_num} fuera de rango en {fpath.name}"
+    expected = str(finding.get("snippet", "")).strip()
+    if expected not in actual_line:
+        return False, f"hallazgo {idx}: drift detectado. Esperado: '{expected}', Actual: '{actual_line}'"
+    return True, "ok"
+
+
 def _check_dsv(g, assembled, contract_dir):
     target = g.get("target_slot")
     try:
         data = json.loads(assembled.get(target, "[]"))
-        if not isinstance(data, list):
-            return False, f"slot '{target}' debe ser una lista JSON de hallazgos"
-        for idx, finding in enumerate(data):
-            file_prop = finding.get("file", "")
-            if not file_prop or ".." in Path(file_prop).parts or Path(file_prop).is_absolute():
-                return False, f"hallazgo {idx}: ruta de archivo inválida o fuera de límites"
-            fpath = contract_dir / file_prop
-            line_num = int(finding.get("line", 0))
-            snippet = str(finding.get("snippet", ""))
-            
-            if not fpath.is_file():
-                return False, f"hallazgo {idx}: archivo no existe -> {finding.get('file')}"
-                
-            actual_line = None
-            try:
-                with fpath.open(encoding="utf-8") as f:
-                    for current_line_num, line in enumerate(f, 1):
-                        if current_line_num == line_num:
-                            actual_line = line.strip()
-                            break
-            except Exception as e:
-                return False, f"error leyendo archivo {fpath.name}: {e}"
-                
-            if actual_line is None:
-                return False, f"hallazgo {idx}: línea {line_num} fuera de rango en {fpath.name}"
-            expected = snippet.strip()
-            if expected not in actual_line:
-                return False, f"hallazgo {idx}: drift detectado. Esperado: '{expected}', Actual: '{actual_line}'"
-        return True, f"slot '{target}': {len(data)} hallazgos coinciden exactamente con HEAD"
     except json.JSONDecodeError:
         return False, f"slot '{target}' no es JSON válido"
+    if not isinstance(data, list):
+        return False, f"slot '{target}' debe ser una lista JSON de hallazgos"
+    try:
+        for idx, finding in enumerate(data):
+            ok, detail = _check_dsv_finding(idx, finding, contract_dir)
+            if not ok:
+                return False, detail
     except Exception as e:
         return False, f"error evaluando dsv_check: {e}"
+    return True, f"slot '{target}': {len(data)} hallazgos coinciden exactamente con HEAD"
 
 def _run_guardrails(c, assembled, contract_dir):
     verdict = {"passed": True, "guardrails": []}
@@ -577,40 +586,90 @@ def check_r1_budget(base, head, state: DiffState):
         state.info(f"presupuesto disponible subió: {b_tok} -> {h_tok} tok")
 
 
+def _check_base_slot_regression(sid, bs, hs, state, is_crit):
+    """R2, R3, R8 y eliminaciones para un slot presente en la baseline."""
+    if hs is None:
+        if is_crit(bs):
+            state.fail(f"slot crítico '{sid}' eliminado")
+        else:
+            state.info(f"slot '{sid}' eliminado")
+        return
+    if not is_crit(bs):
+        return
+    if hs["priority"] > bs["priority"]:
+        state.fail(f"slot crítico '{sid}': prioridad degradada {bs['priority']} -> {hs['priority']}")
+    if not is_crit(hs):
+        state.fail(f"slot '{sid}' dejó de ser crítico: compaction {bs['compaction']} -> {hs['compaction']}")
+    if hs.get("min_tokens", 0) < bs.get("min_tokens", 0):
+        state.info(f"slot crítico '{sid}': min_tokens bajó {bs.get('min_tokens',0)} -> {hs.get('min_tokens',0)}")
+    if int(hs.get("review_quorum", 1)) < int(bs.get("review_quorum", 1)):
+        state.fail(f"slot crítico '{sid}': review_quorum bajó {bs.get('review_quorum', 1)} -> {hs.get('review_quorum', 1)}")
+
+
+def _check_head_slot_injection(sid, hs, bslots, base_max_crit, head_max_crit, state):
+    """R5 y nuevos slots: detecta ascenso de un dinámico a la zona crítica."""
+    if sid not in bslots:
+        state.info(f"slot nuevo '{sid}' (prioridad {hs['priority']}, {hs['source']['type']})")
+    if hs["source"]["type"] != "dynamic" or hs["priority"] > head_max_crit:
+        return
+    was_safe = sid not in bslots or bslots[sid]["priority"] > base_max_crit
+    if was_safe:
+        state.fail(f"slot dinámico '{sid}' (prioridad {hs['priority']}) asciende a la zona de "
+                   f"los críticos (<= {head_max_crit}): riesgo de prompt injection")
+
+
 def check_r2_r3_r5_r8_slots(base, head, state: DiffState):
     is_crit = lambda s: s.get("compaction") == "none"
     bslots = {s["id"]: s for s in base["slots"]}
     hslots = {s["id"]: s for s in head["slots"]}
 
-    # R2, R3, R8 y eliminaciones
     for sid, bs in bslots.items():
-        hs = hslots.get(sid)
-        if hs is None:
-            if is_crit(bs):
-                state.fail(f"slot crítico '{sid}' eliminado")
-            else:
-                state.info(f"slot '{sid}' eliminado")
-            continue
-        if is_crit(bs) and hs["priority"] > bs["priority"]:
-            state.fail(f"slot crítico '{sid}': prioridad degradada {bs['priority']} -> {hs['priority']}")
-        if is_crit(bs) and not is_crit(hs):
-            state.fail(f"slot '{sid}' dejó de ser crítico: compaction {bs['compaction']} -> {hs['compaction']}")
-        if is_crit(bs) and hs.get("min_tokens", 0) < bs.get("min_tokens", 0):
-            state.info(f"slot crítico '{sid}': min_tokens bajó {bs.get('min_tokens',0)} -> {hs.get('min_tokens',0)}")
-        if is_crit(bs) and int(hs.get("review_quorum", 1)) < int(bs.get("review_quorum", 1)):
-            state.fail(f"slot crítico '{sid}': review_quorum bajó {bs.get('review_quorum', 1)} -> {hs.get('review_quorum', 1)}")
+        _check_base_slot_regression(sid, bs, hslots.get(sid), state, is_crit)
 
-    # R5 y nuevos slots
     base_max_crit = max([s["priority"] for s in base["slots"] if is_crit(s)], default=-1)
     head_max_crit = max([s["priority"] for s in head["slots"] if is_crit(s)], default=-1)
     for sid, hs in hslots.items():
-        if sid not in bslots:
-            state.info(f"slot nuevo '{sid}' (prioridad {hs['priority']}, {hs['source']['type']})")
-        if hs["source"]["type"] == "dynamic" and hs["priority"] <= head_max_crit:
-            was_safe = sid not in bslots or bslots[sid]["priority"] > base_max_crit
-            if was_safe:
-                state.fail(f"slot dinámico '{sid}' (prioridad {hs['priority']}) asciende a la zona de "
-                           f"los críticos (<= {head_max_crit}): riesgo de prompt injection")
+        _check_head_slot_injection(sid, hs, bslots, base_max_crit, head_max_crit, state)
+
+
+def _emit_attestation_verdict(sid, nadd, nrem, entries, quorum, signers, state):
+    """R6: emite el veredicto según el quórum de firmas válidas."""
+    if len(signers) >= quorum:
+        state.info(f"slot crítico '{sid}': política modificada (+{nadd}/-{nrem} líneas), "
+                   f"ATESTADA por {', '.join(sorted(signers))} ({len(signers)}/{quorum})")
+    elif not entries:
+        state.fail(f"slot crítico '{sid}': contenido de política modificado sin atestación "
+                   f"(+{nadd}/-{nrem} líneas) — revisar (humano+modelo) y ejecutar: "
+                   f"ccdd attest <head> {sid} --reviewer <nombre> --key <privada>")
+    else:
+        state.fail(f"slot crítico '{sid}': atestación insuficiente "
+                   f"({len(signers)}/{quorum} firmas válidas de revisores registrados en la baseline)")
+
+
+def _check_r6_policy_attestation(sid, bs, hs, baseline_dir, head_dir, attest, registry, state, is_crit):
+    """R6: diff de contenido + atestación para críticos estáticos."""
+    if not (is_crit(hs) and hs["source"].get("type") == "static"):
+        return
+    hpath = head_dir / hs["source"]["path"]
+    if not hpath.exists():
+        return
+    htext = hpath.read_text(encoding="utf-8")
+    bpath = (baseline_dir / bs["source"]["path"]) if (bs and bs["source"].get("type") == "static") else None
+    btext = bpath.read_text(encoding="utf-8") if (bpath and bpath.exists()) else ""
+
+    from runners import semantic_hash
+    bhash = semantic_hash.get_semantic_hash(btext, hpath.suffix)
+    hhash = semantic_hash.get_semantic_hash(htext, hpath.suffix)
+    if bhash == hhash:
+        return
+
+    bset = {ln.strip() for ln in btext.splitlines() if ln.strip()}
+    hset = {ln.strip() for ln in htext.splitlines() if ln.strip()}
+    nrem, nadd = len(bset - hset), len(hset - bset)
+    entries = attest.get(sid)
+    quorum = int(hs.get("review_quorum", 1))
+    signers = valid_signers(entries, registry, sid, hhash)
+    _emit_attestation_verdict(sid, nadd, nrem, entries, quorum, signers, state)
 
 
 def check_r4_r6_attestations(base, head, baseline_dir: Path, head_dir: Path, attest: dict, registry: dict, state: DiffState):
@@ -623,41 +682,7 @@ def check_r4_r6_attestations(base, head, baseline_dir: Path, head_dir: Path, att
         # R4: pérdida de firma en estáticos
         if bs and bs["source"].get("sign") and not hs["source"].get("sign"):
             state.fail(f"slot '{sid}' perdió la firma (sign: true -> false)")
-
-        # R6: Diff de contenido + atestación para críticos estáticos
-        if not (is_crit(hs) and hs["source"].get("type") == "static"):
-            continue
-        hpath = head_dir / hs["source"]["path"]
-        if not hpath.exists():
-            continue
-        htext = hpath.read_text(encoding="utf-8")
-        
-        bpath = (baseline_dir / bs["source"]["path"]) if (bs and bs["source"].get("type") == "static") else None
-        btext = bpath.read_text(encoding="utf-8") if (bpath and bpath.exists()) else ""
-        
-        from runners import semantic_hash
-        bhash = semantic_hash.get_semantic_hash(btext, hpath.suffix)
-        hhash = semantic_hash.get_semantic_hash(htext, hpath.suffix)
-        if bhash == hhash:
-            continue
-        
-        bset = {ln.strip() for ln in btext.splitlines() if ln.strip()}
-        hset = {ln.strip() for ln in htext.splitlines() if ln.strip()}
-        nrem, nadd = len(bset - hset), len(hset - bset)
-        entries = attest.get(sid)
-        quorum = int(hs.get("review_quorum", 1))
-        signers = valid_signers(entries, registry, sid, hhash)
-        
-        if len(signers) >= quorum:
-            state.info(f"slot crítico '{sid}': política modificada (+{nadd}/-{nrem} líneas), "
-                       f"ATESTADA por {', '.join(sorted(signers))} ({len(signers)}/{quorum})")
-        elif not entries:
-            state.fail(f"slot crítico '{sid}': contenido de política modificado sin atestación "
-                       f"(+{nadd}/-{nrem} líneas) — revisar (humano+modelo) y ejecutar: "
-                       f"ccdd attest <head> {sid} --reviewer <nombre> --key <privada>")
-        else:
-            state.fail(f"slot crítico '{sid}': atestación insuficiente "
-                       f"({len(signers)}/{quorum} firmas válidas de revisores registrados en la baseline)")
+        _check_r6_policy_attestation(sid, bs, hs, baseline_dir, head_dir, attest, registry, state, is_crit)
 
 
 def check_r7_reviewers(baseline_dir: Path, head_dir: Path, attest: dict, registry: dict, state: DiffState):
