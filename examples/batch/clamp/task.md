@@ -7,6 +7,7 @@ budget: { cyclomatic_max: 4, nesting_max: 2, params_max: 3, lines_max: 12 }
 deps_allowed: []
 forbids: ["import", "estado global"]
 tests: test_clamp.py
+test_command: "python -m unittest test_clamp.py"
 require_test_approval: true
 spec_version: "0.1"
 tests_sha256: "57ef5e37f50d4725a3cf4bbc762cb973fe709cb5a8396e7b6a487f81c516eeac"

@@ -7,6 +7,7 @@ budget: { cyclomatic_max: 5, nesting_max: 2, params_max: 2, lines_max: 14 }
 deps_allowed: []
 forbids: ["import", "estado global"]
 tests: test_chunk.py
+test_command: "python -m unittest test_chunk.py"
 require_test_approval: true
 spec_version: "0.1"
 tests_sha256: "b54d89e6f8e9b4438d25cff657a85b3ce414a7d1d2527bda7f96519a62258154"

@@ -7,6 +7,7 @@ budget: { cyclomatic_max: 5, nesting_max: 2, params_max: 1, lines_max: 12 }
 deps_allowed: []
 forbids: ["import", "bin("]
 tests: test_popcount.py
+test_command: "python -m unittest test_popcount.py"
 require_test_approval: true
 spec_version: "0.1"
 tests_sha256: "697191cd53a22f8b577f7e495f188b1eb779fb2648be2711747701211bb1cbd1"
