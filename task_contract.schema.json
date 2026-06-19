@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MauricioPerera/ccdd-gate/task_contract.schema.json",
+  "title": "CCDD Task Contract front-matter",
+  "description": "Forma del front-matter YAML de un task-contract. tc_lint valida la FORMA contra este schema (capa 1) y aplica sus reglas semánticas aparte (capa 2). Fuente única de la forma; sirve también a editores (YAML LSP) y al scaffold.",
+  "type": "object",
+  "required": ["task", "intent", "target", "signature", "budget", "tests", "test_command"],
+  "properties": {
+    "task": { "type": "string", "minLength": 1, "description": "Id corto de la task (kebab-case)." },
+    "intent": { "type": "string", "minLength": 1, "description": "Qué hace la función, atómico (sin conectores 'y'/'and')." },
+    "target": { "type": "string", "minLength": 1, "description": "UN solo archivo objetivo (refactors multi-archivo = varios contratos)." },
+    "signature": { "type": "string", "minLength": 1, "description": "Firma de la función implementada." },
+    "budget": {
+      "type": "object",
+      "description": "Topes de complejidad de la función implementada.",
+      "properties": {
+        "cyclomatic_max": { "type": "integer", "minimum": 0 },
+        "nesting_max": { "type": "integer", "minimum": 0 },
+        "params_max": { "type": "integer", "minimum": 0 },
+        "lines_max": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "tests": { "type": "string", "minLength": 1, "description": "Ruta de los property-tests congelados." },
+    "test_command": { "type": "string", "minLength": 1, "description": "Comando determinista para correr los tests (ej. 'python -m pytest')." },
+    "language": { "type": "string", "minLength": 1, "description": "Lenguaje del backend de firma/métricas (default python)." },
+    "deps_allowed": { "type": "array", "description": "Dependencias permitidas (puede ser [])." },
+    "forbids": { "type": "array", "description": "Tokens/patrones prohibidos en el código." },
+    "depends_on": { "type": "array", "description": "Task-contracts de los que depende este." },
+    "require_test_approval": { "type": "boolean", "description": "Exige firma humana (tests_sha256) de los tests." },
+    "tests_sha256": { "type": "string", "description": "sha256 de los tests aprobados (gate de aprobación byte-exacto)." },
+    "issue": { "type": "string", "description": "Vínculo a issue: owner/repo#N o URL de github.com." },
+    "require_issue": { "type": "boolean", "description": "Si true, avisa cuando falta 'issue'." },
+    "spec_version": { "type": "string", "description": "Versión del formato de contrato." }
+  },
+  "additionalProperties": true
+}
