@@ -3,7 +3,8 @@
 
 Por cada task-contract:
   intento -> modelo pequeño escribe el target -> task_gate (DETERMINISTA) -> PASS/FAIL.
-  FAIL: se reinyecta el detalle del gate como feedback y se reintenta (hasta --max-attempts).
+  NUEVO (CEFL): Pide N candidatos en paralelo. Si alguno pasa, se queda con el de menor complejidad.
+  FAIL: se reinyecta el detalle de todos los candidatos como feedback combinado y se reintenta (hasta --max-attempts).
   Tras agotar intentos: ESCALATE (a un modelo mayor si se da --escalate-model, si no se marca).
 
 El gate decide, no el LLM. El modelo pequeño no puede "convencer" al gate: o la complejidad
@@ -15,6 +16,7 @@ secuencia de archivos .py pre-autorados — para demostrar la mecánica del loop
 Exit: 0 todos los tasks PASS · 1 algún task quedó FAIL/ESCALATE · 2 algún contrato INVALID.
 """
 import argparse
+import concurrent.futures
 import json
 import os
 import re
@@ -54,9 +56,9 @@ def build_prompt(fm, body, feedback):
             f"Budget: {json.dumps(fm['budget'], ensure_ascii=False)}\n"
             f"deps_allowed: {fm.get('deps_allowed', [])}\n\n")
     fb = ("" if not feedback else
-          "\n\n## Veredicto del intento previo (CORREGIR ESTO)\n```json\n"
+          "\n\n## Veredicto de los intentos previos (CORREGIR ESTO)\n```json\n"
           + json.dumps(feedback, ensure_ascii=False, indent=2) + "\n```\n"
-          "El gate es determinista: ajusta el código para pasarlo, no discutas el veredicto.")
+          "El gate es determinista: analiza los errores, ajusta el código para pasarlo, no discutas el veredicto.")
     return head + body + fb
 
 
@@ -71,67 +73,122 @@ def run_gate(task_path):
     return verdict
 
 
-def next_code(provider, model, prompt, stub_iter):
+def generate_candidate(provider, model, prompt, stub_iter, temp):
     """Una salida de 'modelo' dado el prompt ya construido. Stub consume la secuencia pre-autorada."""
     if provider == "stub":
         path = next(stub_iter, None)
         return Path(path).read_text(encoding="utf-8") if path else "# IMPOSIBLE: stub agotado\n"
-    return extract_code(call_llm(provider, model, SYSTEM, prompt))
+    # Llama a call_llm con la temperatura para asegurar variedad en la expansión CEFL
+    return extract_code(call_llm(provider, model, SYSTEM, prompt, temperature=temp))
 
 
-def run_rounds(p, fm, body, target, provider, model, n, label, attempts, feedback, stub_iter):
-    """n intentos de un mismo modelo: implementar -> gate -> reintentar con feedback.
-    Devuelve (passed: bool, feedback). Anexa cada intento a `attempts`."""
-    for _ in range(n):
+def get_complexity_score(verdict):
+    """Calcula un score simple de complejidad si el veredicto pasó (menor es mejor)."""
+    m = verdict.get("metrics", {})
+    return m.get("cyclomatic", 0) + m.get("nesting_depth", 0) + m.get("parameter_count", 0)
+
+
+def run_rounds(p, fm, body, target, provider, model, max_attempts, label, attempts, feedback, stub_iter, candidates_n, temp):
+    """max_attempts intentos. En cada intento, pide `candidates_n` soluciones en paralelo.
+    Si alguna pasa, elige la de menor complejidad (CEFL). Si ninguna pasa, retroalimenta los N fallos."""
+    for attempt_num in range(max_attempts):
         prompt = build_prompt(fm, body, feedback)
-        code = next_code(provider, model, prompt, stub_iter)
-        target.write_text(code, encoding="utf-8")
-        verdict = run_gate(p)
-        attempts.append({"n": len(attempts) + 1, "by": label,
-                         "verdict": verdict.get("verdict"), "stage": verdict.get("stage"),
-                         "in_tok": len(prompt) // 4, "out_tok": len(code) // 4})  # ~4 chars/token
-        if verdict.get("verdict") == "PASS":
-            return True, feedback
-        feedback = verdict
+        
+        # 1. CEFL: Generar N candidatos en paralelo
+        candidates_code = []
+        if provider == "stub" or candidates_n == 1:
+            for _ in range(candidates_n):
+                candidates_code.append(generate_candidate(provider, model, prompt, stub_iter, temp))
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=candidates_n) as executor:
+                futures = [executor.submit(generate_candidate, provider, model, prompt, stub_iter, temp) 
+                           for _ in range(candidates_n)]
+                for fut in concurrent.futures.as_completed(futures):
+                    candidates_code.append(fut.result())
+
+        # 2. Evaluar cada candidato aisladamente
+        evaluated = []
+        original_target_code = target.read_text(encoding="utf-8") if target.exists() else ""
+        
+        for idx, code in enumerate(candidates_code):
+            target.write_text(code, encoding="utf-8")
+            verdict = run_gate(p)
+            evaluated.append({"index": idx, "code": code, "verdict": verdict})
+            
+        # 3. Filtrar los que pasaron (PASS)
+        passed_candidates = [e for e in evaluated if e["verdict"].get("verdict") == "PASS"]
+        
+        # 4. Seleccionar ganador
+        if passed_candidates:
+            # Ordenar por el score de complejidad (CEFL freezing best)
+            passed_candidates.sort(key=lambda x: get_complexity_score(x["verdict"]))
+            best = passed_candidates[0]
+            
+            # Escribir el ganador final en target
+            target.write_text(best["code"], encoding="utf-8")
+            
+            attempts.append({"n": attempt_num + 1, "by": label,
+                             "verdict": "PASS", "stage": best["verdict"].get("stage"),
+                             "cefl_candidates": candidates_n,
+                             "in_tok": len(prompt) // 4, "out_tok": len(best["code"]) // 4})
+            return True, None
+            
+        # 5. Si ninguno pasó, restaurar código original y preparar feedback combinado masivo
+        target.write_text(original_target_code, encoding="utf-8")
+        
+        fail_feedback = {
+            "verdict": "FAIL_ALL_CANDIDATES",
+            "message": f"Se generaron {candidates_n} candidatos paralelos y TODOS fallaron. Analiza los errores y proporciona una solución unificada que corrija los defectos.",
+            "candidates_evaluations": []
+        }
+        for e in evaluated:
+            fail_feedback["candidates_evaluations"].append({
+                "candidate_code": e["code"],
+                "gate_error": e["verdict"]
+            })
+            
+        attempts.append({"n": attempt_num + 1, "by": label,
+                         "verdict": "FAIL", "stage": "all_candidates_failed",
+                         "cefl_candidates": candidates_n})
+        feedback = fail_feedback
+
     return False, feedback
 
 
 def implement(task_path, provider, model, max_attempts, escalate, esc_attempts, stub_iter,
-              on_result=None):
-    """Loop de un task: el pequeño intenta hasta max_attempts; si no pasa, escala al grande
-    que TAMBIÉN reintenta (esc_attempts) con el mismo feedback determinista.
-    `escalate` es (provider, model) del modelo grande, o None para sólo marcar ESCALATE.
-    `on_result` es un callback OPCIONAL (result_dict, task_path) -> ... para integraciones
-    externas (p.ej. ciclo de vida de un issue de GitHub). El loop en sí NO sabe de GitHub;
-    sin callback (default), corre igual en local."""
+              candidates_n=1, temp=0.7, on_result=None):
     p = Path(task_path)
-    result = _implement(p, provider, model, max_attempts, escalate, esc_attempts, stub_iter)
+    result = _implement(p, provider, model, max_attempts, escalate, esc_attempts, stub_iter, candidates_n, temp)
     if on_result is not None:
         on_result(result, str(p))
     return result
 
 
-def _implement(p, provider, model, max_attempts, escalate, esc_attempts, stub_iter):
+def _implement(p, provider, model, max_attempts, escalate, esc_attempts, stub_iter, candidates_n, temp):
     if any(f["level"] == "error" for f in tc_lint.lint(str(p))):
         return {"task": p.name, "result": "INVALID", "attempts": 0}
     fm, body = tc_lint.split_front_matter(p.read_text(encoding="utf-8"))
     target = p.parent / fm["target"]
     attempts = []
-    passed, feedback = run_rounds(p, fm, body, target, provider, model, max_attempts, provider, attempts, None, stub_iter)
+    
+    passed, feedback = run_rounds(p, fm, body, target, provider, model, max_attempts, provider, attempts, None, stub_iter, candidates_n, temp)
     if passed:
         return {"task": p.name, "result": "PASS", "attempts": attempts, "by": provider}
+        
     if not escalate:
         return {"task": p.name, "result": "ESCALATE", "attempts": attempts, "last_feedback": feedback}
+        
     e_provider, e_model = escalate
     label = f"escalate:{e_provider}:{e_model}"
-    passed, feedback = run_rounds(p, fm, body, target, e_provider, e_model, esc_attempts, label, attempts, feedback, stub_iter)
+    passed, feedback = run_rounds(p, fm, body, target, e_provider, e_model, esc_attempts, label, attempts, feedback, stub_iter, candidates_n, temp)
+    
     return {"task": p.name, "result": "PASS" if passed else "FAIL", "attempts": attempts,
             "by": label, **({} if passed else {"last_feedback": feedback})}
 
 
 def parse_args(argv):
     ap = argparse.ArgumentParser(prog="orchestrator",
-                                 description="Loop grande-planifica/pequeño-implementa, gateado determinista.")
+                                 description="Loop grande-planifica/pequeño-implementa, gateado determinista con CEFL paralelo.")
     ap.add_argument("tasks", nargs="+", help="uno o más task-contracts (.md)")
     ap.add_argument("--provider", default="ollama", choices=["anthropic", "ollama", "openai", "stub"])
     ap.add_argument("--model", default="kimi-k2.7-code:cloud")
@@ -140,6 +197,8 @@ def parse_args(argv):
     ap.add_argument("--escalate-provider", default="anthropic", choices=["anthropic", "ollama", "openai"],
                     help="provider del modelo de escalado")
     ap.add_argument("--escalate-attempts", type=int, default=2, help="reintentos del modelo grande tras escalar")
+    ap.add_argument("--candidates", type=int, default=3, help="Número de candidatos a generar en paralelo (estilo CEFL)")
+    ap.add_argument("--temperature", type=float, default=0.7, help="Temperatura para generar variaciones de código")
     ap.add_argument("--stub", action="append", default=[],
                     help="modo stub: ruta a un .py de salida simulada; repetir por intento (en orden)")
     return ap.parse_args(argv)
@@ -154,12 +213,15 @@ def main(argv=None):
     a = parse_args(argv if argv is not None else sys.argv[1:])
     stub_iter = iter(a.stub)
     escalate = (a.escalate_provider, a.escalate_model) if a.escalate_model else None
-    results = [implement(t, a.provider, a.model, a.max_attempts, escalate, a.escalate_attempts, stub_iter)
+    
+    results = [implement(t, a.provider, a.model, a.max_attempts, escalate, a.escalate_attempts, stub_iter, a.candidates, a.temperature)
                for t in a.tasks]
+               
     summary = {"total": len(results),
                "passed": sum(1 for r in results if r["result"] == "PASS"),
                "results": results}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    
     if any(r["result"] == "INVALID" for r in results):
         return 2
     return 0 if summary["passed"] == summary["total"] else 1

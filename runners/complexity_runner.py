@@ -57,11 +57,11 @@ def guardrail_onfail():
     return {g["id"]: g.get("on_fail") for g in c["contract"].get("guardrails", [])}
 
 
-def call_llm(provider, model, system, user):
+def call_llm(provider, model, system, user, temperature=0.0):
     if provider == "ollama":
         import urllib.request
         host = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
-        body = json.dumps({"model": model, "stream": False, "messages": [
+        body = json.dumps({"model": model, "stream": False, "options": {"temperature": temperature}, "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user}]}).encode("utf-8")
         req = urllib.request.Request(host + "/api/chat", data=body,
@@ -71,7 +71,7 @@ def call_llm(provider, model, system, user):
     if provider == "openai":  # OpenAI-compatible (LM Studio, vLLM, etc.)
         import urllib.request
         base = os.environ.get("OPENAI_BASE_URL", "http://localhost:1234/v1").rstrip("/")
-        body = json.dumps({"model": model, "stream": False, "temperature": 0.2, "messages": [
+        body = json.dumps({"model": model, "stream": False, "temperature": temperature, "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user}]}).encode("utf-8")
         req = urllib.request.Request(base + "/chat/completions", data=body, headers={
@@ -80,7 +80,7 @@ def call_llm(provider, model, system, user):
             return json.loads(resp.read().decode("utf-8"))["choices"][0]["message"]["content"]
     import anthropic
     client = anthropic.Anthropic()
-    msg = client.messages.create(model=model, max_tokens=MAX_OUTPUT_TOKENS,
+    msg = client.messages.create(model=model, max_tokens=MAX_OUTPUT_TOKENS, temperature=temperature,
                                  system=system, messages=[{"role": "user", "content": user}])
     return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
 
