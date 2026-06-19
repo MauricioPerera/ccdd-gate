@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ccdd-gate"
+version = "0.1.0"
+description = "Gate determinista de complejidad y task-contracts (CCDD), con servidor MCP. Sin LLM en el veredicto."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Mauricio Perera" }]
+keywords = ["complexity", "task-contract", "mcp", "gate", "ccdd", "determinista"]
+dependencies = [
+  "pyyaml>=6.0",       # front-matter de task-contracts y config
+  "jsonschema>=4.0",   # validación de forma (task_contract.schema.json / ccdd_context.schema.json)
+  "cryptography>=42",  # firmas Ed25519 de revisores (gate L2 de gobernanza)
+]
+
+[project.urls]
+Homepage = "https://github.com/MauricioPerera/ccdd-gate"
+Issues = "https://github.com/MauricioPerera/ccdd-gate/issues"
+
+# Console scripts: registrar el MCP con {"command": "ccdd-mcp"} — sin clonar, sin cwd, sin rutas
+# absolutas machine-specific en .mcp.json. Los runners siguen ejecutables desde el repo.
+[project.scripts]
+ccdd-mcp = "runners.complexity_mcp:main"
+ccdd-lint = "runners.tc_lint:main"
+ccdd-gate = "runners.task_gate:main"
+ccdd-measure = "runners.measure:main"
+
+[tool.setuptools]
+packages = ["runners"]
+
+[tool.setuptools.package-data]
+runners = ["guardrails_lang.yaml"]
