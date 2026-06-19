@@ -20,6 +20,8 @@ import concurrent.futures
 import json
 import os
 import re
+import secrets
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -48,18 +50,21 @@ def extract_code(text):
     return (blocks[-1] if blocks else (text or "")).strip() + "\n"
 
 
-def build_prompt(fm, body, feedback):
+def build_prompt(fm, body, feedback, nonce):
     """Prompt prescriptivo desde el contrato + el feedback determinista del gate (si lo hubo)."""
     head = (f"# Task: {fm.get('task')}\n"
             f"Target: {fm['target']}\n"
             f"Firma: {fm['signature']}\n"
             f"Budget: {json.dumps(fm['budget'], ensure_ascii=False)}\n"
             f"deps_allowed: {fm.get('deps_allowed', [])}\n\n")
+    e3_entropy = (f"\n\n## E3 Entropy\n"
+                  f"Es OBLIGATORIO que incluyas exactamente esta línea como comentario al final de tu código:\n"
+                  f"# E3_NONCE: {nonce}\n")
     fb = ("" if not feedback else
           "\n\n## Veredicto de los intentos previos (CORREGIR ESTO)\n```json\n"
           + json.dumps(feedback, ensure_ascii=False, indent=2) + "\n```\n"
           "El gate es determinista: analiza los errores, ajusta el código para pasarlo, no discutas el veredicto.")
-    return head + body + fb
+    return head + body + e3_entropy + fb
 
 
 def run_gate(task_path):
@@ -92,7 +97,10 @@ def run_rounds(p, fm, body, target, provider, model, max_attempts, label, attemp
     """max_attempts intentos. En cada intento, pide `candidates_n` soluciones en paralelo.
     Si alguna pasa, elige la de menor complejidad (CEFL). Si ninguna pasa, retroalimenta los N fallos."""
     for attempt_num in range(max_attempts):
-        prompt = build_prompt(fm, body, feedback)
+        nonce = secrets.token_hex(16)
+        nonce_hash = hashlib.sha256(nonce.encode()).hexdigest()
+        print(f"[E3 Entropy] Generando commit para intento {attempt_num+1}: SHA256={nonce_hash[:16]}...")
+        prompt = build_prompt(fm, body, feedback, nonce)
         
         # 1. CEFL: Generar N candidatos en paralelo
         candidates_code = []
@@ -113,6 +121,16 @@ def run_rounds(p, fm, body, target, provider, model, max_attempts, label, attemp
         for idx, code in enumerate(candidates_code):
             target.write_text(code, encoding="utf-8")
             verdict = run_gate(p)
+            
+            # Gate 3: E3 Entropy Reveal
+            if verdict.get("verdict") == "PASS":
+                if f"# E3_NONCE: {nonce}" not in code:
+                    verdict = {
+                        "verdict": "FAIL", 
+                        "stage": "gate3-entropy", 
+                        "detail": f"El código falló la auditoría criptográfica E3. Olvidaste incluir '# E3_NONCE: {nonce}'"
+                    }
+                    
             evaluated.append({"index": idx, "code": code, "verdict": verdict})
             
         # 3. Filtrar los que pasaron (PASS)
@@ -130,7 +148,8 @@ def run_rounds(p, fm, body, target, provider, model, max_attempts, label, attemp
             attempts.append({"n": attempt_num + 1, "by": label,
                              "verdict": "PASS", "stage": best["verdict"].get("stage"),
                              "cefl_candidates": candidates_n,
-                             "in_tok": len(prompt) // 4, "out_tok": len(best["code"]) // 4})
+                             "in_tok": len(prompt) // 4, "out_tok": len(best["code"]) // 4,
+                             "e3_hash": nonce_hash})
             return True, None
             
         # 5. Si ninguno pasó, restaurar código original y preparar feedback combinado masivo

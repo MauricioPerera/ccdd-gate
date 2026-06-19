@@ -71,13 +71,26 @@ def call_llm(provider, model, system, user, temperature=0.0):
     if provider == "openai":  # OpenAI-compatible (LM Studio, vLLM, etc.)
         import urllib.request
         base = os.environ.get("OPENAI_BASE_URL", "http://localhost:1234/v1").rstrip("/")
-        body = json.dumps({"model": model, "stream": False, "temperature": temperature, "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user}]}).encode("utf-8")
+        
+        # Gemma models strict chat templates reject "system" roles.
+        # We merge system into the first user message if 'gemma' is in the model name.
+        if "gemma" in model.lower():
+            messages = [{"role": "user", "content": system + "\n\n" + user}]
+        else:
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user}
+            ]
+            
+        body = json.dumps({"model": model, "stream": False, "temperature": temperature, "messages": messages}).encode("utf-8")
         req = urllib.request.Request(base + "/chat/completions", data=body, headers={
             "Content-Type": "application/json", "Authorization": "Bearer local"})
-        with urllib.request.urlopen(req, timeout=900) as resp:
-            return json.loads(resp.read().decode("utf-8"))["choices"][0]["message"]["content"]
+        try:
+            with urllib.request.urlopen(req, timeout=900) as resp:
+                return json.loads(resp.read().decode("utf-8"))["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode('utf-8')
+            raise RuntimeError(f"HTTP Error {e.code}: {error_body}")
     import anthropic
     client = anthropic.Anthropic()
     msg = client.messages.create(model=model, max_tokens=MAX_OUTPUT_TOKENS, temperature=temperature,

@@ -3,7 +3,7 @@ task: decode-gb-instruction
 intent: "Decodificar una instrucción SM83 en una posición de la ROM."
 target: disassembler.py
 signature: "def decode_instruction(rom: bytes, pc: int) -> tuple[str, str, int]"
-test_command: "python -m unittest examples/sandbox/test_decode_instruction.py"
+test_command: "python -m unittest test_decode_instruction.py"
 budget: { cyclomatic_max: 8, nesting_max: 2, params_max: 2, lines_max: 20 }
 deps_allowed: []
 forbids: ["bucle while", "estado global", "print"]

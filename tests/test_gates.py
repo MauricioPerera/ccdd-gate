@@ -88,7 +88,7 @@ class TestTaskGate(unittest.TestCase):
         finally:
             shutil.rmtree(p.parent, ignore_errors=True)
         self.assertEqual(v["verdict"], "FAIL")
-        self.assertEqual(v["stage"], "gate1-complexity")
+        self.assertEqual(v["stage"], "gate2-complexity")
 
     def test_fail_gate2_broken_impl(self):
         p = _variant(impl_text=BAD_IMPL)
@@ -97,7 +97,7 @@ class TestTaskGate(unittest.TestCase):
         finally:
             shutil.rmtree(p.parent, ignore_errors=True)
         self.assertEqual(v["verdict"], "FAIL")
-        self.assertEqual(v["stage"], "gate2-tests")
+        self.assertEqual(v["stage"], "gate1-tests")
 
     def test_invalid_unapproved_tests(self):
         p = _variant(budget_repl=("spec_version:", "require_test_approval: true\nspec_version:"))

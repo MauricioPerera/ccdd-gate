@@ -24,6 +24,7 @@ budget: { cyclomatic_max: 8, nesting_max: 2, params_max: 2, lines_max: 20 }
 deps_allowed: []
 forbids: ["while", "estado global"]
 tests: decode.test.ts
+test_command: npx jest
 language: typescript
 spec_version: "0.1"
 ---
