@@ -98,6 +98,15 @@ TOOLS = [
             "filename": {"type": "string", "description": "Nombre de archivo (opcional)."}
         }},
     },
+    {
+        "name": "run_ephemeral_agent",
+        "description": "Delega un Task Contract a un LLM local (Small Executor). Lee el contrato, envía el código al LLM, y entra en un bucle de reflexión (max 3 veces) validando con task_gate.py hasta que el código pase el gate determinista. Retorna el resultado final y el número de intentos.",
+        "inputSchema": {"type": "object", "required": ["task_path"], "properties": {
+            "task_path": {"type": "string", "description": "Ruta relativa o absoluta al archivo del Task Contract (.md)."},
+            "model": {"type": "string", "description": "Nombre del modelo a usar (default: gemma-4-12b-coder)."},
+            "api_url": {"type": "string", "description": "URL base de la API OpenAI-compatible (default: http://localhost:1234/v1)."}
+        }},
+    },
 ]
 
 
@@ -242,11 +251,318 @@ def request_human_attestation(args):
         "message": f"Se ha registrado la petición oficial para el hash {h}. Avisa al arquitecto humano que debe revisar esta petición para desbloquear el gate."
     }
 
+class _BraceScanner:
+    """Recorre `source` desde la llave de apertura hasta su cierre balanceado,
+    ignorando llaves dentro de strings y comentarios (// y /* */). Cada modo
+    (comentario de línea, comentario de bloque, string, código) tiene su propio
+    consumidor pequeño: mantiene la complejidad ciclomática de cada paso baja."""
+
+    def __init__(self, source, start):
+        self.src = source
+        self.i = start
+        self.depth = 0
+        self.string_char = None
+        self.escape = False
+        self.in_line_comment = False
+        self.in_block_comment = False
+
+    def _peek(self):
+        return self.src[self.i + 1] if self.i + 1 < len(self.src) else ""
+
+    def _consume_line_comment(self, c):
+        if c == "\n":
+            self.in_line_comment = False
+        self.i += 1
+
+    def _consume_block_comment(self, c):
+        if c == "*" and self._peek() == "/":
+            self.in_block_comment = False
+            self.i += 2
+        else:
+            self.i += 1
+
+    def _consume_string(self, c):
+        if self.escape:
+            self.escape = False
+        elif c == "\\":
+            self.escape = True
+        elif c == self.string_char:
+            self.string_char = None
+        self.i += 1
+
+    def _consume_code(self, c):
+        """Devuelve el índice de fin (exclusivo) si se cierra el bloque, si no None.
+        Guard clauses secuenciales (no if/elif) para mantener el anidamiento plano."""
+        nxt = self._peek()
+        if c == "/" and nxt == "/":
+            self.in_line_comment = True
+            self.i += 2
+            return None
+        if c == "/" and nxt == "*":
+            self.in_block_comment = True
+            self.i += 2
+            return None
+        if c in ("'", '"', "`"):
+            self.string_char = c
+            self.i += 1
+            return None
+        if c == "{":
+            self.depth += 1
+            self.i += 1
+            return None
+        if c == "}":
+            self.depth -= 1
+            self.i += 1
+            return self.i if self.depth == 0 else None
+        self.i += 1
+        return None
+
+    def _active_consumer(self):
+        """Selecciona el consumidor según el modo actual (sin anidar ramas)."""
+        if self.in_line_comment:
+            return self._consume_line_comment
+        if self.in_block_comment:
+            return self._consume_block_comment
+        if self.string_char is not None:
+            return self._consume_string
+        return self._consume_code
+
+    def find_end(self):
+        """Índice de fin (exclusivo) del bloque, o -1 si no balancea."""
+        while self.i < len(self.src):
+            end = self._active_consumer()(self.src[self.i])
+            if end is not None:
+                return end
+        return -1
+
+
+def _find_block_start(source, signature):
+    """(idx_firma, idx_llave_apertura). (-1, -1) si no se encuentra."""
+    idx = source.find(signature)
+    if idx == -1:
+        return -1, -1
+    if "{" in signature:
+        return idx, idx + signature.rfind("{")
+    return idx, source.find("{", idx + len(signature))
+
+
+def extract_brace_block(source, signature):
+    idx, start_brace = _find_block_start(source, signature)
+    if idx == -1 or start_brace == -1:
+        return None, -1, -1
+    end = _BraceScanner(source, start_brace).find_end()
+    if end == -1:
+        return None, -1, -1
+    return source[idx:end], idx, end
+
+def _prepare_ephemeral_task(args):
+    """Carga el task-contract y el target. Devuelve (ctx, None) o (None, error_dict)."""
+    task_path = args.get("task_path")
+    tp = Path(task_path)
+    if not tp.exists():
+        return None, {"status": "FAIL", "reason": f"Task file no encontrado: {task_path}"}
+    try:
+        task_content = tp.read_text(encoding="utf-8")
+        fm, _body = tc_lint.split_front_matter(task_content)
+        target = tp.parent / fm["target"]
+        if not target.exists():
+            return None, {"status": "FAIL", "reason": f"Target no encontrado: {target}"}
+        original_source = target.read_text(encoding="utf-8")
+    except Exception as e:
+        return None, {"status": "FAIL", "reason": f"Error parseando: {e}"}
+    return {
+        "tp": tp,
+        "model": args.get("model", "gemma-4-12b-coder"),
+        "api_url": args.get("api_url", "http://localhost:1234/v1"),
+        "task_content": task_content,
+        "target": target,
+        "original_source": original_source,
+        "signature": fm.get("signature", ""),
+    }, None
+
+
+def _build_ephemeral_prompts(ctx):
+    """Prompts iniciales + bloque a reemplazar. Devuelve (sys, user, block, start, end)."""
+    signature = ctx["signature"]
+    target = ctx["target"]
+    original_source = ctx["original_source"]
+    task_content = ctx["task_content"]
+
+    target_block, start_idx, end_idx = None, -1, -1
+    # Intento de compactación (Tree-shaking estático vía firmas)
+    if signature and target.suffix in [".js", ".ts", ".java", ".c", ".cpp", ".cs"]:
+        target_block, start_idx, end_idx = extract_brace_block(original_source, signature)
+
+    if target_block:
+        sys_prompt = "Eres un Small Executor experto en refactorización. Se te dará UNA FUNCIÓN aislada. Devuelve la función refactorizada completa y SI LO NECESITAS, incluye funciones auxiliares ANTES o DESPUÉS de la principal. REGLA CRÍTICA: DEBES MANTENER LA FIRMA DE LA FUNCIÓN ORIGINAL EXACTAMENTE INTACTA."
+        user_prompt = f"### TASK CONTRACT:\n{task_content}\n\n### FIRMA ORIGINAL REQUERIDA:\n{signature}\n\n### FUNCIÓN AISLADA (Compactada):\n```\n{target_block}\n```"
+    else:
+        sys_prompt = "Eres un Small Executor experto en refactorización orientada a métricas de complejidad ciclomática."
+        user_prompt = f"### TASK CONTRACT:\\n{task_content}\\n\\n### CODIGO FUENTE COMPLETO:\\n```\\n{original_source}\\n```\\n\\nDevuelve TODO el archivo refactorizado dentro de un bloque markdown de código (```)."
+    return sys_prompt, user_prompt, target_block, start_idx, end_idx
+
+
+def _sse_delta_content(data_str):
+    """Extrae delta.content de una línea SSE de chat completions ('' si no aplica)."""
+    try:
+        delta = json.loads(data_str)["choices"][0].get("delta", {})
+    except json.JSONDecodeError:
+        return ""
+    return delta.get("content", "")
+
+
+def _read_sse_content(response):
+    """Acumula el content del stream SSE hasta [DONE]. Devuelve (content, timed_out)."""
+    import socket
+    content = ""
+    try:
+        for line in response:
+            if not line.startswith(b"data: "):
+                continue
+            data_str = line[6:].decode("utf-8").strip()
+            if data_str == "[DONE]":
+                break
+            content += _sse_delta_content(data_str)
+    except socket.timeout:
+        return content, True
+    return content, False
+
+
+def _stream_completion(api_url, model, messages):
+    """Llama al LLM en streaming. Devuelve (partial_content, timed_out, error_dict)."""
+    import urllib.request
+    import socket
+
+    data = json.dumps({"model": model, "messages": messages, "temperature": 0.2,
+                       "max_tokens": 8000, "stream": True}).encode("utf-8")
+    req = urllib.request.Request(f"{api_url}/chat/completions", data=data,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=300) as response:
+            content, timed_out = _read_sse_content(response)
+            return content, timed_out, None
+    except socket.timeout:
+        return "", True, None
+    except Exception as e:
+        return "", False, {"reason": f"Error conectando al LLM: {e}"}
+
+
+def _extract_new_code(messages, partial_content):
+    """Une las continuaciones previas y extrae el bloque de código markdown."""
+    full_answer = "".join(m["content"] for m in messages if m["role"] == "assistant")
+    full_answer += partial_content
+    code_match = re.search(r"```[a-zA-Z]*\n(.*?)```", full_answer, re.DOTALL)
+    new_code = code_match.group(1).strip() if code_match else full_answer.strip()
+    return new_code, full_answer
+
+
+def _apply_new_code(target, new_code, target_block, original_source, start_idx, end_idx):
+    if target_block:
+        merged = original_source[:start_idx] + new_code + original_source[end_idx:]
+        target.write_text(merged, encoding="utf-8")
+    else:
+        target.write_text(new_code, encoding="utf-8")
+
+
+def _complexity_feedback(gate_json, signature):
+    """Feedback específico de gate2-complexity, o '' si no aplica."""
+    over_budget = gate_json.get("over_budget", [])
+    actual = limit = cyclo_delta = 0
+    for ob in over_budget:
+        if "cyclomatic=" in ob and "cyclomatic_max=" in ob:
+            parts = re.findall(r"\d+", ob)
+            if len(parts) >= 2:
+                actual, limit = int(parts[0]), int(parts[1])
+                cyclo_delta = actual - limit
+    if cyclo_delta <= 0:
+        return ""
+    return (
+        "[!] ÉXITO SINTÁCTICO: ¡Tu código superó las pruebas y es válido!\n\n"
+        f"[!] ALERTA MATEMÁTICA: Sin embargo, la complejidad ciclomática actual es {actual}, y el MÁXIMO ESTRICTO permitido es {limit}. ¡ESTÁS EXCEDIDO POR {cyclo_delta} PUNTOS!\n\n"
+        "[!] HEURÍSTICA OBLIGATORIA: Para reducir la complejidad drásticamente, NO intentes reescribir todo en la misma función con retornos tempranos. DEBES EXTRAER bloques lógicos (validaciones, iteraciones, branches complejos) a NUEVAS sub-funciones auxiliares privadas que sean llamadas desde la función principal. Escribe estas sub-funciones en el mismo bloque markdown.\n"
+        f"[!] REGLA CRÍTICA: La función principal DEBE mantener exactamente esta firma: `{signature}`. No la borres, no la renombres, y no la conviertas en arrow function si no lo era. MANTÉN LOS TESTS PASANDO.\n\n"
+    )
+
+
+def _stage_feedback(gate_json, signature):
+    """Feedback específico según la etapa del gate que falló."""
+    stage = gate_json.get("stage")
+    if stage == "gate2-complexity":
+        return _complexity_feedback(gate_json, signature)
+    if stage == "gate1-tests":
+        error_output = gate_json.get("output", "Error desconocido en los tests.")
+        return (f"[!] ALERTA SINTÁCTICA / TESTS: La ejecución del código falló. Revisa el siguiente error que lanzó el validador (puede ser un error de sintaxis o un test fallido):\n\n```\n{error_output}\n```\n\n"
+                "[!] INSTRUCCIÓN: Corrige EXACTAMENTE este error lógico o de sintaxis. Asegúrate de que el código sea Javascript/TypeScript válido y que cumpla la firma requerida.\n\n")
+    return ""
+
+
+def _build_feedback(output_str, signature):
+    """Construye el prompt de feedback cuantitativo a partir del output del gate."""
+    feedback = f"El validador matemático rechazó tu código. Output original:\n{output_str}\n\n"
+    try:
+        match = re.search(r'(\{.*"verdict":.*"FAIL".*\})', output_str, re.DOTALL)
+        if match:
+            feedback += _stage_feedback(json.loads(match.group(1)), signature)
+    except Exception:
+        pass
+    feedback += "Por favor genera el código DESDE CERO aplicando estas correcciones. NO repitas el código roto."
+    return feedback
+
+
+def run_ephemeral_agent(args):
+    import subprocess
+
+    ctx, error = _prepare_ephemeral_task(args)
+    if error:
+        return error
+
+    sys_prompt, user_prompt, target_block, start_idx, end_idx = _build_ephemeral_prompts(ctx)
+    messages = [
+        {"role": "system", "content": sys_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    proc = None
+    max_iterations = 3
+    gate_script = HERE / "task_gate.py"
+    for i in range(max_iterations):
+        partial_content, timed_out, error = _stream_completion(ctx["api_url"], ctx["model"], messages)
+        if error:
+            return {"status": "FAIL", "iteration": i + 1, **error}
+
+        if timed_out and partial_content:
+            messages.append({"role": "assistant", "content": partial_content})
+            messages.append({"role": "user", "content": "Se alcanzó el timeout. Continúa generando el código EXACTAMENTE donde te quedaste (no repitas el inicio, solo escupe la continuación)."})
+            continue  # consume una iteración del límite lógico del Gate
+
+        new_code, full_answer = _extract_new_code(messages, partial_content)
+        print(f"\n=== LLM OUTPUT ITERATION {i+1} ===\n{full_answer}\n================================\n", file=sys.stderr)
+        _apply_new_code(ctx["target"], new_code, target_block, ctx["original_source"], start_idx, end_idx)
+
+        proc = subprocess.run([sys.executable, str(gate_script), str(ctx["tp"])],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if proc.returncode == 0:
+            return {"status": "PASS", "iterations": i + 1, "gate_output": proc.stdout}
+
+        feedback_prompt = _build_feedback(proc.stdout or proc.stderr, ctx["signature"])
+        # Stateless feedback: no incluimos full_answer para que el LLM no se contamine con su propia basura
+        messages = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": user_prompt + "\n\n### FEEDBACK DEL INTENTO ANTERIOR:\n" + feedback_prompt},
+        ]
+
+    # Restaurar si falló
+    ctx["target"].write_text(ctx["original_source"], encoding="utf-8")
+    return {"status": "FAIL", "iterations": max_iterations, "reason": "Max iteraciones",
+            "last_gate": (proc.stdout or proc.stderr) if proc else ""}
+
+
 DISPATCH = {"measure_complexity": measure_complexity,
             "complexity_rubric": complexity_rubric,
             "scan_guardrails": scan_guardrails,
             "lint_task_contract": lint_task_contract,
-            "request_human_attestation": request_human_attestation}
+            "request_human_attestation": request_human_attestation,
+            "run_ephemeral_agent": run_ephemeral_agent}
 
 
 def send(mid, result=None, error=None):

@@ -155,13 +155,16 @@ def _lint_budget(c, contract_dir, slots, errors):
                       f"excede el presupuesto disponible ({available} tok)")
     return available, crit_cost
 
-def _lint_quality(c, slots, errors, warnings):
+def _lint_guardrail_presence(c, warnings):
     if not any(g.get("type") == "regex_deny" for g in c.get("guardrails", [])):
         warnings.append(("no-secrets-guardrail",
                          "ningún guardrail regex_deny: nada filtra secretos antes de inferir"))
     if not any(g.get("type") == "reference_check" for g in c.get("guardrails", [])):
         warnings.append(("no-reference-check",
                          "ningún guardrail reference_check: riesgo de desvarío estructural sin anclas"))
+
+
+def _lint_slot_rules(slots, errors, warnings):
     for s in slots:
         if s.get("compaction") == "none" and "min_tokens" not in s:
             warnings.append(("critical-without-floor",
@@ -170,6 +173,9 @@ def _lint_quality(c, slots, errors, warnings):
             errors.append(f"[prioridad] slot '{s['id']}' con prioridad {s['priority']} debe usar compaction: none (crítico)")
         if s["source"].get("type") == "static" and not s["source"].get("sign"):
             errors.append(f"[firmas] slot estático '{s['id']}' con sign:false: la spec requiere sign: true en static")
+
+
+def _lint_dynamic_zone(slots, warnings):
     crit_prios = [s["priority"] for s in slots if s.get("compaction") == "none"]
     max_crit = max(crit_prios) if crit_prios else -1
     for s in slots:
@@ -177,6 +183,35 @@ def _lint_quality(c, slots, errors, warnings):
             warnings.append(("dynamic-in-critical-zone",
                              f"slot dinámico '{s['id']}' (prioridad {s['priority']}) en la zona de los "
                              f"críticos (<= {max_crit}): fuente no confiable con retención de política"))
+
+
+def _lint_quality(c, slots, errors, warnings):
+    _lint_guardrail_presence(c, warnings)
+    _lint_slot_rules(slots, errors, warnings)
+    _lint_dynamic_zone(slots, warnings)
+
+def _lint_report_json(errors, warnings) -> int:
+    findings = [{"id": "error", "severity": "error", "message": e} for e in errors]
+    findings += [{"id": i, "severity": "warning", "message": m} for i, m in warnings]
+    print(json.dumps({"ok": not errors, "errors": len(errors),
+                      "warnings": len(warnings), "findings": findings},
+                     indent=2, ensure_ascii=False))
+    return 1 if errors else 0
+
+
+def _lint_report_text(errors, warnings, slots, available, crit_cost) -> int:
+    if errors:
+        print("LINT: FALLÓ\n" + "\n".join(f"  - {e}" for e in errors))
+        for i, m in warnings:
+            print(f"  ! [warning] {i}: {m}")
+        return 1
+    suffix = f" · {len(warnings)} advertencia(s)" if warnings else ""
+    print(f"LINT: OK  ({len(slots)} slots, presupuesto disponible {available} tok, "
+          f"costo crítico {crit_cost} tok){suffix}")
+    for i, m in warnings:
+        print(f"  ! [warning] {i}: {m}")
+    return 0
+
 
 def cmd_lint(contract_dir: Path, sign: bool, as_json: bool = False) -> int:
     errors: list[str] = []
@@ -195,24 +230,8 @@ def cmd_lint(contract_dir: Path, sign: bool, as_json: bool = False) -> int:
     _lint_quality(c, slots, errors, warnings)
 
     if as_json:
-        findings = [{"id": "error", "severity": "error", "message": e} for e in errors]
-        findings += [{"id": i, "severity": "warning", "message": m} for i, m in warnings]
-        print(json.dumps({"ok": not errors, "errors": len(errors),
-                          "warnings": len(warnings), "findings": findings},
-                         indent=2, ensure_ascii=False))
-        return 1 if errors else 0
-
-    if errors:
-        print("LINT: FALLÓ\n" + "\n".join(f"  - {e}" for e in errors))
-        for i, m in warnings:
-            print(f"  ! [warning] {i}: {m}")
-        return 1
-    suffix = f" · {len(warnings)} advertencia(s)" if warnings else ""
-    print(f"LINT: OK  ({len(slots)} slots, presupuesto disponible {available} tok, "
-          f"costo crítico {crit_cost} tok){suffix}")
-    for i, m in warnings:
-        print(f"  ! [warning] {i}: {m}")
-    return 0
+        return _lint_report_json(errors, warnings)
+    return _lint_report_text(errors, warnings, slots, available, crit_cost)
 
 
 # ---- INIT (generación determinista del contrato) ---------------------------
@@ -229,15 +248,7 @@ _BASELINE_POLICIES = """POLÍTICAS DE SEGURIDAD (base vetada — revisá y adapt
 """
 
 
-def cmd_init(target_dir: Path, name: str, template: str, force: bool) -> int:
-    """Genera un contrato base con buenas prácticas (DETERMINISTA, sin LLM). Crea la
-    estructura, la biblioteca de políticas vetada, y placeholders; corre lint para
-    mostrar que el esqueleto es válido. El humano completa los .txt y firma con `lint --sign`."""
-    cy = target_dir / "context.yaml"
-    if cy.exists() and not force:
-        print(f"INIT: ya existe {cy} (usá --force para sobrescribir)")
-        return 1
-    target_dir.mkdir(parents=True, exist_ok=True)
+def _init_write_stubs(target_dir: Path, is_tool: bool) -> None:
     (target_dir / "env.txt").write_text(
         "Entorno: <completar — p. ej. producción, canal web, zona horaria del usuario>.\n",
         encoding="utf-8")
@@ -245,20 +256,22 @@ def cmd_init(target_dir: Path, name: str, template: str, force: bool) -> int:
         "Eres un agente de <completar>. Describí su rol, su tono y sus límites de comportamiento.\n"
         "No inventes información que no conozcas; si no sabés algo, decilo.\n", encoding="utf-8")
     (target_dir / "policies.txt").write_text(_BASELINE_POLICIES, encoding="utf-8")
-    is_tool = template == "tool-agent"
     if is_tool:
         (target_dir / "tools.txt").write_text(
             "HERRAMIENTAS DISPONIBLES (contrato de uso):\n"
             "- <nombre>(<args>): <qué hace>.\n"
             "Reglas de uso: <p. ej. no llames a una acción destructiva sin leer el contexto primero>.\n",
             encoding="utf-8")
+
+
+def _init_context_yaml(name: str, template: str, is_tool: bool) -> str:
     tool_slot = ("""
     - id: tool_specs
       priority: 1
       source: { type: static, path: "tools.txt", sign: true }
       compaction: none
       min_tokens: 80""" if is_tool else "")
-    cy.write_text(f"""# Generado por `ccdd init` (plantilla {template}). Revisá, completá los .txt y firmá con `lint --sign`.
+    return f"""# Generado por `ccdd init` (plantilla {template}). Revisá, completá los .txt y firmá con `lint --sign`.
 ccdd_version: "0.3"
 contract:
   name: "{name}"
@@ -305,7 +318,21 @@ contract:
     - id: slot-references
       type: reference_check
       on_fail: abort
-""", encoding="utf-8")
+"""
+
+
+def cmd_init(target_dir: Path, name: str, template: str, force: bool) -> int:
+    """Genera un contrato base con buenas prácticas (DETERMINISTA, sin LLM). Crea la
+    estructura, la biblioteca de políticas vetada, y placeholders; corre lint para
+    mostrar que el esqueleto es válido. El humano completa los .txt y firma con `lint --sign`."""
+    cy = target_dir / "context.yaml"
+    if cy.exists() and not force:
+        print(f"INIT: ya existe {cy} (usá --force para sobrescribir)")
+        return 1
+    target_dir.mkdir(parents=True, exist_ok=True)
+    is_tool = template == "tool-agent"
+    _init_write_stubs(target_dir, is_tool)
+    cy.write_text(_init_context_yaml(name, template, is_tool), encoding="utf-8")
     print(f"INIT: contrato '{name}' (plantilla {template}) creado en {target_dir}/")
     print("  próximos pasos: 1) completá env.txt / system.txt / policies.txt  "
           "2) `lint --sign`  3) `assemble` / `diff`")
@@ -329,38 +356,48 @@ def resolve_and_allocate(c: dict, contract_dir: Path, inputs: dict):
             raw[s["id"]] = str(inputs.get(s["id"], "")).strip()
     assembled, used, report = {}, 0, []
     for s in sorted(slots, key=lambda s: s["priority"]):
-        text = raw[s["id"]]
-        want = count_tokens(text)
-        grant = min(want, s.get("max_tokens", want), available - used)
-        if s["compaction"] == "none":   # crítico: entra entero o se aborta
-            if want > available - used:
-                return None, (f"slot crítico '{s['id']}' no entra "
-                              f"({want} tok pedidos, {available - used} disponibles)"), report, used, available
-            grant = want
-        floor = min(want, s.get("min_tokens", 0))   # piso acotado al contenido real
-        if grant < floor:
-            return None, (f"slot '{s['id']}' truncado bajo su piso "
-                          f"({grant} < min(contenido={want}, min_tokens={s.get('min_tokens', 0)})={floor} tok)"), report, used, available
-        
-        if s["compaction"] == "tree-shake" and grant < want:
-            try:
-                import sys
-                from pathlib import Path
-                sys.path.insert(0, str(Path(__file__).resolve().parent / "runners"))
-                import tree_shaker
-                # El target viene en inputs (ej. desde task-contract -> orchestrator -> assemble)
-                target_path = str(inputs.get("target", ""))
-                # 4 chars/token est aprox para el max_chars final
-                kept = tree_shaker.shake(text, target_path, max_chars=grant * 4)
-            except Exception:
-                kept = truncate_to(text, grant)
-        else:
-            kept = text if grant >= want else truncate_to(text, grant)
-        action = "full" if grant >= want else s["compaction"]
+        kept, action, abort = _allocate_slot(s, raw[s["id"]], available, used, inputs)
+        if abort:
+            return None, abort, report, used, available
         assembled[s["id"]] = kept
         used += count_tokens(kept)
         report.append(f"  {s['priority']}:{s['id']:<13} {count_tokens(kept):>4} tok  ({action})")
     return assembled, None, report, used, available
+
+
+def _shake_or_truncate(text, grant, want, compaction, inputs):
+    """Aplica tree-shake (con fallback a truncado) o truncado simple según compaction."""
+    if compaction == "tree-shake" and grant < want:
+        try:
+            import sys
+            from pathlib import Path
+            sys.path.insert(0, str(Path(__file__).resolve().parent / "runners"))
+            import tree_shaker
+            # El target viene en inputs (ej. desde task-contract -> orchestrator -> assemble)
+            target_path = str(inputs.get("target", ""))
+            # 4 chars/token est aprox para el max_chars final
+            return tree_shaker.shake(text, target_path, max_chars=grant * 4)
+        except Exception:
+            return truncate_to(text, grant)
+    return text if grant >= want else truncate_to(text, grant)
+
+
+def _allocate_slot(s, text, available, used, inputs):
+    """Asigna tokens a un slot. Devuelve (kept, action, abort_msg). abort_msg != None aborta."""
+    want = count_tokens(text)
+    grant = min(want, s.get("max_tokens", want), available - used)
+    if s["compaction"] == "none":   # crítico: entra entero o se aborta
+        if want > available - used:
+            return None, None, (f"slot crítico '{s['id']}' no entra "
+                                f"({want} tok pedidos, {available - used} disponibles)")
+        grant = want
+    floor = min(want, s.get("min_tokens", 0))   # piso acotado al contenido real
+    if grant < floor:
+        return None, None, (f"slot '{s['id']}' truncado bajo su piso "
+                            f"({grant} < min(contenido={want}, min_tokens={s.get('min_tokens', 0)})={floor} tok)")
+    kept = _shake_or_truncate(text, grant, want, s["compaction"], inputs)
+    action = "full" if grant >= want else s["compaction"]
+    return kept, action, None
 
 def _check_json_schema(g, assembled, contract_dir):
     target = g["target_slot"]
@@ -376,43 +413,52 @@ def _check_json_schema(g, assembled, contract_dir):
     except FileNotFoundError:
         return False, f"schema_path no encontrado: {g['schema_path']}"
 
+def _read_line_at(fpath, line_num):
+    """Devuelve la línea `line_num` (1-indexada) strip-eada, o None si fuera de rango."""
+    with fpath.open(encoding="utf-8") as f:
+        for current_line_num, line in enumerate(f, 1):
+            if current_line_num == line_num:
+                return line.strip()
+    return None
+
+
+def _check_dsv_finding(idx, finding, contract_dir):
+    """Valida un único hallazgo contra HEAD. Devuelve (ok, detail)."""
+    file_prop = finding.get("file", "")
+    if not file_prop or ".." in Path(file_prop).parts or Path(file_prop).is_absolute():
+        return False, f"hallazgo {idx}: ruta de archivo inválida o fuera de límites"
+    fpath = contract_dir / file_prop
+    if not fpath.is_file():
+        return False, f"hallazgo {idx}: archivo no existe -> {finding.get('file')}"
+    line_num = int(finding.get("line", 0))
+    try:
+        actual_line = _read_line_at(fpath, line_num)
+    except Exception as e:
+        return False, f"error leyendo archivo {fpath.name}: {e}"
+    if actual_line is None:
+        return False, f"hallazgo {idx}: línea {line_num} fuera de rango en {fpath.name}"
+    expected = str(finding.get("snippet", "")).strip()
+    if expected not in actual_line:
+        return False, f"hallazgo {idx}: drift detectado. Esperado: '{expected}', Actual: '{actual_line}'"
+    return True, "ok"
+
+
 def _check_dsv(g, assembled, contract_dir):
     target = g.get("target_slot")
     try:
         data = json.loads(assembled.get(target, "[]"))
-        if not isinstance(data, list):
-            return False, f"slot '{target}' debe ser una lista JSON de hallazgos"
-        for idx, finding in enumerate(data):
-            file_prop = finding.get("file", "")
-            if not file_prop or ".." in Path(file_prop).parts or Path(file_prop).is_absolute():
-                return False, f"hallazgo {idx}: ruta de archivo inválida o fuera de límites"
-            fpath = contract_dir / file_prop
-            line_num = int(finding.get("line", 0))
-            snippet = str(finding.get("snippet", ""))
-            
-            if not fpath.is_file():
-                return False, f"hallazgo {idx}: archivo no existe -> {finding.get('file')}"
-                
-            actual_line = None
-            try:
-                with fpath.open(encoding="utf-8") as f:
-                    for current_line_num, line in enumerate(f, 1):
-                        if current_line_num == line_num:
-                            actual_line = line.strip()
-                            break
-            except Exception as e:
-                return False, f"error leyendo archivo {fpath.name}: {e}"
-                
-            if actual_line is None:
-                return False, f"hallazgo {idx}: línea {line_num} fuera de rango en {fpath.name}"
-            expected = snippet.strip()
-            if expected not in actual_line:
-                return False, f"hallazgo {idx}: drift detectado. Esperado: '{expected}', Actual: '{actual_line}'"
-        return True, f"slot '{target}': {len(data)} hallazgos coinciden exactamente con HEAD"
     except json.JSONDecodeError:
         return False, f"slot '{target}' no es JSON válido"
+    if not isinstance(data, list):
+        return False, f"slot '{target}' debe ser una lista JSON de hallazgos"
+    try:
+        for idx, finding in enumerate(data):
+            ok, detail = _check_dsv_finding(idx, finding, contract_dir)
+            if not ok:
+                return False, detail
     except Exception as e:
         return False, f"error evaluando dsv_check: {e}"
+    return True, f"slot '{target}': {len(data)} hallazgos coinciden exactamente con HEAD"
 
 def _run_guardrails(c, assembled, contract_dir):
     verdict = {"passed": True, "guardrails": []}
@@ -479,6 +525,32 @@ def cmd_assemble(contract_dir: Path, inputs_path: Path) -> int:
 
 
 # ---- EXPORT (independencia tecnológica) ------------------------------------
+def _split_system_user(slots, assembled):
+    """Convención: estático/dinámico -> rol 'system'; el slot runtime -> rol 'user'."""
+    sys_parts, user_parts = [], []
+    for s in slots:
+        txt = assembled.get(s["id"], "")
+        if not txt:
+            continue
+        if s["source"]["type"] == "runtime":
+            user_parts.append(txt)
+        else:
+            sys_parts.append(f"<<{s['id']}>>\n{txt}")
+    return "\n\n".join(sys_parts), "\n\n".join(user_parts)
+
+
+def _export_messages(fmt, model, system_text, user_text):
+    """Payload de mensajes para openai/anthropic, o None si el formato es desconocido."""
+    if fmt in ("openai", "openai-messages"):
+        return {"model": model, "messages": [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": user_text}]}
+    if fmt in ("anthropic", "anthropic-messages"):
+        return {"model": model, "system": system_text,
+                "messages": [{"role": "user", "content": user_text}]}
+    return None
+
+
 def cmd_export(contract_dir: Path, fmt: str, inputs_path: Path) -> int:
     """Ensambla el contexto y lo emite en el formato nativo de distintos frameworks.
     El MISMO contrato -> OpenAI / Anthropic / texto: prueba que se puede migrar de
@@ -490,29 +562,14 @@ def cmd_export(contract_dir: Path, fmt: str, inputs_path: Path) -> int:
     if abort:
         print(json.dumps({"error": f"ensamblado inválido: {abort}"}, ensure_ascii=False))
         return 2
-    # convención: lo estático/dinámico va al rol 'system'; el slot runtime, al 'user'
-    sys_parts, user_parts = [], []
-    for s in c["slots"]:
-        txt = assembled.get(s["id"], "")
-        if not txt:
-            continue
-        (user_parts if s["source"]["type"] == "runtime" else sys_parts).append(
-            txt if s["source"]["type"] == "runtime" else f"<<{s['id']}>>\n{txt}")
-    system_text, user_text = "\n\n".join(sys_parts), "\n\n".join(user_parts)
-    model = c["budget"]["model"]
+    system_text, user_text = _split_system_user(c["slots"], assembled)
 
-    if fmt in ("openai", "openai-messages"):
-        out = {"model": model, "messages": [
-            {"role": "system", "content": system_text},
-            {"role": "user", "content": user_text}]}
-    elif fmt in ("anthropic", "anthropic-messages"):
-        out = {"model": model, "system": system_text,
-               "messages": [{"role": "user", "content": user_text}]}
-    elif fmt in ("text", "raw"):
+    if fmt in ("text", "raw"):
         print("\n\n".join(f"<<{s['id']}>>\n{assembled[s['id']]}" for s in c["slots"]
                           if assembled.get(s["id"])))
         return 0
-    else:
+    out = _export_messages(fmt, c["budget"]["model"], system_text, user_text)
+    if out is None:
         print(f"formato desconocido: {fmt} (usa openai | anthropic | text)")
         return 1
     print(json.dumps(out, indent=2, ensure_ascii=False))
@@ -552,117 +609,189 @@ def cmd_spec() -> int:
 
 
 # ---- DIFF (L2) -------------------------------------------------------------
-def _diff_budget(base, head, avail, regressions, changes):
-    if avail(head) < avail(base):
-        regressions.append(f"presupuesto disponible bajó: {avail(base)} -> {avail(head)} tok")
-    elif avail(head) > avail(base):
-        changes.append(f"presupuesto disponible subió: {avail(base)} -> {avail(head)} tok")
+class DiffState:
+    def __init__(self):
+        self.regressions: list[str] = []
+        self.changes: list[str] = []
 
-def _diff_slots(bslots, hslots, is_crit, regressions, changes):
+    def fail(self, msg: str):
+        self.regressions.append(msg)
+
+    def info(self, msg: str):
+        self.changes.append(msg)
+
+    @property
+    def passed(self) -> bool:
+        return len(self.regressions) == 0
+
+
+def check_r1_budget(base, head, state: DiffState):
+    avail = lambda c: c["budget"]["max_tokens"] - c["budget"].get("reserve_output", 0)
+    b_tok, h_tok = avail(base), avail(head)
+    if h_tok < b_tok:
+        state.fail(f"presupuesto disponible bajó: {b_tok} -> {h_tok} tok")
+    elif h_tok > b_tok:
+        state.info(f"presupuesto disponible subió: {b_tok} -> {h_tok} tok")
+
+
+def _check_base_slot_regression(sid, bs, hs, state, is_crit):
+    """R2, R3, R8 y eliminaciones para un slot presente en la baseline."""
+    if hs is None:
+        if is_crit(bs):
+            state.fail(f"slot crítico '{sid}' eliminado")
+        else:
+            state.info(f"slot '{sid}' eliminado")
+        return
+    if not is_crit(bs):
+        return
+    if hs["priority"] > bs["priority"]:
+        state.fail(f"slot crítico '{sid}': prioridad degradada {bs['priority']} -> {hs['priority']}")
+    if not is_crit(hs):
+        state.fail(f"slot '{sid}' dejó de ser crítico: compaction {bs['compaction']} -> {hs['compaction']}")
+    if hs.get("min_tokens", 0) < bs.get("min_tokens", 0):
+        state.info(f"slot crítico '{sid}': min_tokens bajó {bs.get('min_tokens',0)} -> {hs.get('min_tokens',0)}")
+    if int(hs.get("review_quorum", 1)) < int(bs.get("review_quorum", 1)):
+        state.fail(f"slot crítico '{sid}': review_quorum bajó {bs.get('review_quorum', 1)} -> {hs.get('review_quorum', 1)}")
+
+
+def _check_head_slot_injection(sid, hs, bslots, base_max_crit, head_max_crit, state):
+    """R5 y nuevos slots: detecta ascenso de un dinámico a la zona crítica."""
+    if sid not in bslots:
+        state.info(f"slot nuevo '{sid}' (prioridad {hs['priority']}, {hs['source']['type']})")
+    if hs["source"]["type"] != "dynamic" or hs["priority"] > head_max_crit:
+        return
+    was_safe = sid not in bslots or bslots[sid]["priority"] > base_max_crit
+    if was_safe:
+        state.fail(f"slot dinámico '{sid}' (prioridad {hs['priority']}) asciende a la zona de "
+                   f"los críticos (<= {head_max_crit}): riesgo de prompt injection")
+
+
+def check_r2_r3_r5_r8_slots(base, head, state: DiffState):
+    is_crit = lambda s: s.get("compaction") == "none"
+    bslots = {s["id"]: s for s in base["slots"]}
+    hslots = {s["id"]: s for s in head["slots"]}
+
     for sid, bs in bslots.items():
-        hs = hslots.get(sid)
-        if hs is None:
-            (regressions if is_crit(bs) else changes).append(
-                f"slot{' crítico' if is_crit(bs) else ''} '{sid}' eliminado")
-            continue
-        if is_crit(bs) and hs["priority"] > bs["priority"]:
-            regressions.append(
-                f"slot crítico '{sid}': prioridad degradada {bs['priority']} -> {hs['priority']}")
-        if is_crit(bs) and not is_crit(hs):
-            regressions.append(
-                f"slot '{sid}' dejó de ser crítico: compaction {bs['compaction']} -> {hs['compaction']}")
-        if bs["source"].get("sign") and not hs["source"].get("sign"):
-            regressions.append(f"slot '{sid}' perdió la firma (sign: true -> false)")
-        if is_crit(bs) and hs.get("min_tokens", 0) < bs.get("min_tokens", 0):
-            changes.append(
-                f"slot crítico '{sid}': min_tokens bajó {bs.get('min_tokens',0)} -> {hs.get('min_tokens',0)}")
-        if is_crit(bs) and int(hs.get("review_quorum", 1)) < int(bs.get("review_quorum", 1)):
-            regressions.append(
-                f"slot crítico '{sid}': review_quorum bajó "
-                f"{bs.get('review_quorum', 1)} -> {hs.get('review_quorum', 1)}")
+        _check_base_slot_regression(sid, bs, hslots.get(sid), state, is_crit)
 
-def _diff_dynamic_zone(base, head, bslots, hslots, is_crit, regressions, changes):
     base_max_crit = max([s["priority"] for s in base["slots"] if is_crit(s)], default=-1)
     head_max_crit = max([s["priority"] for s in head["slots"] if is_crit(s)], default=-1)
     for sid, hs in hslots.items():
-        if sid not in bslots:
-            changes.append(f"slot nuevo '{sid}' (prioridad {hs['priority']}, {hs['source']['type']})")
-        if hs["source"]["type"] == "dynamic" and hs["priority"] <= head_max_crit:
-            was_safe = sid not in bslots or bslots[sid]["priority"] > base_max_crit
-            if was_safe:
-                regressions.append(
-                    f"slot dinámico '{sid}' (prioridad {hs['priority']}) asciende a la zona de "
-                    f"los críticos (<= {head_max_crit}): riesgo de prompt injection")
+        _check_head_slot_injection(sid, hs, bslots, base_max_crit, head_max_crit, state)
 
-def _diff_attestations(bslots, hslots, is_crit, baseline_dir, head_dir, attest, registry, regressions, changes):
+
+def _emit_attestation_verdict(sid, nadd, nrem, entries, quorum, signers, state):
+    """R6: emite el veredicto según el quórum de firmas válidas."""
+    if len(signers) >= quorum:
+        state.info(f"slot crítico '{sid}': política modificada (+{nadd}/-{nrem} líneas), "
+                   f"ATESTADA por {', '.join(sorted(signers))} ({len(signers)}/{quorum})")
+    elif not entries:
+        state.fail(f"slot crítico '{sid}': contenido de política modificado sin atestación "
+                   f"(+{nadd}/-{nrem} líneas) — revisar (humano+modelo) y ejecutar: "
+                   f"ccdd attest <head> {sid} --reviewer <nombre> --key <privada>")
+    else:
+        state.fail(f"slot crítico '{sid}': atestación insuficiente "
+                   f"({len(signers)}/{quorum} firmas válidas de revisores registrados en la baseline)")
+
+
+def _baseline_static_text(bs, baseline_dir):
+    """Texto del slot estático en la baseline, o '' si no es estático / no existe."""
+    if not (bs and bs["source"].get("type") == "static"):
+        return ""
+    bpath = baseline_dir / bs["source"]["path"]
+    return bpath.read_text(encoding="utf-8") if bpath.exists() else ""
+
+
+def _line_delta(btext, htext):
+    """(nadd, nrem) de líneas no vacías entre baseline y head."""
+    bset = {ln.strip() for ln in btext.splitlines() if ln.strip()}
+    hset = {ln.strip() for ln in htext.splitlines() if ln.strip()}
+    return len(hset - bset), len(bset - hset)
+
+
+def _check_r6_policy_attestation(sid, bs, hs, baseline_dir, head_dir, attest, registry, state, is_crit):
+    """R6: diff de contenido + atestación para críticos estáticos."""
+    if not (is_crit(hs) and hs["source"].get("type") == "static"):
+        return
+    hpath = head_dir / hs["source"]["path"]
+    if not hpath.exists():
+        return
+    htext = hpath.read_text(encoding="utf-8")
+    btext = _baseline_static_text(bs, baseline_dir)
+
+    from runners import semantic_hash
+    hhash = semantic_hash.get_semantic_hash(htext, hpath.suffix)
+    if semantic_hash.get_semantic_hash(btext, hpath.suffix) == hhash:
+        return
+
+    nadd, nrem = _line_delta(btext, htext)
+    entries = attest.get(sid)
+    quorum = int(hs.get("review_quorum", 1))
+    signers = valid_signers(entries, registry, sid, hhash)
+    _emit_attestation_verdict(sid, nadd, nrem, entries, quorum, signers, state)
+
+
+def check_r4_r6_attestations(base, head, baseline_dir: Path, head_dir: Path, attest: dict, registry: dict, state: DiffState):
+    is_crit = lambda s: s.get("compaction") == "none"
+    bslots = {s["id"]: s for s in base["slots"]}
+    hslots = {s["id"]: s for s in head["slots"]}
+
     for sid, hs in hslots.items():
-        if not (is_crit(hs) and hs["source"].get("type") == "static"):
-            continue
-        hpath = head_dir / hs["source"]["path"]
-        if not hpath.exists():
-            continue
-        htext = hpath.read_text(encoding="utf-8")
         bs = bslots.get(sid)
-        bpath = (baseline_dir / bs["source"]["path"]) \
-            if (bs and bs["source"].get("type") == "static") else None
-        btext = bpath.read_text(encoding="utf-8") if (bpath and bpath.exists()) else ""
-        from runners import semantic_hash
-        bhash = semantic_hash.get_semantic_hash(btext, hpath.suffix)
-        hhash = semantic_hash.get_semantic_hash(htext, hpath.suffix)
-        if bhash == hhash:
-            continue
-        bset = {ln.strip() for ln in btext.splitlines() if ln.strip()}
-        hset = {ln.strip() for ln in htext.splitlines() if ln.strip()}
-        nrem, nadd = len(bset - hset), len(hset - bset)
-        entries = attest.get(sid)
-        quorum = int(hs.get("review_quorum", 1))
-        signers = valid_signers(entries, registry, sid, hhash)
-        if len(signers) >= quorum:
-            changes.append(f"slot crítico '{sid}': política modificada (+{nadd}/-{nrem} líneas), "
-                           f"ATESTADA por {', '.join(sorted(signers))} ({len(signers)}/{quorum})")
-        elif not entries:
-            regressions.append(
-                f"slot crítico '{sid}': contenido de política modificado sin atestación "
-                f"(+{nadd}/-{nrem} líneas) — revisar (humano+modelo) y ejecutar: "
-                f"ccdd attest <head> {sid} --reviewer <nombre> --key <privada>")
-        else:
-            regressions.append(
-                f"slot crítico '{sid}': atestación insuficiente "
-                f"({len(signers)}/{quorum} firmas válidas de revisores registrados en la baseline)")
+        # R4: pérdida de firma en estáticos
+        if bs and bs["source"].get("sign") and not hs["source"].get("sign"):
+            state.fail(f"slot '{sid}' perdió la firma (sign: true -> false)")
+        _check_r6_policy_attestation(sid, bs, hs, baseline_dir, head_dir, attest, registry, state, is_crit)
 
-def _diff_reviewers(baseline_dir, head_dir, attest, registry, regressions, changes):
-    base_reg_raw = (baseline_dir / "reviewers.json").read_text(encoding="utf-8") \
-        if (baseline_dir / "reviewers.json").exists() else ""
-    head_reg_raw = (head_dir / "reviewers.json").read_text(encoding="utf-8") \
-        if (head_dir / "reviewers.json").exists() else ""
+
+def check_r7_reviewers(baseline_dir: Path, head_dir: Path, attest: dict, registry: dict, state: DiffState):
+    base_reg_raw = (baseline_dir / "reviewers.json").read_text(encoding="utf-8") if (baseline_dir / "reviewers.json").exists() else ""
+    head_reg_raw = (head_dir / "reviewers.json").read_text(encoding="utf-8") if (head_dir / "reviewers.json").exists() else ""
+    
     if sha256(base_reg_raw) != sha256(head_reg_raw):
         if not registry:
-            changes.append("registro de revisores: GÉNESIS (baseline sin registro previo; auditar fuera de banda)")
+            state.info("registro de revisores: GÉNESIS (baseline sin registro previo; auditar fuera de banda)")
         else:
             new_hash = sha256(head_reg_raw)
             signers = valid_signers(attest.get("__reviewers__"), registry, "__reviewers__", new_hash)
             rq = registry.get("__quorum__", 1)
             rq = int(rq) if isinstance(rq, int) else 1
             if len(signers) >= rq:
-                changes.append(f"registro de revisores modificado, ATESTADO por "
-                               f"{', '.join(sorted(signers))} ({len(signers)}/{rq}) — revisores de la baseline")
+                state.info(f"registro de revisores modificado, ATESTADO por "
+                           f"{', '.join(sorted(signers))} ({len(signers)}/{rq}) — revisores de la baseline")
             else:
-                regressions.append(
-                    f"registro de revisores modificado: atestación insuficiente "
-                    f"({len(signers)}/{rq} firmas de revisores de la baseline) — ejecutar: "
-                    f"ccdd attest <head> __reviewers__ --key <de un revisor ya registrado>")
+                state.fail(f"registro de revisores modificado: atestación insuficiente "
+                           f"({len(signers)}/{rq} firmas de revisores de la baseline) — ejecutar: "
+                           f"ccdd attest <head> __reviewers__ --key <de un revisor ya registrado>")
 
-def _diff_guardrails(base, head, regressions):
+
+def check_r9_guardrails(base, head, state: DiffState):
     strength = {"abort": 2, "reroute": 1, "warn": 0}
     bg = {g["id"]: g for g in base.get("guardrails", [])}
     hg = {g["id"]: g for g in head.get("guardrails", [])}
     for gid, g in bg.items():
         h = hg.get(gid)
         if h is None:
-            regressions.append(f"guardrail '{gid}' eliminado")
+            state.fail(f"guardrail '{gid}' eliminado")
         elif strength.get(h.get("on_fail"), 0) < strength.get(g.get("on_fail"), 0):
-            regressions.append(
-                f"guardrail '{gid}': on_fail debilitado {g.get('on_fail')} -> {h.get('on_fail')}")
+            state.fail(f"guardrail '{gid}': on_fail debilitado {g.get('on_fail')} -> {h.get('on_fail')}")
+
+
+def _load_json_if_exists(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def _print_diff_report(state: "DiffState", out: Path) -> None:
+    if not state.passed:
+        print("DIFF: BLOQUEADO - regresiones de contexto detectadas:")
+        for r in state.regressions:
+            print(f"  [X] {r}")
+    else:
+        print("DIFF: OK - sin regresiones")
+    for ch in state.changes:
+        print(f"  [.] {ch}")
+    print(f"  reporte -> {out.name}")
+
 
 def cmd_diff(baseline_dir: Path, head_dir: Path, as_json: bool = False) -> int:
     """Gate de regresion de contexto. Compara el contrato HEAD contra una BASELINE
@@ -676,54 +805,35 @@ def cmd_diff(baseline_dir: Path, head_dir: Path, as_json: bool = False) -> int:
     """
     base = load_contract(baseline_dir)["contract"]
     head = load_contract(head_dir)["contract"]
-    regressions: list[str] = []
-    changes: list[str] = []
+    state = DiffState()
 
-    avail = lambda c: c["budget"]["max_tokens"] - c["budget"].get("reserve_output", 0)
-    is_crit = lambda s: s.get("compaction") == "none"
+    check_r1_budget(base, head, state)
+    check_r2_r3_r5_r8_slots(base, head, state)
 
-    _diff_budget(base, head, avail, regressions, changes)
+    attest = _load_json_if_exists(head_dir / "attestations.json")
+    registry = _load_json_if_exists(baseline_dir / "reviewers.json")
 
-    bslots = {s["id"]: s for s in base["slots"]}
-    hslots = {s["id"]: s for s in head["slots"]}
+    check_r4_r6_attestations(base, head, baseline_dir, head_dir, attest, registry, state)
+    check_r7_reviewers(baseline_dir, head_dir, attest, registry, state)
+    check_r9_guardrails(base, head, state)
 
-    _diff_slots(bslots, hslots, is_crit, regressions, changes)
-    _diff_dynamic_zone(base, head, bslots, hslots, is_crit, regressions, changes)
-
-    attest = {}
-    apath = head_dir / "attestations.json"
-    if apath.exists():
-        attest = json.loads(apath.read_text(encoding="utf-8"))
-    registry = {}
-    rpath = baseline_dir / "reviewers.json"
-    if rpath.exists():
-        registry = json.loads(rpath.read_text(encoding="utf-8"))
-
-    _diff_attestations(bslots, hslots, is_crit, baseline_dir, head_dir, attest, registry, regressions, changes)
-    _diff_reviewers(baseline_dir, head_dir, attest, registry, regressions, changes)
-    _diff_guardrails(base, head, regressions)
-
-    findings = [{"severity": "error", "message": r} for r in regressions]
-    findings += [{"severity": "info", "message": ch} for ch in changes]
-    report = {"passed": not regressions, "regressions": regressions,
-              "changes": changes, "findings": findings}
+    findings = [{"severity": "error", "message": r} for r in state.regressions]
+    findings += [{"severity": "info", "message": ch} for ch in state.changes]
+    report = {
+        "passed": state.passed,
+        "regressions": state.regressions,
+        "changes": state.changes,
+        "findings": findings
+    }
     out = head_dir / "diff-report.json"
     out.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     if as_json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
-        return 1 if regressions else 0
+        return 1 if not state.passed else 0
 
-    if regressions:
-        print("DIFF: BLOQUEADO - regresiones de contexto detectadas:")
-        for r in regressions:
-            print(f"  [X] {r}")
-    else:
-        print("DIFF: OK - sin regresiones")
-    for ch in changes:
-        print(f"  [.] {ch}")
-    print(f"  reporte -> {out.name}")
-    return 1 if regressions else 0
+    _print_diff_report(state, out)
+    return 1 if not state.passed else 0
 
 
 # ---- KEYGEN / ATTEST (v0.3) ------------------------------------------------
@@ -746,29 +856,35 @@ def cmd_keygen(contract_dir: Path, reviewer: str, key_out: Path) -> int:
     return 0
 
 
+def _attest_target_hash(contract_dir: Path, slot_id: str):
+    """Hash del contenido a atestar. Devuelve (hash, None) o (None, rc) si no aplica."""
+    if slot_id == "__reviewers__":
+        # target especial: el propio registro de revisores (gobernanza, R7)
+        rp = contract_dir / "reviewers.json"
+        if not rp.exists():
+            print("ATTEST: no hay reviewers.json que atestar")
+            return None, 1
+        return sha256(rp.read_text(encoding="utf-8")), None
+    contract = load_contract(contract_dir)["contract"]
+    slot = next((s for s in contract["slots"] if s["id"] == slot_id), None)
+    if slot is None:
+        print(f"ATTEST: el slot '{slot_id}' no existe en el contrato")
+        return None, 1
+    if slot["source"].get("type") != "static":
+        print(f"ATTEST: '{slot_id}' no es un slot estático; nada que atestar")
+        return None, 1
+    return sha256((contract_dir / slot["source"]["path"]).read_text(encoding="utf-8")), None
+
+
 def cmd_attest(contract_dir: Path, slot_id: str, reviewer: str, note: str, key_path: Path) -> int:
     """Registra una atestacion FIRMADA de un cambio de contenido de un slot critico.
     El revisor (asistido por un modelo) afirma haber revisado el cambio y lo firma con
     su clave privada Ed25519. La firma cubre `slot:hash_del_contenido`, de modo que la
     atestacion caduca si el contenido vuelve a cambiar y no puede replicarse a otro slot.
     Componente humano-en-el-bucle que desbloquea R6 sin meter no-determinismo (spec sec.5.2/sec.6)."""
-    if slot_id == "__reviewers__":
-        # target especial: el propio registro de revisores (gobernanza, R7)
-        rp = contract_dir / "reviewers.json"
-        if not rp.exists():
-            print("ATTEST: no hay reviewers.json que atestar")
-            return 1
-        h = sha256(rp.read_text(encoding="utf-8"))
-    else:
-        contract = load_contract(contract_dir)["contract"]
-        slot = next((s for s in contract["slots"] if s["id"] == slot_id), None)
-        if slot is None:
-            print(f"ATTEST: el slot '{slot_id}' no existe en el contrato")
-            return 1
-        if slot["source"].get("type") != "static":
-            print(f"ATTEST: '{slot_id}' no es un slot estático; nada que atestar")
-            return 1
-        h = sha256((contract_dir / slot["source"]["path"]).read_text(encoding="utf-8"))
+    h, rc = _attest_target_hash(contract_dir, slot_id)
+    if h is None:
+        return rc
     sig = sign_attestation(key_path.read_text(encoding="utf-8").strip(), slot_id, h)
     apath = contract_dir / "attestations.json"
     attest = json.loads(apath.read_text(encoding="utf-8")) if apath.exists() else {}

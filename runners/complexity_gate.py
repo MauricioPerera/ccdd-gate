@@ -58,40 +58,24 @@ def resolve_backend(path):
         return None
 
 
-def main():
-    path = target_path()
-    if not path or not os.path.exists(path):
-        return 0  # no-op: sin ruta o no existe
-    backend = resolve_backend(path)
-    if backend is None:
-        return 0  # no-op anunciado: extensión sin backend
-    code_str = Path(path).read_text(encoding="utf-8")
-    
-    # Check for exceptions
+def _is_exempt(code_str, ext):
+    """(exento, hash) — exento si hay una excepción firmada para el hash semántico."""
     import semantic_hash
-    ext = Path(path).suffix or ".py"
     h = semantic_hash.get_semantic_hash(code_str, ext)
-    
-    # Simple check for exception signatures
     contract_dir = Path(__file__).resolve().parent.parent / "contracts" / "complexity-agent"
     attest_path = contract_dir / "attestations.json"
-    is_exempt = False
-    if attest_path.exists():
-        attest = json.loads(attest_path.read_text(encoding="utf-8"))
-        exceptions = attest.get("complexity_exception", [])
-        if isinstance(exceptions, dict):
-            exceptions = [exceptions]
-        for exc in exceptions:
-            if exc.get("content_sha256") == h:
-                is_exempt = True
-                break
+    if not attest_path.exists():
+        return False, h
+    attest = json.loads(attest_path.read_text(encoding="utf-8"))
+    exceptions = attest.get("complexity_exception", [])
+    if isinstance(exceptions, dict):
+        exceptions = [exceptions]
+    exempt = any(exc.get("content_sha256") == h for exc in exceptions)
+    return exempt, h
 
-    if is_exempt:
-        print(f"[complexity-gate] PASS en {os.path.basename(path)} "
-              f"(EXCEPCIÓN FIRMADA para hash {h[:8]}).", file=sys.stderr)
-        return 0
 
-    det = backend.extract_source(code_str, os.path.basename(path))
+def _report_findings(path, det):
+    """Imprime el veredicto y devuelve el código de salida (0 PASS / 2 FAIL)."""
     crit = [f for f in det.get("findings", []) if f.get("severity") == "CRÍTICA"]
     high = [f for f in det.get("findings", []) if f.get("severity") == "ALTA"]
     if not crit:
@@ -107,6 +91,26 @@ def main():
           "estricta de negocio, usa la tool 'request_human_attestation'.",
           file=sys.stderr)
     return 2
+
+
+def main():
+    path = target_path()
+    if not path or not os.path.exists(path):
+        return 0  # no-op: sin ruta o no existe
+    backend = resolve_backend(path)
+    if backend is None:
+        return 0  # no-op anunciado: extensión sin backend
+    code_str = Path(path).read_text(encoding="utf-8")
+    ext = Path(path).suffix or ".py"
+
+    exempt, h = _is_exempt(code_str, ext)
+    if exempt:
+        print(f"[complexity-gate] PASS en {os.path.basename(path)} "
+              f"(EXCEPCIÓN FIRMADA para hash {h[:8]}).", file=sys.stderr)
+        return 0
+
+    det = backend.extract_source(code_str, os.path.basename(path))
+    return _report_findings(path, det)
 
 
 if __name__ == "__main__":

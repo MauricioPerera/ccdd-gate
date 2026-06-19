@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pre_complexity_helpers as H  # noqa: E402  (capa de transformación compartida)
+import runner_common as RC  # noqa: E402  (capa compartida: assemble + guardrails + export)
 import metrics  # noqa: E402         (registra el backend python determinista)
 import metrics_backends as mb  # noqa: E402  (registro de backends por lenguaje)
 
@@ -51,17 +52,11 @@ def ccdd(*args):
                           capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
-def guardrail_onfail():
-    import yaml
-    c = yaml.safe_load((CONTRACT / "context.yaml").read_text(encoding="utf-8"))
-    return {g["id"]: g.get("on_fail") for g in c["contract"].get("guardrails", [])}
-
-
-def call_llm(provider, model, system, user):
+def call_llm(provider, model, system, user, temperature=0.0):
     if provider == "ollama":
         import urllib.request
         host = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
-        body = json.dumps({"model": model, "stream": False, "messages": [
+        body = json.dumps({"model": model, "stream": False, "options": {"temperature": temperature}, "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user}]}).encode("utf-8")
         req = urllib.request.Request(host + "/api/chat", data=body,
@@ -71,16 +66,29 @@ def call_llm(provider, model, system, user):
     if provider == "openai":  # OpenAI-compatible (LM Studio, vLLM, etc.)
         import urllib.request
         base = os.environ.get("OPENAI_BASE_URL", "http://localhost:1234/v1").rstrip("/")
-        body = json.dumps({"model": model, "stream": False, "temperature": 0.2, "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user}]}).encode("utf-8")
+        
+        # Gemma models strict chat templates reject "system" roles.
+        # We merge system into the first user message if 'gemma' is in the model name.
+        if "gemma" in model.lower():
+            messages = [{"role": "user", "content": system + "\n\n" + user}]
+        else:
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user}
+            ]
+            
+        body = json.dumps({"model": model, "stream": False, "temperature": temperature, "messages": messages}).encode("utf-8")
         req = urllib.request.Request(base + "/chat/completions", data=body, headers={
             "Content-Type": "application/json", "Authorization": "Bearer local"})
-        with urllib.request.urlopen(req, timeout=900) as resp:
-            return json.loads(resp.read().decode("utf-8"))["choices"][0]["message"]["content"]
+        try:
+            with urllib.request.urlopen(req, timeout=900) as resp:
+                return json.loads(resp.read().decode("utf-8"))["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode('utf-8')
+            raise RuntimeError(f"HTTP Error {e.code}: {error_body}")
     import anthropic
     client = anthropic.Anthropic()
-    msg = client.messages.create(model=model, max_tokens=MAX_OUTPUT_TOKENS,
+    msg = client.messages.create(model=model, max_tokens=MAX_OUTPUT_TOKENS, temperature=temperature,
                                  system=system, messages=[{"role": "user", "content": user}])
     return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
 
@@ -130,34 +138,36 @@ def _utf8():
 
 
 def assemble_and_export(a, inputs):
-    """assemble + guardrails deterministas + export del payload (vía ccdd.py).
-    fail() ante cualquier corte. Devuelve (payload, triggered, auto)."""
-    last = CONTRACT / "last-assembly.json"
-    tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
-    try:
-        json.dump(inputs, tmp, ensure_ascii=False)
-        tmp.close()
-        r = ccdd("assemble", str(CONTRACT), "--inputs", tmp.name)
-        if r.returncode == 2:
-            fail(3, "ensamblado inválido (¿código demasiado corto para el piso del slot?):\n" + (r.stdout or "").strip())
-        verdict = (json.loads(last.read_text(encoding="utf-8"))["verdict"]
-                   if last.exists() else {"passed": r.returncode == 0, "guardrails": []})
-        onfail = guardrail_onfail()
-        triggered = [g["id"] for g in verdict.get("guardrails", []) if not g["passed"]]
-        aborted = [g for g in triggered if onfail.get(g) == "abort"]
-        if aborted or not verdict.get("passed", True):
-            fail(2, "guardrail abortó (sin llamada API): " + ", ".join(aborted or triggered))
-        auto = [H.auto_signal(g) for g in triggered if onfail.get(g) == "reroute"]
-        if a.provider == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
-            fail(3, "ANTHROPIC_API_KEY no está en el entorno (requerida antes de llamar al modelo)")
-        r = ccdd("export", str(CONTRACT), "--format", "anthropic", "--inputs", tmp.name)
-        if r.returncode != 0:
-            fail(3, "export del contexto falló:\n" + (r.stderr or r.stdout or ""))
-        payload = json.loads(r.stdout)
-    finally:
-        os.unlink(tmp.name)
-        last.unlink(missing_ok=True)
-    return payload, triggered, auto
+    """Capa compartida (runner_common): assemble + guardrails + export para este contrato."""
+    return RC.assemble_and_export(
+        a, inputs, ccdd, CONTRACT, fail,
+        "ensamblado inválido (¿código demasiado corto para el piso del slot?):")
+
+
+def _gate_summary(det):
+    """(findings, critical, high, verdict) deterministas sobre las métricas AST."""
+    findings = det.get("findings", [])
+    critical = sum(1 for f in findings if f.get("severity") == "CRÍTICA")
+    high = sum(1 for f in findings if f.get("severity") == "ALTA")
+    return findings, critical, high, ("FAIL" if critical else "PASS")
+
+
+def _build_report(inp, ts, gate, model, free_text, parsed, auto, triggered):
+    gate_findings, gate_critical, gate_high, gate_verdict = gate
+    return {
+        "contract": "complexity-agent", "contract_version": CONTRACT_VERSION,
+        "timestamp": ts, "input_file": str(inp),
+        "gate": {  # determinista — decide el exit code
+            "verdict": gate_verdict, "critical": gate_critical, "high": gate_high,
+            "source": "ast-metrics sobre thresholds firmados", "findings": gate_findings,
+        },
+        "advisory": {  # LLM — clasifica esencial/accidental y explica; NO decide el gate
+            "model": model, "analysis": free_text,
+            "signals": ((parsed or {}).get("signals", []) or []) + auto,
+        },
+        "guardrails_triggered": triggered,
+        "verdict": gate_verdict,
+    }
 
 
 def run(argv=None):
@@ -173,10 +183,8 @@ def run(argv=None):
 
     # ── GATE DETERMINISTA: el veredicto/exit sale de las métricas AST sobre umbrales firmados,
     #    NO del LLM. Idéntico corrida a corrida (F1). El LLM es solo capa explicativa (advisory).
-    gate_findings = det.get("findings", [])
-    gate_critical = sum(1 for f in gate_findings if f.get("severity") == "CRÍTICA")
-    gate_high = sum(1 for f in gate_findings if f.get("severity") == "ALTA")
-    gate_verdict = "FAIL" if gate_critical else "PASS"
+    gate = _gate_summary(det)
+    gate_verdict, gate_critical = gate[3], gate[1]
 
     model = a.model or payload.get("model", DEFAULT_MODEL)
     raw = call_llm(a.provider, model, payload["system"], payload["messages"][0]["content"] + JSON_REQ)
@@ -184,20 +192,7 @@ def run(argv=None):
     print(free_text)
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    report = {
-        "contract": "complexity-agent", "contract_version": CONTRACT_VERSION,
-        "timestamp": ts, "input_file": str(inp),
-        "gate": {  # determinista — decide el exit code
-            "verdict": gate_verdict, "critical": gate_critical, "high": gate_high,
-            "source": "ast-metrics sobre thresholds firmados", "findings": gate_findings,
-        },
-        "advisory": {  # LLM — clasifica esencial/accidental y explica; NO decide el gate
-            "model": model, "analysis": free_text,
-            "signals": ((parsed or {}).get("signals", []) or []) + auto,
-        },
-        "guardrails_triggered": triggered,
-        "verdict": gate_verdict,
-    }
+    report = _build_report(inp, ts, gate, model, free_text, parsed, auto, triggered)
     if a.as_json:
         Path("analysis_report.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

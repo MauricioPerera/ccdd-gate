@@ -25,6 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pre_complexity_helpers as H  # noqa: E402
+import runner_common as RC  # noqa: E402  (capa compartida: assemble + guardrails + export)
 
 HERE = Path(__file__).resolve().parent
 CCDD = HERE.parent / "ccdd.py"
@@ -52,12 +53,6 @@ def ccdd(*args):
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     return subprocess.run([sys.executable, str(CCDD), *args], env=env,
                           capture_output=True, text=True, encoding="utf-8", errors="replace")
-
-
-def guardrail_onfail():
-    import yaml
-    c = yaml.safe_load((CONTRACT / "context.yaml").read_text(encoding="utf-8"))
-    return {g["id"]: g.get("on_fail") for g in c["contract"].get("guardrails", [])}
 
 
 def call_llm(provider, model, system, user):
@@ -115,35 +110,21 @@ def _utf8():
             pass
 
 
+def _merge_signals(parsed, auto):
+    return ((parsed or {}).get("signals", []) or []) + auto
+
+
+def _write_report_if_json(as_json, report):
+    if as_json:
+        Path("analysis_report.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def assemble_and_export(a, inputs):
-    """assemble + guardrails deterministas + export del payload (vía ccdd.py).
-    fail() ante cualquier corte. Devuelve (payload, triggered, auto)."""
-    last = CONTRACT / "last-assembly.json"
-    tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
-    try:
-        json.dump(inputs, tmp, ensure_ascii=False)
-        tmp.close()
-        r = ccdd("assemble", str(CONTRACT), "--inputs", tmp.name)
-        if r.returncode == 2:  # un slot crítico no entra (p.ej. design_document < min_tokens)
-            fail(3, "análisis insuficiente / ensamblado inválido:\n" + (r.stdout or "").strip())
-        verdict = (json.loads(last.read_text(encoding="utf-8"))["verdict"]
-                   if last.exists() else {"passed": r.returncode == 0, "guardrails": []})
-        onfail = guardrail_onfail()
-        triggered = [g["id"] for g in verdict.get("guardrails", []) if not g["passed"]]
-        aborted = [g for g in triggered if onfail.get(g) == "abort"]
-        if aborted or not verdict.get("passed", True):
-            fail(2, "guardrail abortó (sin llamada API): " + ", ".join(aborted or triggered))
-        auto = [H.auto_signal(g) for g in triggered if onfail.get(g) == "reroute"]
-        if a.provider == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
-            fail(3, "ANTHROPIC_API_KEY no está en el entorno (requerida antes de llamar al modelo)")
-        r = ccdd("export", str(CONTRACT), "--format", "anthropic", "--inputs", tmp.name)
-        if r.returncode != 0:
-            fail(3, "export del contexto falló:\n" + (r.stderr or r.stdout or ""))
-        payload = json.loads(r.stdout)
-    finally:
-        os.unlink(tmp.name)
-        last.unlink(missing_ok=True)  # no dejar artefacto de runtime en el directorio del contrato
-    return payload, triggered, auto
+    """Capa compartida (runner_common): assemble + guardrails + export para este contrato."""
+    return RC.assemble_and_export(
+        a, inputs, ccdd, CONTRACT, fail,
+        "análisis insuficiente / ensamblado inválido:")
 
 
 def run(argv=None):
@@ -160,13 +141,11 @@ def run(argv=None):
     raw = call_llm(a.provider, model, payload["system"], payload["messages"][0]["content"] + JSON_REQ)
     free_text, parsed = H.split_text_and_json(raw)
     print(free_text)  # texto libre del análisis -> stdout SIEMPRE
-    signals = ((parsed or {}).get("signals", []) or []) + auto
+    signals = _merge_signals(parsed, auto)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     report = H.build_report("pre-complexity-agent", CONTRACT_VERSION, str(inp), ts, parsed, signals,
                             triggered, "domain_context" in inputs)
-    if a.as_json:
-        Path("analysis_report.json").write_text(
-            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _write_report_if_json(a.as_json, report)
     return 1 if report["summary"]["critical"] > 0 else 0
 
 

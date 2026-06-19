@@ -59,6 +59,17 @@ def _parse_sig_python(signature):
 _OPEN, _CLOSE = "([{<", ")]}>"
 
 
+def _scan_delim(ch, depth, quote):
+    """Actualiza (depth, quote) para un carácter fuera de string (guard clauses, sin anidar)."""
+    if ch in "\"'`":
+        return depth, ch
+    if ch in _OPEN:
+        return depth + 1, quote
+    if ch in _CLOSE:
+        return max(0, depth - 1), quote
+    return depth, quote
+
+
 def _split_top_level(s):
     """Parte `s` por comas de nivel 0, respetando ()[]{}<> y comillas. Determinista, sin deps."""
     out, cur, depth, quote = [], "", 0, None
@@ -68,12 +79,7 @@ def _split_top_level(s):
             if ch == quote:
                 quote = None
             continue
-        if ch in "\"'`":
-            quote = ch
-        elif ch in _OPEN:
-            depth += 1
-        elif ch in _CLOSE:
-            depth = max(0, depth - 1)
+        depth, quote = _scan_delim(ch, depth, quote)
         if ch == "," and depth == 0:
             out.append(cur)
             cur = ""
@@ -125,7 +131,13 @@ def parse_sig(signature, language=None):
 # ---- una función por regla; cada una devuelve lista de findings ----
 def r_required(ctx):
     return [err("tc-required", "falta campo requerido: " + f)
-            for f in ["task", "intent", "target", "signature", "budget", "tests"] if f not in ctx["fm"]]
+            for f in ["task", "intent", "target", "signature", "budget", "tests", "test_command"] if f not in ctx["fm"]]
+
+def r_test_command(ctx):
+    cmd = ctx["fm"].get("test_command")
+    if not isinstance(cmd, str) or not cmd.strip():
+        return [err("tc-test-command", "test_command debe ser un string no vacío con el comando de ejecución (ej. 'npm test')")]
+    return []
 
 def r_intent_atomic(ctx):
     intent = str(ctx["fm"].get("intent", ""))
@@ -182,6 +194,14 @@ def r_tests_frozen(ctx):
         return [err("tc-tests-frozen", f"los tests no referencian la firma '{ctx['fn_name']}'")]
     return []
 
+def _count_examples(body):
+    """(texto de ## Examples, nº de líneas-ejemplo)."""
+    ex = section_body(body, "## Examples")
+    lines = [ln for ln in ex.splitlines()
+             if ln.strip().startswith("- ") or "→" in ln or "->" in ln]
+    return ex, len(lines)
+
+
 def r_sections(ctx):
     body = ctx["body"]
     pos = [(s, body.find(s)) for s in SECTIONS]
@@ -189,8 +209,7 @@ def r_sections(ctx):
     present = [i for _, i in pos if i != -1]
     if present != sorted(present):
         out.append(err("tc-sections", "las secciones no están en el orden canónico"))
-    ex = section_body(body, "## Examples")
-    n = len([ln for ln in ex.splitlines() if ln.strip().startswith("- ") or "→" in ln or "->" in ln])
+    ex, n = _count_examples(body)
     if ex and n < 2:
         out.append(err("tc-sections", "## Examples debe tener ≥2 ejemplos resueltos"))
     return out
@@ -245,7 +264,16 @@ def err(rule, msg):
     return {"level": "error", "rule": rule, "msg": msg}
 
 
-RULES = [r_required, r_language, r_intent_atomic, r_signature, r_budget_sane, r_tests_frozen,
+def r_target_atomic(ctx):
+    target = ctx["fm"].get("target")
+    if not target:
+        return []
+    if isinstance(target, list) or (isinstance(target, str) and ("," in target or "\n" in target)):
+        return [err("tc-target-atomic", "El campo 'target' debe ser UN SOLO archivo. Para refactors que crucen archivos, crea múltiples Task Contracts.")]
+    return []
+
+
+RULES = [r_required, r_test_command, r_language, r_intent_atomic, r_target_atomic, r_signature, r_budget_sane, r_tests_frozen,
          r_sections, r_stop_rule, r_no_algorithm, r_deps, r_issue_ref]
 
 

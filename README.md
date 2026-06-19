@@ -36,9 +36,9 @@ veredicto van en código que no se puede engañar.
 | `runners/complexity_runner.py` | Orquestador L3 para el contrato `complexity-agent` | no |
 | `runners/complexity_gate.py` | Gate determinista; CLI o hook PostToolUse de Claude Code | no |
 | `runners/tc_lint.py` | Linter del **task-contract** (anti-desvarío del autor) | no |
-| `runners/task_gate.py` | Veredicto unificado: tc_lint + complejidad≤budget + tests congelados + firma | no |
+| `runners/task_gate.py` | Veredicto unificado: tc_lint + tests congelados (Gate 1) + complejidad≤budget (Gate 2) + firma | no |
 | `runners/approve_tests.py` | Firma humana de los tests (`tests_sha256`), a prueba de manipulación | no |
-| `runners/orchestrator.py` | Loop: pequeño implementa → gate → reintenta → escala al grande | sí (worker) |
+| `runners/orchestrator.py` | Loop **stateless**: pequeño implementa → tests fallan/complejidad falla → reintenta (sin memoria) → escala al grande | sí (worker) |
 | `runners/test_audit.py` | Auditoría *advisory* de los tests contra el contrato | sí (advisory) |
 | `runners/measure.py` | Harness de medición: tokens/intentos/escalados, costo vs loop grande | no |
 | `runners/complexity_mcp.py` | Servidor MCP (stdio JSON-RPC) que expone el sustrato | no |
@@ -86,7 +86,13 @@ Copiá `.mcp.json.example` a `.mcp.json`. Expone 4 tools (sin LLM):
 - `lint_task_contract(contract_text, test_code?)` - valida un task-contract (anti-desvarío del modelo grande).
 - `request_human_attestation(code, reason)` - permite al agente pedir una excepción firmada cuando no puede reducir la complejidad por reglas de negocio.
 
-## El loop grande/pequeño
+## El loop grande/pequeño (Stateless Feedback y Evolución CEFL)
+
+El loop es **stateless** (sin estado) pero incorpora mecánicas evolutivas inspiradas en CEFL (Candidate Expansion and Freezing):
+
+1. **Expansión Paralela:** El orquestador no pide 1 intento; pide N candidatos paralelos (`--candidates 3`).
+2. **Torneo de Complejidad (Freezing):** Cada candidato se aísla y se valida contra los tests y el budget de complejidad. Si varios pasan, el Gate elige automáticamente **el que tenga la menor puntuación matemática de complejidad**, congelándolo como la respuesta definitiva.
+3. **Feedback Masivo (Partial Success):** Si todos los candidatos fallan, el sistema no reenvía código roto uno por uno. Agrupa las N soluciones fallidas junto a sus errores (stack traces) en un JSON combinado masivo. Esto permite al modelo en la siguiente iteración aprender cruzando los fracasos de todas sus rutas exploratorias, resolviendo problemas que un solo reintento jamás lograría.
 
 ```bash
 # OFFLINE (sin modelo): stub que entrega 1 impl rota y 1 buena -> intento 1 FAIL, intento 2 PASS
@@ -95,9 +101,9 @@ python runners/orchestrator.py examples/sandbox/loop_demo/task.md \
   --stub examples/sandbox/loop_demo/_stub_bad.py \
   --stub examples/sandbox/loop_demo/_stub_good.py --max-attempts 3
 
-# CON MODELOS: el pequeño (LM Studio/Ollama) implementa contra el gate; escala al grande si se atasca
+# CON MODELOS: el pequeño genera 3 vías paralelas; si todas fallan, escala al grande
 python runners/orchestrator.py examples/sandbox/loop_demo/task.md \
-  --provider openai --model <modelo-chico> \
+  --provider openai --model <modelo-chico> --candidates 3 \
   --escalate-provider ollama --escalate-model <modelo-grande> --escalate-attempts 2
 ```
 

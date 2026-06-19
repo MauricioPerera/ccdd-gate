@@ -7,6 +7,7 @@ budget: { cyclomatic_max: 5, nesting_max: 2, params_max: 2, lines_max: 12 }
 deps_allowed: []
 forbids: ["import", "estado global"]
 tests: test_hamming.py
+test_command: "python -m unittest test_hamming.py"
 require_test_approval: true
 spec_version: "0.1"
 tests_sha256: "84497fb903df34bc09eadfcfe685e791ce681c191142ea46f2eb486c145bf64d"
