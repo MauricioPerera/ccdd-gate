@@ -98,6 +98,15 @@ TOOLS = [
             "filename": {"type": "string", "description": "Nombre de archivo (opcional)."}
         }},
     },
+    {
+        "name": "run_ephemeral_agent",
+        "description": "Delega un Task Contract a un LLM local (Small Executor). Lee el contrato, envía el código al LLM, y entra en un bucle de reflexión (max 3 veces) validando con task_gate.py hasta que el código pase el gate determinista. Retorna el resultado final y el número de intentos.",
+        "inputSchema": {"type": "object", "required": ["task_path"], "properties": {
+            "task_path": {"type": "string", "description": "Ruta relativa o absoluta al archivo del Task Contract (.md)."},
+            "model": {"type": "string", "description": "Nombre del modelo a usar (default: gemma-4-12b-coder)."},
+            "api_url": {"type": "string", "description": "URL base de la API OpenAI-compatible (default: http://localhost:1234/v1)."}
+        }},
+    },
 ]
 
 
@@ -242,11 +251,75 @@ def request_human_attestation(args):
         "message": f"Se ha registrado la petición oficial para el hash {h}. Avisa al arquitecto humano que debe revisar esta petición para desbloquear el gate."
     }
 
+def run_ephemeral_agent(args):
+    import urllib.request
+    import subprocess
+    import json
+    import re
+    
+    task_path = args.get("task_path")
+    model = args.get("model", "gemma-4-12b-coder")
+    api_url = args.get("api_url", "http://localhost:1234/v1")
+    
+    tp = Path(task_path)
+    if not tp.exists():
+        return {"status": "FAIL", "reason": f"Task file no encontrado: {task_path}"}
+        
+    try:
+        task_content = tp.read_text(encoding="utf-8")
+        fm, body = tc_lint.split_front_matter(task_content)
+        target = tp.parent / fm["target"]
+        if not target.exists():
+            return {"status": "FAIL", "reason": f"Target no encontrado: {target}"}
+            
+        original_source = target.read_text(encoding="utf-8")
+    except Exception as e:
+        return {"status": "FAIL", "reason": f"Error parseando el contrato o leyendo target: {e}"}
+        
+    messages = [
+        {"role": "system", "content": "Eres un Small Executor experto en refactorización orientada a métricas de complejidad ciclomática."},
+        {"role": "user", "content": f"### TASK CONTRACT:\\n{task_content}\\n\\n### CODIGO FUENTE ({fm['target']}):\\n```\\n{original_source}\\n```\\n\\nDevuelve TODO el archivo refactorizado dentro de un bloque markdown de código (```). No alteres la firma externa ni los property tests."}
+    ]
+    
+    max_iterations = 3
+    for i in range(max_iterations):
+        data = json.dumps({"model": model, "messages": messages, "temperature": 0.2, "max_tokens": 4000}).encode("utf-8")
+        req = urllib.request.Request(f"{api_url}/chat/completions", data=data, headers={"Content-Type": "application/json"})
+        
+        try:
+            with urllib.request.urlopen(req, timeout=300) as response:
+                res_json = json.loads(response.read().decode("utf-8"))
+                answer = res_json["choices"][0]["message"]["content"]
+        except Exception as e:
+            return {"status": "FAIL", "iteration": i+1, "reason": f"Error conectando al LLM en {api_url}: {e}"}
+            
+        code_match = re.search(r"```[a-zA-Z]*\n(.*?)```", answer, re.DOTALL)
+        new_code = code_match.group(1).strip() if code_match else answer.strip()
+        
+        # Sobrescribir temporalmente
+        target.write_text(new_code, encoding="utf-8")
+        
+        # Ejecutar task_gate.py
+        gate_script = HERE / "task_gate.py"
+        proc = subprocess.run([sys.executable, str(gate_script), str(tp)], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        
+        if proc.returncode == 0:
+            return {"status": "PASS", "iterations": i+1, "gate_output": proc.stdout}
+        else:
+            messages.append({"role": "assistant", "content": answer})
+            messages.append({"role": "user", "content": f"El validador task_gate.py rechazó tu código. Output:\\n{proc.stdout or proc.stderr}\\n\\nPor favor corrige tu código para que pase los requerimientos (ej. bajando la complejidad o asegurando que la firma sea exacta) y devuelve de nuevo TODO el archivo refactorizado."})
+            
+    # Restaurar si falló en todas
+    target.write_text(original_source, encoding="utf-8")
+    return {"status": "FAIL", "iterations": max_iterations, "reason": "Max iteraciones alcanzadas. Se restauró el archivo original.", "last_gate_output": proc.stdout or proc.stderr}
+
+
 DISPATCH = {"measure_complexity": measure_complexity,
             "complexity_rubric": complexity_rubric,
             "scan_guardrails": scan_guardrails,
             "lint_task_contract": lint_task_contract,
-            "request_human_attestation": request_human_attestation}
+            "request_human_attestation": request_human_attestation,
+            "run_ephemeral_agent": run_ephemeral_agent}
 
 
 def send(mid, result=None, error=None):
