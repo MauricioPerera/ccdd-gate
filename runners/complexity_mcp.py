@@ -209,7 +209,16 @@ def lint_task_contract(args):
         task = Path(d) / "task.md"
         task.write_text(args["contract_text"], encoding="utf-8")
         if "test_code" in args:
-            (Path(d) / tests_name).write_text(args["test_code"], encoding="utf-8")
+            # Respeta el subdirectorio de `tests:` creando los dirs intermedios; nunca escribe
+            # fuera del tempdir (una ruta con `..`/absoluta cae al basename dentro del tempdir).
+            base = Path(d)
+            tp = base / tests_name
+            try:
+                tp.resolve().relative_to(base.resolve())
+            except ValueError:
+                tp = base / Path(tests_name).name
+            tp.parent.mkdir(parents=True, exist_ok=True)
+            tp.write_text(args["test_code"], encoding="utf-8")
         findings = tc_lint.lint(task)
     errors = sum(1 for f in findings if f["level"] == "error")
     return {"ok": errors == 0, "errors": errors,
