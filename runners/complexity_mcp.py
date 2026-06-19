@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metrics    # noqa: E402  (registra el backend python)
 import metrics_backends as mb  # noqa: E402
 import tc_lint    # noqa: E402
+import task_gate  # noqa: E402  (veredicto unificado determinista)
 
 HERE = Path(__file__).resolve().parent
 CONTRACTS = HERE.parent / "contracts"
@@ -83,6 +84,19 @@ TOOLS = [
             "contract_text": {"type": "string", "description": "El task-contract completo (--- yaml --- + cuerpo)."},
             "test_code": {"type": "string", "description": "Código de los property-tests congelados (opcional pero "
                           "recomendado: sin él la regla tc-tests-frozen falla)."}}},
+    },
+    {
+        "name": "run_task_gate",
+        "description": "Veredicto DETERMINISTA unificado de una task (lo mismo que la CLI task_gate.py, "
+                       "pero en memoria, sin tocar el repo): 0) el contrato lintea, 1) aprobación de tests "
+                       "(si el contrato la exige, sha256 de los tests = el firmado), 2) tests congelados pasan, "
+                       "3) complejidad de la función implementada ≤ budget. PASS solo si todas. Sin LLM. "
+                       "Da el PASS/FAIL final que measure+lint por separado no dan. Devuelve {verdict, stage, ...}.",
+        "inputSchema": {"type": "object", "required": ["contract_text", "code"], "properties": {
+            "contract_text": {"type": "string", "description": "El task-contract completo (--- yaml --- + cuerpo)."},
+            "code": {"type": "string", "description": "Código que implementa la función del contrato (se escribe en 'target')."},
+            "test_code": {"type": "string", "description": "Property-tests congelados (se escriben en 'tests'). "
+                          "Necesario para los gates de tests/aprobación; su sha256 debe casar con tests_sha256 del front-matter."}}},
     },
     {
         "name": "request_human_attestation",
@@ -224,6 +238,33 @@ def lint_task_contract(args):
     return {"ok": errors == 0, "errors": errors,
             "warnings": len(findings) - errors, "findings": findings,
             "tests_provided": "test_code" in args}
+
+
+def run_task_gate(args):
+    """Veredicto unificado en memoria: escribe contrato + code + tests a un tempdir y reutiliza
+    task_gate.gate() — así el resultado es IDÉNTICO al de la CLI task_gate.py. tests_sha256 vive en
+    el front-matter del contrato (lo usa el gate de aprobación), no como argumento aparte."""
+    contract_text = args["contract_text"].replace("\r\n", "\n")
+    fm, _ = tc_lint.split_front_matter(contract_text)
+    fm = fm or {}
+    files = [(fm.get("target", "target.py"), args.get("code", "")),
+             (fm.get("tests", "frozen_tests.py"), args.get("test_code", ""))]
+    with tempfile.TemporaryDirectory() as d:
+        base = Path(d)
+        (base / "task.md").write_text(contract_text, encoding="utf-8", newline="")
+        for name, content in files:
+            # Respeta subdirectorios de target/tests; nunca escribe fuera del tempdir
+            # (una ruta con `..`/absoluta cae al basename dentro del tempdir).
+            tp = base / name
+            try:
+                tp.resolve().relative_to(base.resolve())
+            except ValueError:
+                tp = base / Path(name).name
+            tp.parent.mkdir(parents=True, exist_ok=True)
+            # newline="" evita que el SO traduzca \n→\r\n: el gate de aprobación de tests es
+            # byte-exacto (sha256), así que los bytes escritos deben ser los que mandó el caller.
+            tp.write_text(content, encoding="utf-8", newline="")
+        return task_gate.gate(str(base / "task.md"))
 
 
 def request_human_attestation(args):
@@ -570,6 +611,7 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "complexity_rubric": complexity_rubric,
             "scan_guardrails": scan_guardrails,
             "lint_task_contract": lint_task_contract,
+            "run_task_gate": run_task_gate,
             "request_human_attestation": request_human_attestation,
             "run_ephemeral_agent": run_ephemeral_agent}
 
