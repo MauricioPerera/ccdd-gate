@@ -74,9 +74,29 @@ Cada archivo que el agente escribe se mide con el backend de su lenguaje (por ex
 refactor. Determinista, sin tokens. Una extensión sin backend registrado es un **no-op anunciado**
 (aviso por stderr, exit 0), nunca un fallo silencioso. Hoy el único backend es Python.
 
+### Instalación como paquete (console scripts)
+
+Para usar ccdd-gate sin clonar ni rutas absolutas, instálalo como distribución (deja los scripts
+`ccdd-mcp`, `ccdd-lint`, `ccdd-gate`, `ccdd-measure` en el PATH):
+
+```bash
+pipx install ccdd-gate        # o: uvx ccdd-gate · o: pip install ccdd-gate
+```
+
+> El **modo desde el repo** (`python runners/<x>.py`) sigue funcionando para desarrollo.
+> Nota: los datos de gobernanza (rubric/attestations bajo `contracts/`, schema en la raíz) se
+> resuelven en el layout del repo / instalación editable (`pip install -e .`); el núcleo
+> determinista (medir/lintar/gate/MCP) funciona en cualquier modo.
+
 ### Como MCP
 
-Copiá `.mcp.json.example` a `.mcp.json`. Expone 4 tools (sin LLM):
+Con el paquete instalado, el `.mcp.json` no necesita clonar el repo ni `cwd`:
+
+```json
+{ "mcpServers": { "ccdd": { "command": "ccdd-mcp" } } }
+```
+
+Desde el repo, copiá `.mcp.json.example` a `.mcp.json`. Tools (sin LLM):
 
 - `measure_complexity(code)` — métricas AST reales por función.
 - `complexity_rubric(agent)` — el criterio gobernado (system/policies/thresholds) firmado.
@@ -84,6 +104,7 @@ Copiá `.mcp.json.example` a `.mcp.json`. Expone 4 tools (sin LLM):
   igual en todo lenguaje), anidamiento (estructural, vía el backend del lenguaje), `dsv_check` (anti-alucinación por "drift", exige coincidencia exacta con HEAD local) y específicos por
   lenguaje opt-in (`runners/guardrails_lang.yaml`, p. ej. `no-eval`). `agent` evalúa contra ese contrato. Sin `language`, Python.
 - `lint_task_contract(contract_text, test_code?)` - valida un task-contract (anti-desvarío del modelo grande).
+- `run_task_gate(contract_text, code, test_code)` - **veredicto PASS/FAIL unificado** (lint + aprobación de tests + tests congelados + complejidad ≤ budget), idéntico a la CLI `task_gate.py`.
 - `request_human_attestation(code, reason)` - permite al agente pedir una excepción firmada cuando no puede reducir la complejidad por reglas de negocio.
 
 ## El loop grande/pequeño (Stateless Feedback y Evolución CEFL)
