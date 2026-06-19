@@ -110,17 +110,24 @@ def main(argv=None):
     ap.add_argument("--post", action="store_true", help="publica el reporte vía gh")
     a = ap.parse_args(argv if argv is not None else sys.argv[1:])
 
-    if a.base:
-        paths = contracts_for_changed(git_changed(a.base), ROOT)
-    else:
-        paths = [c for c in a.contracts if is_contract(c)]
+    paths = _select_contracts(a)
     results = run(paths)
     body = combined_report(results)
     print(body)
+    _maybe_post(a, body)
+    return 0 if overall_pass(results) else 1
+
+
+def _select_contracts(a):
+    if a.base:
+        return contracts_for_changed(git_changed(a.base), ROOT)
+    return [c for c in a.contracts if is_contract(c)]
+
+
+def _maybe_post(a, body):
     if a.post and a.repo and a.issue:
         print(json.dumps(reporter.upsert_comment(a.repo, a.issue, body), ensure_ascii=False),
               file=sys.stderr)
-    return 0 if overall_pass(results) else 1
 
 
 if __name__ == "__main__":

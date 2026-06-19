@@ -46,23 +46,25 @@ def normalize_issue_ref(s):
     return f"{owner}/{repo}#{n}"
 
 
+def _md_matches_issue(md, target):
+    """True si el task-contract `md` referencia el issue `target`. Cualquier error -> False."""
+    try:
+        fm, _ = tc_lint.split_front_matter(md.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    ref = (fm or {}).get("issue")
+    if not ref:
+        return False
+    try:
+        return normalize_issue_ref(ref) == target
+    except ValueError:
+        return False
+
+
 def contracts_referencing(issue_ref, root):
     """Rutas de task-contracts (*.md) cuyo campo `issue` resuelve al mismo issue. Función pura."""
     target = normalize_issue_ref(issue_ref)
-    out = []
-    for md in sorted(Path(root).rglob("*.md")):
-        try:
-            fm, _ = tc_lint.split_front_matter(md.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        ref = (fm or {}).get("issue")
-        if ref:
-            try:
-                if normalize_issue_ref(ref) == target:
-                    out.append(str(md))
-            except ValueError:
-                continue
-    return out
+    return [str(md) for md in sorted(Path(root).rglob("*.md")) if _md_matches_issue(md, target)]
 
 
 def contract_state(task_path, run_gate=True):
@@ -130,6 +132,36 @@ def sync_labels(issue_ref, desired, post=False):
     return {"posted": True, **plan}
 
 
+def _cmd_status(a):
+    if a.contract:
+        state = contract_state(a.contract, run_gate=not a.no_gate)
+        out = {"contract": a.contract, "state": state, "labels": sorted(state_to_labels(state))}
+        if state.get("issue"):
+            try:
+                out["issue"] = issue_state(state["issue"])
+            except Exception as e:
+                out["issue_error"] = str(e)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+    if a.issue:
+        print(json.dumps({"issue": a.issue,
+                          "contracts": contracts_referencing(a.issue, a.root)},
+                         ensure_ascii=False, indent=2))
+        return 0
+    print("status requiere --contract o --issue", file=sys.stderr)
+    return 2
+
+
+def _cmd_sync_labels(a):
+    state = contract_state(a.contract)
+    if not state.get("issue"):
+        print("el contrato no tiene campo 'issue'", file=sys.stderr)
+        return 2
+    print(json.dumps(sync_labels(state["issue"], state_to_labels(state), post=a.post),
+                     ensure_ascii=False, indent=2))
+    return 0
+
+
 def main(argv=None):
     for _s in (sys.stdout, sys.stderr):
         try:
@@ -149,31 +181,9 @@ def main(argv=None):
     a = ap.parse_args(argv if argv is not None else sys.argv[1:])
 
     if a.cmd == "status":
-        if a.contract:
-            state = contract_state(a.contract, run_gate=not a.no_gate)
-            out = {"contract": a.contract, "state": state, "labels": sorted(state_to_labels(state))}
-            if state.get("issue"):
-                try:
-                    out["issue"] = issue_state(state["issue"])
-                except Exception as e:
-                    out["issue_error"] = str(e)
-            print(json.dumps(out, ensure_ascii=False, indent=2))
-            return 0
-        if a.issue:
-            print(json.dumps({"issue": a.issue,
-                              "contracts": contracts_referencing(a.issue, a.root)},
-                             ensure_ascii=False, indent=2))
-            return 0
-        print("status requiere --contract o --issue", file=sys.stderr)
-        return 2
+        return _cmd_status(a)
     if a.cmd == "sync-labels":
-        state = contract_state(a.contract)
-        if not state.get("issue"):
-            print("el contrato no tiene campo 'issue'", file=sys.stderr)
-            return 2
-        print(json.dumps(sync_labels(state["issue"], state_to_labels(state), post=a.post),
-                         ensure_ascii=False, indent=2))
-        return 0
+        return _cmd_sync_labels(a)
     return 2
 
 

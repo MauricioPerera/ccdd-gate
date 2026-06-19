@@ -73,18 +73,28 @@ def main(argv=None):
     results = [O.implement(t, a.provider, a.model, a.max_attempts, escalate, a.escalate_attempts, stub_iter)
                for t in a.tasks]
     rows = [summarize_task(r) for r in results]
+    ours, loop, passed, saving = _aggregate(rows)
+    out = {"price_ref": PRICE, "per_task": rows,
+           "totals": _totals(rows, ours, loop, passed, saving)}
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _aggregate(rows):
+    """(ours_usd, big_loop_usd, passed, api_saving_pct) sobre las filas por tarea."""
     ours = sum(x["ours_usd"] for x in rows)
     loop = sum(x["big_loop_usd"] for x in rows)
     passed = sum(1 for x in rows if x["result"] == "PASS")
     saving = (1 - ours / loop) * 100 if loop else 0.0
-    out = {"price_ref": PRICE, "per_task": rows,
-           "totals": {"tasks": len(rows), "passed": passed,
-                      "escalations": sum(x["escalations"] for x in rows),
-                      "gate_runs_at_0_tokens": sum(x["attempts"] for x in rows),
-                      "ours_usd": round(ours, 5), "big_loop_usd": round(loop, 5),
-                      "api_saving_pct": round(saving, 1)}}
-    print(json.dumps(out, ensure_ascii=False, indent=2))
-    return 0
+    return ours, loop, passed, saving
+
+
+def _totals(rows, ours, loop, passed, saving):
+    return {"tasks": len(rows), "passed": passed,
+            "escalations": sum(x["escalations"] for x in rows),
+            "gate_runs_at_0_tokens": sum(x["attempts"] for x in rows),
+            "ours_usd": round(ours, 5), "big_loop_usd": round(loop, 5),
+            "api_saving_pct": round(saving, 1)}
 
 
 if __name__ == "__main__":

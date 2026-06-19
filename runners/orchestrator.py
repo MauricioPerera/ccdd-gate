@@ -93,6 +93,44 @@ def get_complexity_score(verdict):
     return m.get("cyclomatic", 0) + m.get("nesting_depth", 0) + m.get("parameter_count", 0)
 
 
+def _generate_candidates(provider, model, prompt, stub_iter, temp, candidates_n):
+    """CEFL: genera N candidatos. Serial para stub/N=1; en paralelo (threads) si no."""
+    if provider == "stub" or candidates_n == 1:
+        return [generate_candidate(provider, model, prompt, stub_iter, temp)
+                for _ in range(candidates_n)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=candidates_n) as executor:
+        futures = [executor.submit(generate_candidate, provider, model, prompt, stub_iter, temp)
+                   for _ in range(candidates_n)]
+        return [fut.result() for fut in concurrent.futures.as_completed(futures)]
+
+
+def _e3_verdict(verdict, code, nonce):
+    """Gate 3: degrada a FAIL si un candidato PASS no incluyó el nonce E3 esperado."""
+    if verdict.get("verdict") == "PASS" and f"# E3_NONCE: {nonce}" not in code:
+        return {"verdict": "FAIL", "stage": "gate3-entropy",
+                "detail": f"El código falló la auditoría criptográfica E3. Olvidaste incluir '# E3_NONCE: {nonce}'"}
+    return verdict
+
+
+def _evaluate_candidates(p, target, candidates_code, nonce):
+    """Escribe y evalúa cada candidato aisladamente (con Gate 3 E3). Devuelve la lista evaluada."""
+    evaluated = []
+    for idx, code in enumerate(candidates_code):
+        target.write_text(code, encoding="utf-8")
+        verdict = _e3_verdict(run_gate(p), code, nonce)
+        evaluated.append({"index": idx, "code": code, "verdict": verdict})
+    return evaluated
+
+
+def _fail_feedback(evaluated, candidates_n):
+    """Feedback combinado masivo cuando ningún candidato pasó."""
+    return {
+        "verdict": "FAIL_ALL_CANDIDATES",
+        "message": f"Se generaron {candidates_n} candidatos paralelos y TODOS fallaron. Analiza los errores y proporciona una solución unificada que corrija los defectos.",
+        "candidates_evaluations": [{"candidate_code": e["code"], "gate_error": e["verdict"]} for e in evaluated],
+    }
+
+
 def run_rounds(p, fm, body, target, provider, model, max_attempts, label, attempts, feedback, stub_iter, candidates_n, temp):
     """max_attempts intentos. En cada intento, pide `candidates_n` soluciones en paralelo.
     Si alguna pasa, elige la de menor complejidad (CEFL). Si ninguna pasa, retroalimenta los N fallos."""
@@ -101,75 +139,30 @@ def run_rounds(p, fm, body, target, provider, model, max_attempts, label, attemp
         nonce_hash = hashlib.sha256(nonce.encode()).hexdigest()
         print(f"[E3 Entropy] Generando commit para intento {attempt_num+1}: SHA256={nonce_hash[:16]}...")
         prompt = build_prompt(fm, body, feedback, nonce)
-        
-        # 1. CEFL: Generar N candidatos en paralelo
-        candidates_code = []
-        if provider == "stub" or candidates_n == 1:
-            for _ in range(candidates_n):
-                candidates_code.append(generate_candidate(provider, model, prompt, stub_iter, temp))
-        else:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=candidates_n) as executor:
-                futures = [executor.submit(generate_candidate, provider, model, prompt, stub_iter, temp) 
-                           for _ in range(candidates_n)]
-                for fut in concurrent.futures.as_completed(futures):
-                    candidates_code.append(fut.result())
 
-        # 2. Evaluar cada candidato aisladamente
-        evaluated = []
+        candidates_code = _generate_candidates(provider, model, prompt, stub_iter, temp, candidates_n)
         original_target_code = target.read_text(encoding="utf-8") if target.exists() else ""
-        
-        for idx, code in enumerate(candidates_code):
-            target.write_text(code, encoding="utf-8")
-            verdict = run_gate(p)
-            
-            # Gate 3: E3 Entropy Reveal
-            if verdict.get("verdict") == "PASS":
-                if f"# E3_NONCE: {nonce}" not in code:
-                    verdict = {
-                        "verdict": "FAIL", 
-                        "stage": "gate3-entropy", 
-                        "detail": f"El código falló la auditoría criptográfica E3. Olvidaste incluir '# E3_NONCE: {nonce}'"
-                    }
-                    
-            evaluated.append({"index": idx, "code": code, "verdict": verdict})
-            
-        # 3. Filtrar los que pasaron (PASS)
+        evaluated = _evaluate_candidates(p, target, candidates_code, nonce)
+
         passed_candidates = [e for e in evaluated if e["verdict"].get("verdict") == "PASS"]
-        
-        # 4. Seleccionar ganador
         if passed_candidates:
-            # Ordenar por el score de complejidad (CEFL freezing best)
+            # Ordenar por el score de complejidad (CEFL freezing best) y congelar el ganador
             passed_candidates.sort(key=lambda x: get_complexity_score(x["verdict"]))
             best = passed_candidates[0]
-            
-            # Escribir el ganador final en target
             target.write_text(best["code"], encoding="utf-8")
-            
             attempts.append({"n": attempt_num + 1, "by": label,
                              "verdict": "PASS", "stage": best["verdict"].get("stage"),
                              "cefl_candidates": candidates_n,
                              "in_tok": len(prompt) // 4, "out_tok": len(best["code"]) // 4,
                              "e3_hash": nonce_hash})
             return True, None
-            
-        # 5. Si ninguno pasó, restaurar código original y preparar feedback combinado masivo
+
+        # Ninguno pasó: restaurar código original y preparar feedback combinado
         target.write_text(original_target_code, encoding="utf-8")
-        
-        fail_feedback = {
-            "verdict": "FAIL_ALL_CANDIDATES",
-            "message": f"Se generaron {candidates_n} candidatos paralelos y TODOS fallaron. Analiza los errores y proporciona una solución unificada que corrija los defectos.",
-            "candidates_evaluations": []
-        }
-        for e in evaluated:
-            fail_feedback["candidates_evaluations"].append({
-                "candidate_code": e["code"],
-                "gate_error": e["verdict"]
-            })
-            
         attempts.append({"n": attempt_num + 1, "by": label,
                          "verdict": "FAIL", "stage": "all_candidates_failed",
                          "cefl_candidates": candidates_n})
-        feedback = fail_feedback
+        feedback = _fail_feedback(evaluated, candidates_n)
 
     return False, feedback
 
@@ -235,12 +228,19 @@ def main(argv=None):
     
     results = [implement(t, a.provider, a.model, a.max_attempts, escalate, a.escalate_attempts, stub_iter, a.candidates, a.temperature)
                for t in a.tasks]
-               
-    summary = {"total": len(results),
-               "passed": sum(1 for r in results if r["result"] == "PASS"),
-               "results": results}
+
+    summary = _summary(results)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    
+    return _exit_code(results, summary)
+
+
+def _summary(results):
+    return {"total": len(results),
+            "passed": sum(1 for r in results if r["result"] == "PASS"),
+            "results": results}
+
+
+def _exit_code(results, summary):
     if any(r["result"] == "INVALID" for r in results):
         return 2
     return 0 if summary["passed"] == summary["total"] else 1

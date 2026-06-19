@@ -402,6 +402,32 @@ def _build_ephemeral_prompts(ctx):
     return sys_prompt, user_prompt, target_block, start_idx, end_idx
 
 
+def _sse_delta_content(data_str):
+    """Extrae delta.content de una línea SSE de chat completions ('' si no aplica)."""
+    try:
+        delta = json.loads(data_str)["choices"][0].get("delta", {})
+    except json.JSONDecodeError:
+        return ""
+    return delta.get("content", "")
+
+
+def _read_sse_content(response):
+    """Acumula el content del stream SSE hasta [DONE]. Devuelve (content, timed_out)."""
+    import socket
+    content = ""
+    try:
+        for line in response:
+            if not line.startswith(b"data: "):
+                continue
+            data_str = line[6:].decode("utf-8").strip()
+            if data_str == "[DONE]":
+                break
+            content += _sse_delta_content(data_str)
+    except socket.timeout:
+        return content, True
+    return content, False
+
+
 def _stream_completion(api_url, model, messages):
     """Llama al LLM en streaming. Devuelve (partial_content, timed_out, error_dict)."""
     import urllib.request
@@ -411,26 +437,14 @@ def _stream_completion(api_url, model, messages):
                        "max_tokens": 8000, "stream": True}).encode("utf-8")
     req = urllib.request.Request(f"{api_url}/chat/completions", data=data,
                                  headers={"Content-Type": "application/json"})
-    partial_content = ""
     try:
         with urllib.request.urlopen(req, timeout=300) as response:
-            for line in response:
-                if not line.startswith(b"data: "):
-                    continue
-                data_str = line[6:].decode("utf-8").strip()
-                if data_str == "[DONE]":
-                    break
-                try:
-                    delta = json.loads(data_str)["choices"][0].get("delta", {})
-                except json.JSONDecodeError:
-                    continue
-                if "content" in delta:
-                    partial_content += delta["content"]
+            content, timed_out = _read_sse_content(response)
+            return content, timed_out, None
     except socket.timeout:
-        return partial_content, True, None
+        return "", True, None
     except Exception as e:
-        return partial_content, False, {"reason": f"Error conectando al LLM: {e}"}
-    return partial_content, False, None
+        return "", False, {"reason": f"Error conectando al LLM: {e}"}
 
 
 def _extract_new_code(messages, partial_content):
@@ -470,20 +484,25 @@ def _complexity_feedback(gate_json, signature):
     )
 
 
+def _stage_feedback(gate_json, signature):
+    """Feedback específico según la etapa del gate que falló."""
+    stage = gate_json.get("stage")
+    if stage == "gate2-complexity":
+        return _complexity_feedback(gate_json, signature)
+    if stage == "gate1-tests":
+        error_output = gate_json.get("output", "Error desconocido en los tests.")
+        return (f"[!] ALERTA SINTÁCTICA / TESTS: La ejecución del código falló. Revisa el siguiente error que lanzó el validador (puede ser un error de sintaxis o un test fallido):\n\n```\n{error_output}\n```\n\n"
+                "[!] INSTRUCCIÓN: Corrige EXACTAMENTE este error lógico o de sintaxis. Asegúrate de que el código sea Javascript/TypeScript válido y que cumpla la firma requerida.\n\n")
+    return ""
+
+
 def _build_feedback(output_str, signature):
     """Construye el prompt de feedback cuantitativo a partir del output del gate."""
     feedback = f"El validador matemático rechazó tu código. Output original:\n{output_str}\n\n"
     try:
         match = re.search(r'(\{.*"verdict":.*"FAIL".*\})', output_str, re.DOTALL)
         if match:
-            gate_json = json.loads(match.group(1))
-            stage = gate_json.get("stage")
-            if stage == "gate2-complexity":
-                feedback += _complexity_feedback(gate_json, signature)
-            elif stage == "gate1-tests":
-                error_output = gate_json.get("output", "Error desconocido en los tests.")
-                feedback += f"[!] ALERTA SINTÁCTICA / TESTS: La ejecución del código falló. Revisa el siguiente error que lanzó el validador (puede ser un error de sintaxis o un test fallido):\n\n```\n{error_output}\n```\n\n"
-                feedback += "[!] INSTRUCCIÓN: Corrige EXACTAMENTE este error lógico o de sintaxis. Asegúrate de que el código sea Javascript/TypeScript válido y que cumpla la firma requerida.\n\n"
+            feedback += _stage_feedback(json.loads(match.group(1)), signature)
     except Exception:
         pass
     feedback += "Por favor genera el código DESDE CERO aplicando estas correcciones. NO repitas el código roto."

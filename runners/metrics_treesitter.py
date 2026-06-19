@@ -91,16 +91,19 @@ class TreeSitterBackend(_mb.Backend):
         self._parser = parser
 
     # --- métricas por función ---
+    def _decision_weight(self, n, spec):
+        """+1 si el nodo es una decisión o un operador booleano contado (guard clauses planas)."""
+        if n.type in spec.decision_nodes:
+            return 1
+        if n.type == spec.boolop_node:
+            op = n.child_by_field_name("operator")
+            if op is not None and op.type in spec.boolop_ops:
+                return 1
+        return 0
+
     def _cyclomatic(self, fn):
-        c, spec = 1, self.spec
-        for n in _walk(fn):
-            if n.type in spec.decision_nodes:
-                c += 1
-            elif n.type == spec.boolop_node:
-                op = n.child_by_field_name("operator")
-                if op is not None and op.type in spec.boolop_ops:
-                    c += 1
-        return c
+        spec = self.spec
+        return 1 + sum(self._decision_weight(n, spec) for n in _walk(fn))
 
     def _nesting(self, node, depth=0):
         best = depth

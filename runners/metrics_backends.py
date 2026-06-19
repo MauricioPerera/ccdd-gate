@@ -40,17 +40,22 @@ def _ts():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# Bandas DETERMINISTAS por métrica (espejo de thresholds.txt, contrato firmado).
+# Ordenadas de mayor a menor: la primera cuyo umbral se alcanza define la severidad.
+_SEVERITY_BANDS = {
+    "cyclomatic":      [(21, "CRÍTICA"), (11, "ALTA")],
+    "nesting_depth":   [(5, "CRÍTICA"), (4, "ALTA")],
+    "function_length": [(81, "ALTA"), (41, "MEDIA")],
+    "parameter_count": [(6, "MEDIA")],
+}
+
+
 def severity(metric, v):
     """Severidad DETERMINISTA por métrica, espejo de thresholds.txt (contrato firmado).
     Compartida entre lenguajes: es la base del gate duro, idéntica corrida a corrida."""
-    if metric == "cyclomatic":
-        return "CRÍTICA" if v > 20 else "ALTA" if v >= 11 else "INFO"
-    if metric == "nesting_depth":
-        return "CRÍTICA" if v >= 5 else "ALTA" if v >= 4 else "INFO"
-    if metric == "function_length":
-        return "ALTA" if v > 80 else "MEDIA" if v >= 41 else "INFO"
-    if metric == "parameter_count":
-        return "MEDIA" if v >= 6 else "INFO"
+    for threshold, label in _SEVERITY_BANDS.get(metric, []):
+        if v >= threshold:
+            return label
     return "INFO"
 
 

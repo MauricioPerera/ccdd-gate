@@ -22,53 +22,46 @@ BUDGET_KEY = {"cyclomatic": "cyclomatic_max", "nesting_depth": "nesting_max",
               "parameter_count": "params_max", "function_length": "lines_max"}
 
 
-def gate(task_path):
-    p = Path(task_path)
-    if any(f["level"] == "error" for f in tc_lint.lint(task_path)):
-        return {"verdict": "INVALID", "stage": "contract",
-                "detail": "el task-contract no lintea (corre tc_lint.py para el detalle)"}
-    fm, _ = tc_lint.split_front_matter(p.read_text(encoding="utf-8"))
-    target = p.parent / fm["target"]
-    tests = p.parent / fm["tests"]
-    budget = fm["budget"]
-    fn_name, _n = tc_lint.parse_sig(fm["signature"], fm.get("language"))
+# gate 0.5 — OK humano (determinista, a prueba de manipulación): si el contrato exige
+# aprobación, los bytes de los tests deben coincidir con el hash que firmó el humano.
+def _gate_test_approval(fm, tests):
+    if not fm.get("require_test_approval"):
+        return None
+    if not tests.exists():
+        return {"verdict": "INVALID", "stage": "test-approval", "detail": f"tests no existe: {fm['tests']}"}
+    actual = hashlib.sha256(tests.read_bytes()).hexdigest()
+    approved = fm.get("tests_sha256")
+    if not approved:
+        return {"verdict": "INVALID", "stage": "test-approval",
+                "detail": "tests sin aprobar (falta tests_sha256). Revisa con test_audit.py y firma con approve_tests.py.",
+                "tests_sha256_actual": actual}
+    if actual != approved:
+        return {"verdict": "INVALID", "stage": "test-approval",
+                "detail": "los tests cambiaron desde la aprobación (hash no coincide). Re-audita y re-aprueba.",
+                "approved": approved, "actual": actual}
+    return None
 
-    # gate 0.5 — OK humano (determinista, a prueba de manipulación): si el contrato exige
-    # aprobación, los bytes de los tests deben coincidir con el hash que firmó el humano.
-    if fm.get("require_test_approval"):
-        if not tests.exists():
-            return {"verdict": "INVALID", "stage": "test-approval", "detail": f"tests no existe: {fm['tests']}"}
-        actual = hashlib.sha256(tests.read_bytes()).hexdigest()
-        approved = fm.get("tests_sha256")
-        if not approved:
-            return {"verdict": "INVALID", "stage": "test-approval",
-                    "detail": "tests sin aprobar (falta tests_sha256). Revisa con test_audit.py y firma con approve_tests.py.",
-                    "tests_sha256_actual": actual}
-        if actual != approved:
-            return {"verdict": "INVALID", "stage": "test-approval",
-                    "detail": "los tests cambiaron desde la aprobación (hash no coincide). Re-audita y re-aprueba.",
-                    "approved": approved, "actual": actual}
 
-    # gate 1 — property-tests congelados (determinista) y sintaxis
+# gate 1 — property-tests congelados (determinista) y sintaxis
+def _gate_run_tests(fm, target, tests):
     if not tests.exists():
         return {"verdict": "FAIL", "stage": "gate1-tests", "detail": f"tests no existe: {fm['tests']}"}
-        
     test_cmd_str = fm.get("test_command")
     if test_cmd_str:
-        cmd = test_cmd_str
-        use_shell = True
+        cmd, use_shell = test_cmd_str, True
     else:
-        cmd = [sys.executable, str(tests.resolve())]
-        use_shell = False
-        
+        cmd, use_shell = [sys.executable, str(tests.resolve())], False
     r = subprocess.run(cmd, cwd=str(target.parent), shell=use_shell,
                        capture_output=True, text=True, encoding="utf-8", errors="replace",
                        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
     if r.returncode != 0:
         return {"verdict": "FAIL", "stage": "gate1-tests", "detail": "property-tests o sintaxis fallaron",
                 "output": (r.stderr or r.stdout or "")[-800:]}
+    return None
 
-    # gate 2 — complejidad ≤ budget de la task
+
+# gate 2 — complejidad ≤ budget de la task
+def _gate_complexity(fm, target, fn_name, budget):
     if not target.exists():
         return {"verdict": "FAIL", "stage": "gate2-complexity", "detail": f"target no existe: {fm['target']}"}
     fns = {f["function"]: f for f in metrics_backends.functions_metrics(target.read_text(encoding="utf-8"), language=fm.get("language"), filename=str(target))}
@@ -80,9 +73,23 @@ def gate(task_path):
             if isinstance(budget.get(key), int) and m[metric] > budget[key]]
     if over:
         return {"verdict": "FAIL", "stage": "gate2-complexity", "function": fn_name, "over_budget": over}
-
     return {"verdict": "PASS", "stage": "all", "function": fn_name,
             "metrics": {k: m[k] for k in BUDGET_KEY}, "budget": budget}
+
+
+def gate(task_path):
+    p = Path(task_path)
+    if any(f["level"] == "error" for f in tc_lint.lint(task_path)):
+        return {"verdict": "INVALID", "stage": "contract",
+                "detail": "el task-contract no lintea (corre tc_lint.py para el detalle)"}
+    fm, _ = tc_lint.split_front_matter(p.read_text(encoding="utf-8"))
+    target = p.parent / fm["target"]
+    tests = p.parent / fm["tests"]
+    fn_name, _n = tc_lint.parse_sig(fm["signature"], fm.get("language"))
+
+    return (_gate_test_approval(fm, tests)
+            or _gate_run_tests(fm, target, tests)
+            or _gate_complexity(fm, target, fn_name, fm["budget"]))
 
 
 def main():

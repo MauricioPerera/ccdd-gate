@@ -115,6 +115,47 @@ def _utf8():
             pass
 
 
+def _assembly_verdict(last, r):
+    if last.exists():
+        return json.loads(last.read_text(encoding="utf-8"))["verdict"]
+    return {"passed": r.returncode == 0, "guardrails": []}
+
+
+def _reroute_signals(triggered, onfail):
+    return [H.auto_signal(g) for g in triggered if onfail.get(g) == "reroute"]
+
+
+def _merge_signals(parsed, auto):
+    return ((parsed or {}).get("signals", []) or []) + auto
+
+
+def _write_report_if_json(as_json, report):
+    if as_json:
+        Path("analysis_report.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _check_guardrails(last, r):
+    """Devuelve (triggered, auto); aborta vía fail() si un guardrail corta o el ensamblado no pasó."""
+    verdict = _assembly_verdict(last, r)
+    onfail = guardrail_onfail()
+    triggered = [g["id"] for g in verdict.get("guardrails", []) if not g["passed"]]
+    aborted = [g for g in triggered if onfail.get(g) == "abort"]
+    if aborted or not verdict.get("passed", True):
+        fail(2, "guardrail abortó (sin llamada API): " + ", ".join(aborted or triggered))
+    return triggered, _reroute_signals(triggered, onfail)
+
+
+def _export_payload(a, tmp_name):
+    """Export del contexto en formato anthropic; aborta vía fail() ante cualquier corte."""
+    if a.provider == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
+        fail(3, "ANTHROPIC_API_KEY no está en el entorno (requerida antes de llamar al modelo)")
+    r = ccdd("export", str(CONTRACT), "--format", "anthropic", "--inputs", tmp_name)
+    if r.returncode != 0:
+        fail(3, "export del contexto falló:\n" + (r.stderr or r.stdout or ""))
+    return json.loads(r.stdout)
+
+
 def assemble_and_export(a, inputs):
     """assemble + guardrails deterministas + export del payload (vía ccdd.py).
     fail() ante cualquier corte. Devuelve (payload, triggered, auto)."""
@@ -126,20 +167,8 @@ def assemble_and_export(a, inputs):
         r = ccdd("assemble", str(CONTRACT), "--inputs", tmp.name)
         if r.returncode == 2:  # un slot crítico no entra (p.ej. design_document < min_tokens)
             fail(3, "análisis insuficiente / ensamblado inválido:\n" + (r.stdout or "").strip())
-        verdict = (json.loads(last.read_text(encoding="utf-8"))["verdict"]
-                   if last.exists() else {"passed": r.returncode == 0, "guardrails": []})
-        onfail = guardrail_onfail()
-        triggered = [g["id"] for g in verdict.get("guardrails", []) if not g["passed"]]
-        aborted = [g for g in triggered if onfail.get(g) == "abort"]
-        if aborted or not verdict.get("passed", True):
-            fail(2, "guardrail abortó (sin llamada API): " + ", ".join(aborted or triggered))
-        auto = [H.auto_signal(g) for g in triggered if onfail.get(g) == "reroute"]
-        if a.provider == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
-            fail(3, "ANTHROPIC_API_KEY no está en el entorno (requerida antes de llamar al modelo)")
-        r = ccdd("export", str(CONTRACT), "--format", "anthropic", "--inputs", tmp.name)
-        if r.returncode != 0:
-            fail(3, "export del contexto falló:\n" + (r.stderr or r.stdout or ""))
-        payload = json.loads(r.stdout)
+        triggered, auto = _check_guardrails(last, r)
+        payload = _export_payload(a, tmp.name)
     finally:
         os.unlink(tmp.name)
         last.unlink(missing_ok=True)  # no dejar artefacto de runtime en el directorio del contrato
@@ -160,13 +189,11 @@ def run(argv=None):
     raw = call_llm(a.provider, model, payload["system"], payload["messages"][0]["content"] + JSON_REQ)
     free_text, parsed = H.split_text_and_json(raw)
     print(free_text)  # texto libre del análisis -> stdout SIEMPRE
-    signals = ((parsed or {}).get("signals", []) or []) + auto
+    signals = _merge_signals(parsed, auto)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     report = H.build_report("pre-complexity-agent", CONTRACT_VERSION, str(inp), ts, parsed, signals,
                             triggered, "domain_context" in inputs)
-    if a.as_json:
-        Path("analysis_report.json").write_text(
-            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _write_report_if_json(a.as_json, report)
     return 1 if report["summary"]["critical"] > 0 else 0
 
 

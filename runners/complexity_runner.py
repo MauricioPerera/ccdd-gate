@@ -142,6 +142,37 @@ def _utf8():
             pass
 
 
+def _assembly_verdict(last, r):
+    if last.exists():
+        return json.loads(last.read_text(encoding="utf-8"))["verdict"]
+    return {"passed": r.returncode == 0, "guardrails": []}
+
+
+def _reroute_signals(triggered, onfail):
+    return [H.auto_signal(g) for g in triggered if onfail.get(g) == "reroute"]
+
+
+def _check_guardrails(last, r):
+    """Devuelve (triggered, auto); aborta vía fail() si un guardrail corta o el ensamblado no pasó."""
+    verdict = _assembly_verdict(last, r)
+    onfail = guardrail_onfail()
+    triggered = [g["id"] for g in verdict.get("guardrails", []) if not g["passed"]]
+    aborted = [g for g in triggered if onfail.get(g) == "abort"]
+    if aborted or not verdict.get("passed", True):
+        fail(2, "guardrail abortó (sin llamada API): " + ", ".join(aborted or triggered))
+    return triggered, _reroute_signals(triggered, onfail)
+
+
+def _export_payload(a, tmp_name):
+    """Export del contexto en formato anthropic; aborta vía fail() ante cualquier corte."""
+    if a.provider == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
+        fail(3, "ANTHROPIC_API_KEY no está en el entorno (requerida antes de llamar al modelo)")
+    r = ccdd("export", str(CONTRACT), "--format", "anthropic", "--inputs", tmp_name)
+    if r.returncode != 0:
+        fail(3, "export del contexto falló:\n" + (r.stderr or r.stdout or ""))
+    return json.loads(r.stdout)
+
+
 def assemble_and_export(a, inputs):
     """assemble + guardrails deterministas + export del payload (vía ccdd.py).
     fail() ante cualquier corte. Devuelve (payload, triggered, auto)."""
@@ -153,24 +184,38 @@ def assemble_and_export(a, inputs):
         r = ccdd("assemble", str(CONTRACT), "--inputs", tmp.name)
         if r.returncode == 2:
             fail(3, "ensamblado inválido (¿código demasiado corto para el piso del slot?):\n" + (r.stdout or "").strip())
-        verdict = (json.loads(last.read_text(encoding="utf-8"))["verdict"]
-                   if last.exists() else {"passed": r.returncode == 0, "guardrails": []})
-        onfail = guardrail_onfail()
-        triggered = [g["id"] for g in verdict.get("guardrails", []) if not g["passed"]]
-        aborted = [g for g in triggered if onfail.get(g) == "abort"]
-        if aborted or not verdict.get("passed", True):
-            fail(2, "guardrail abortó (sin llamada API): " + ", ".join(aborted or triggered))
-        auto = [H.auto_signal(g) for g in triggered if onfail.get(g) == "reroute"]
-        if a.provider == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
-            fail(3, "ANTHROPIC_API_KEY no está en el entorno (requerida antes de llamar al modelo)")
-        r = ccdd("export", str(CONTRACT), "--format", "anthropic", "--inputs", tmp.name)
-        if r.returncode != 0:
-            fail(3, "export del contexto falló:\n" + (r.stderr or r.stdout or ""))
-        payload = json.loads(r.stdout)
+        triggered, auto = _check_guardrails(last, r)
+        payload = _export_payload(a, tmp.name)
     finally:
         os.unlink(tmp.name)
         last.unlink(missing_ok=True)
     return payload, triggered, auto
+
+
+def _gate_summary(det):
+    """(findings, critical, high, verdict) deterministas sobre las métricas AST."""
+    findings = det.get("findings", [])
+    critical = sum(1 for f in findings if f.get("severity") == "CRÍTICA")
+    high = sum(1 for f in findings if f.get("severity") == "ALTA")
+    return findings, critical, high, ("FAIL" if critical else "PASS")
+
+
+def _build_report(inp, ts, gate, model, free_text, parsed, auto, triggered):
+    gate_findings, gate_critical, gate_high, gate_verdict = gate
+    return {
+        "contract": "complexity-agent", "contract_version": CONTRACT_VERSION,
+        "timestamp": ts, "input_file": str(inp),
+        "gate": {  # determinista — decide el exit code
+            "verdict": gate_verdict, "critical": gate_critical, "high": gate_high,
+            "source": "ast-metrics sobre thresholds firmados", "findings": gate_findings,
+        },
+        "advisory": {  # LLM — clasifica esencial/accidental y explica; NO decide el gate
+            "model": model, "analysis": free_text,
+            "signals": ((parsed or {}).get("signals", []) or []) + auto,
+        },
+        "guardrails_triggered": triggered,
+        "verdict": gate_verdict,
+    }
 
 
 def run(argv=None):
@@ -186,10 +231,8 @@ def run(argv=None):
 
     # ── GATE DETERMINISTA: el veredicto/exit sale de las métricas AST sobre umbrales firmados,
     #    NO del LLM. Idéntico corrida a corrida (F1). El LLM es solo capa explicativa (advisory).
-    gate_findings = det.get("findings", [])
-    gate_critical = sum(1 for f in gate_findings if f.get("severity") == "CRÍTICA")
-    gate_high = sum(1 for f in gate_findings if f.get("severity") == "ALTA")
-    gate_verdict = "FAIL" if gate_critical else "PASS"
+    gate = _gate_summary(det)
+    gate_verdict, gate_critical = gate[3], gate[1]
 
     model = a.model or payload.get("model", DEFAULT_MODEL)
     raw = call_llm(a.provider, model, payload["system"], payload["messages"][0]["content"] + JSON_REQ)
@@ -197,20 +240,7 @@ def run(argv=None):
     print(free_text)
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    report = {
-        "contract": "complexity-agent", "contract_version": CONTRACT_VERSION,
-        "timestamp": ts, "input_file": str(inp),
-        "gate": {  # determinista — decide el exit code
-            "verdict": gate_verdict, "critical": gate_critical, "high": gate_high,
-            "source": "ast-metrics sobre thresholds firmados", "findings": gate_findings,
-        },
-        "advisory": {  # LLM — clasifica esencial/accidental y explica; NO decide el gate
-            "model": model, "analysis": free_text,
-            "signals": ((parsed or {}).get("signals", []) or []) + auto,
-        },
-        "guardrails_triggered": triggered,
-        "verdict": gate_verdict,
-    }
+    report = _build_report(inp, ts, gate, model, free_text, parsed, auto, triggered)
     if a.as_json:
         Path("analysis_report.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
