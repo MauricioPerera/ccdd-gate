@@ -54,6 +54,10 @@ class TestTcLintPerRule(unittest.TestCase):
     def test_required(self):
         self._case("error", "tc-required", fm_fn=lambda fm: fm.pop("target"))
 
+    def test_schema_bad_shape(self):
+        # budget como string (no-mapa) viola la FORMA → tc-schema (capa 1, contra el JSON Schema).
+        self._case("error", "tc-schema", fm_fn=lambda fm: fm.update(budget="no-es-un-mapa"))
+
     def test_intent_atomic(self):
         self._case("error", "tc-intent-atomic", fm_fn=lambda fm: fm.update(intent="decodifica y valida la instrucción"))
 

@@ -166,7 +166,7 @@ def r_signature(ctx):
     if lang not in _NATIVE_SIG:  # degradación documentada: solo aridad, sin parser nativo
         out.append({"level": "warn", "rule": "tc-signature-generic",
                     "msg": f"firma validada por aridad genérica (sin parser nativo para '{lang}')"})
-    pmax = ctx["budget"].get("params_max")
+    pmax = ctx["budget"].get("params_max") if isinstance(ctx["budget"], dict) else None
     if isinstance(pmax, int) and n > pmax:
         out.append(err("tc-signature-valid", f"la firma tiene {n} params > budget.params_max={pmax}"))
     return out
@@ -273,7 +273,38 @@ def r_target_atomic(ctx):
     return []
 
 
-RULES = [r_required, r_test_command, r_language, r_intent_atomic, r_target_atomic, r_signature, r_budget_sane, r_tests_frozen,
+# Schema formal del front-matter (fuente única de la FORMA). La validación semántica (intent
+# atómico, budget ≤ topes, firma parseable, tests congelados) la siguen haciendo las reglas de abajo.
+_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "task_contract.schema.json"
+_schema_cache = None
+
+
+def _load_task_schema():
+    global _schema_cache
+    if _schema_cache is None and _SCHEMA_PATH.exists():
+        _schema_cache = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+    return _schema_cache
+
+
+def r_schema(ctx):
+    """Capa 1: valida la FORMA del front-matter contra task_contract.schema.json. Degrada a no-op
+    si falta el schema o jsonschema (tc_lint sigue usable solo con pyyaml)."""
+    schema = _load_task_schema()
+    if not schema:
+        return []
+    try:
+        import jsonschema
+    except ImportError:
+        return []
+    validator = jsonschema.Draft202012Validator(schema)
+    out = []
+    for e in sorted(validator.iter_errors(ctx["fm"]), key=lambda e: list(e.path)):
+        loc = "/".join(str(p) for p in e.path) or "(raíz)"
+        out.append(err("tc-schema", f"forma inválida en '{loc}': {e.message}"))
+    return out
+
+
+RULES = [r_schema, r_required, r_test_command, r_language, r_intent_atomic, r_target_atomic, r_signature, r_budget_sane, r_tests_frozen,
          r_sections, r_stop_rule, r_no_algorithm, r_deps, r_issue_ref]
 
 
