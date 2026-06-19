@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tc_lint  # noqa: E402
-import metrics  # noqa: E402
+import metrics_backends  # noqa: E402
 
 BUDGET_KEY = {"cyclomatic": "cyclomatic_max", "nesting_depth": "nesting_max",
               "parameter_count": "params_max", "function_length": "lines_max"}
@@ -49,28 +49,38 @@ def gate(task_path):
                     "detail": "los tests cambiaron desde la aprobación (hash no coincide). Re-audita y re-aprueba.",
                     "approved": approved, "actual": actual}
 
-    # gate 1 — complejidad ≤ budget de la task
+    # gate 1 — property-tests congelados (determinista) y sintaxis
+    if not tests.exists():
+        return {"verdict": "FAIL", "stage": "gate1-tests", "detail": f"tests no existe: {fm['tests']}"}
+        
+    test_cmd_str = fm.get("test_command")
+    if test_cmd_str:
+        cmd = test_cmd_str
+        use_shell = True
+    else:
+        cmd = [sys.executable, str(tests.resolve())]
+        use_shell = False
+        
+    r = subprocess.run(cmd, cwd=str(target.parent), shell=use_shell,
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
+    if r.returncode != 0:
+        return {"verdict": "FAIL", "stage": "gate1-tests", "detail": "property-tests o sintaxis fallaron",
+                "output": (r.stderr or r.stdout or "")[-800:]}
+
+    # gate 2 — complejidad ≤ budget de la task
     if not target.exists():
-        return {"verdict": "FAIL", "stage": "gate1-complexity", "detail": f"target no existe: {fm['target']}"}
-    fns = {f["function"]: f for f in metrics.functions_metrics(target.read_text(encoding="utf-8"))}
+        return {"verdict": "FAIL", "stage": "gate2-complexity", "detail": f"target no existe: {fm['target']}"}
+    fns = {f["function"]: f for f in metrics_backends.functions_metrics(target.read_text(encoding="utf-8"), language=fm.get("language"), filename=str(target))}
     if fn_name not in fns:
-        return {"verdict": "FAIL", "stage": "gate1-complexity", "detail": f"la función '{fn_name}' no está en {fm['target']}"}
+        return {"verdict": "FAIL", "stage": "gate2-complexity", "detail": f"la función '{fn_name}' no está en {fm['target']}"}
     m = fns[fn_name]
     over = [f"{metric}={m[metric]} > {key}={budget[key]}"
             for metric, key in BUDGET_KEY.items()
             if isinstance(budget.get(key), int) and m[metric] > budget[key]]
     if over:
-        return {"verdict": "FAIL", "stage": "gate1-complexity", "function": fn_name, "over_budget": over}
+        return {"verdict": "FAIL", "stage": "gate2-complexity", "function": fn_name, "over_budget": over}
 
-    # gate 2 — property-tests congelados (determinista)
-    if not tests.exists():
-        return {"verdict": "FAIL", "stage": "gate2-tests", "detail": f"tests no existe: {fm['tests']}"}
-    r = subprocess.run([sys.executable, str(tests.resolve())], cwd=str(target.parent),
-                       capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
-    if r.returncode != 0:
-        return {"verdict": "FAIL", "stage": "gate2-tests", "detail": "property-tests fallaron",
-                "output": (r.stderr or r.stdout or "")[-800:]}
     return {"verdict": "PASS", "stage": "all", "function": fn_name,
             "metrics": {k: m[k] for k in BUDGET_KEY}, "budget": budget}
 

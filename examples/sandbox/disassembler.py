@@ -5,7 +5,6 @@ OPCODES = {
     0xC3: ("JP ${:04X}", 3),
 }
 
-
 def decode_instruction(rom, pc):
     opcode = rom[pc]
     if opcode not in OPCODES:

@@ -552,117 +552,146 @@ def cmd_spec() -> int:
 
 
 # ---- DIFF (L2) -------------------------------------------------------------
-def _diff_budget(base, head, avail, regressions, changes):
-    if avail(head) < avail(base):
-        regressions.append(f"presupuesto disponible bajó: {avail(base)} -> {avail(head)} tok")
-    elif avail(head) > avail(base):
-        changes.append(f"presupuesto disponible subió: {avail(base)} -> {avail(head)} tok")
+class DiffState:
+    def __init__(self):
+        self.regressions: list[str] = []
+        self.changes: list[str] = []
 
-def _diff_slots(bslots, hslots, is_crit, regressions, changes):
+    def fail(self, msg: str):
+        self.regressions.append(msg)
+
+    def info(self, msg: str):
+        self.changes.append(msg)
+
+    @property
+    def passed(self) -> bool:
+        return len(self.regressions) == 0
+
+
+def check_r1_budget(base, head, state: DiffState):
+    avail = lambda c: c["budget"]["max_tokens"] - c["budget"].get("reserve_output", 0)
+    b_tok, h_tok = avail(base), avail(head)
+    if h_tok < b_tok:
+        state.fail(f"presupuesto disponible bajó: {b_tok} -> {h_tok} tok")
+    elif h_tok > b_tok:
+        state.info(f"presupuesto disponible subió: {b_tok} -> {h_tok} tok")
+
+
+def check_r2_r3_r5_r8_slots(base, head, state: DiffState):
+    is_crit = lambda s: s.get("compaction") == "none"
+    bslots = {s["id"]: s for s in base["slots"]}
+    hslots = {s["id"]: s for s in head["slots"]}
+
+    # R2, R3, R8 y eliminaciones
     for sid, bs in bslots.items():
         hs = hslots.get(sid)
         if hs is None:
-            (regressions if is_crit(bs) else changes).append(
-                f"slot{' crítico' if is_crit(bs) else ''} '{sid}' eliminado")
+            if is_crit(bs):
+                state.fail(f"slot crítico '{sid}' eliminado")
+            else:
+                state.info(f"slot '{sid}' eliminado")
             continue
         if is_crit(bs) and hs["priority"] > bs["priority"]:
-            regressions.append(
-                f"slot crítico '{sid}': prioridad degradada {bs['priority']} -> {hs['priority']}")
+            state.fail(f"slot crítico '{sid}': prioridad degradada {bs['priority']} -> {hs['priority']}")
         if is_crit(bs) and not is_crit(hs):
-            regressions.append(
-                f"slot '{sid}' dejó de ser crítico: compaction {bs['compaction']} -> {hs['compaction']}")
-        if bs["source"].get("sign") and not hs["source"].get("sign"):
-            regressions.append(f"slot '{sid}' perdió la firma (sign: true -> false)")
+            state.fail(f"slot '{sid}' dejó de ser crítico: compaction {bs['compaction']} -> {hs['compaction']}")
         if is_crit(bs) and hs.get("min_tokens", 0) < bs.get("min_tokens", 0):
-            changes.append(
-                f"slot crítico '{sid}': min_tokens bajó {bs.get('min_tokens',0)} -> {hs.get('min_tokens',0)}")
+            state.info(f"slot crítico '{sid}': min_tokens bajó {bs.get('min_tokens',0)} -> {hs.get('min_tokens',0)}")
         if is_crit(bs) and int(hs.get("review_quorum", 1)) < int(bs.get("review_quorum", 1)):
-            regressions.append(
-                f"slot crítico '{sid}': review_quorum bajó "
-                f"{bs.get('review_quorum', 1)} -> {hs.get('review_quorum', 1)}")
+            state.fail(f"slot crítico '{sid}': review_quorum bajó {bs.get('review_quorum', 1)} -> {hs.get('review_quorum', 1)}")
 
-def _diff_dynamic_zone(base, head, bslots, hslots, is_crit, regressions, changes):
+    # R5 y nuevos slots
     base_max_crit = max([s["priority"] for s in base["slots"] if is_crit(s)], default=-1)
     head_max_crit = max([s["priority"] for s in head["slots"] if is_crit(s)], default=-1)
     for sid, hs in hslots.items():
         if sid not in bslots:
-            changes.append(f"slot nuevo '{sid}' (prioridad {hs['priority']}, {hs['source']['type']})")
+            state.info(f"slot nuevo '{sid}' (prioridad {hs['priority']}, {hs['source']['type']})")
         if hs["source"]["type"] == "dynamic" and hs["priority"] <= head_max_crit:
             was_safe = sid not in bslots or bslots[sid]["priority"] > base_max_crit
             if was_safe:
-                regressions.append(
-                    f"slot dinámico '{sid}' (prioridad {hs['priority']}) asciende a la zona de "
-                    f"los críticos (<= {head_max_crit}): riesgo de prompt injection")
+                state.fail(f"slot dinámico '{sid}' (prioridad {hs['priority']}) asciende a la zona de "
+                           f"los críticos (<= {head_max_crit}): riesgo de prompt injection")
 
-def _diff_attestations(bslots, hslots, is_crit, baseline_dir, head_dir, attest, registry, regressions, changes):
+
+def check_r4_r6_attestations(base, head, baseline_dir: Path, head_dir: Path, attest: dict, registry: dict, state: DiffState):
+    is_crit = lambda s: s.get("compaction") == "none"
+    bslots = {s["id"]: s for s in base["slots"]}
+    hslots = {s["id"]: s for s in head["slots"]}
+
     for sid, hs in hslots.items():
+        bs = bslots.get(sid)
+        # R4: pérdida de firma en estáticos
+        if bs and bs["source"].get("sign") and not hs["source"].get("sign"):
+            state.fail(f"slot '{sid}' perdió la firma (sign: true -> false)")
+
+        # R6: Diff de contenido + atestación para críticos estáticos
         if not (is_crit(hs) and hs["source"].get("type") == "static"):
             continue
         hpath = head_dir / hs["source"]["path"]
         if not hpath.exists():
             continue
         htext = hpath.read_text(encoding="utf-8")
-        bs = bslots.get(sid)
-        bpath = (baseline_dir / bs["source"]["path"]) \
-            if (bs and bs["source"].get("type") == "static") else None
+        
+        bpath = (baseline_dir / bs["source"]["path"]) if (bs and bs["source"].get("type") == "static") else None
         btext = bpath.read_text(encoding="utf-8") if (bpath and bpath.exists()) else ""
+        
         from runners import semantic_hash
         bhash = semantic_hash.get_semantic_hash(btext, hpath.suffix)
         hhash = semantic_hash.get_semantic_hash(htext, hpath.suffix)
         if bhash == hhash:
             continue
+        
         bset = {ln.strip() for ln in btext.splitlines() if ln.strip()}
         hset = {ln.strip() for ln in htext.splitlines() if ln.strip()}
         nrem, nadd = len(bset - hset), len(hset - bset)
         entries = attest.get(sid)
         quorum = int(hs.get("review_quorum", 1))
         signers = valid_signers(entries, registry, sid, hhash)
+        
         if len(signers) >= quorum:
-            changes.append(f"slot crítico '{sid}': política modificada (+{nadd}/-{nrem} líneas), "
-                           f"ATESTADA por {', '.join(sorted(signers))} ({len(signers)}/{quorum})")
+            state.info(f"slot crítico '{sid}': política modificada (+{nadd}/-{nrem} líneas), "
+                       f"ATESTADA por {', '.join(sorted(signers))} ({len(signers)}/{quorum})")
         elif not entries:
-            regressions.append(
-                f"slot crítico '{sid}': contenido de política modificado sin atestación "
-                f"(+{nadd}/-{nrem} líneas) — revisar (humano+modelo) y ejecutar: "
-                f"ccdd attest <head> {sid} --reviewer <nombre> --key <privada>")
+            state.fail(f"slot crítico '{sid}': contenido de política modificado sin atestación "
+                       f"(+{nadd}/-{nrem} líneas) — revisar (humano+modelo) y ejecutar: "
+                       f"ccdd attest <head> {sid} --reviewer <nombre> --key <privada>")
         else:
-            regressions.append(
-                f"slot crítico '{sid}': atestación insuficiente "
-                f"({len(signers)}/{quorum} firmas válidas de revisores registrados en la baseline)")
+            state.fail(f"slot crítico '{sid}': atestación insuficiente "
+                       f"({len(signers)}/{quorum} firmas válidas de revisores registrados en la baseline)")
 
-def _diff_reviewers(baseline_dir, head_dir, attest, registry, regressions, changes):
-    base_reg_raw = (baseline_dir / "reviewers.json").read_text(encoding="utf-8") \
-        if (baseline_dir / "reviewers.json").exists() else ""
-    head_reg_raw = (head_dir / "reviewers.json").read_text(encoding="utf-8") \
-        if (head_dir / "reviewers.json").exists() else ""
+
+def check_r7_reviewers(baseline_dir: Path, head_dir: Path, attest: dict, registry: dict, state: DiffState):
+    base_reg_raw = (baseline_dir / "reviewers.json").read_text(encoding="utf-8") if (baseline_dir / "reviewers.json").exists() else ""
+    head_reg_raw = (head_dir / "reviewers.json").read_text(encoding="utf-8") if (head_dir / "reviewers.json").exists() else ""
+    
     if sha256(base_reg_raw) != sha256(head_reg_raw):
         if not registry:
-            changes.append("registro de revisores: GÉNESIS (baseline sin registro previo; auditar fuera de banda)")
+            state.info("registro de revisores: GÉNESIS (baseline sin registro previo; auditar fuera de banda)")
         else:
             new_hash = sha256(head_reg_raw)
             signers = valid_signers(attest.get("__reviewers__"), registry, "__reviewers__", new_hash)
             rq = registry.get("__quorum__", 1)
             rq = int(rq) if isinstance(rq, int) else 1
             if len(signers) >= rq:
-                changes.append(f"registro de revisores modificado, ATESTADO por "
-                               f"{', '.join(sorted(signers))} ({len(signers)}/{rq}) — revisores de la baseline")
+                state.info(f"registro de revisores modificado, ATESTADO por "
+                           f"{', '.join(sorted(signers))} ({len(signers)}/{rq}) — revisores de la baseline")
             else:
-                regressions.append(
-                    f"registro de revisores modificado: atestación insuficiente "
-                    f"({len(signers)}/{rq} firmas de revisores de la baseline) — ejecutar: "
-                    f"ccdd attest <head> __reviewers__ --key <de un revisor ya registrado>")
+                state.fail(f"registro de revisores modificado: atestación insuficiente "
+                           f"({len(signers)}/{rq} firmas de revisores de la baseline) — ejecutar: "
+                           f"ccdd attest <head> __reviewers__ --key <de un revisor ya registrado>")
 
-def _diff_guardrails(base, head, regressions):
+
+def check_r9_guardrails(base, head, state: DiffState):
     strength = {"abort": 2, "reroute": 1, "warn": 0}
     bg = {g["id"]: g for g in base.get("guardrails", [])}
     hg = {g["id"]: g for g in head.get("guardrails", [])}
     for gid, g in bg.items():
         h = hg.get(gid)
         if h is None:
-            regressions.append(f"guardrail '{gid}' eliminado")
+            state.fail(f"guardrail '{gid}' eliminado")
         elif strength.get(h.get("on_fail"), 0) < strength.get(g.get("on_fail"), 0):
-            regressions.append(
-                f"guardrail '{gid}': on_fail debilitado {g.get('on_fail')} -> {h.get('on_fail')}")
+            state.fail(f"guardrail '{gid}': on_fail debilitado {g.get('on_fail')} -> {h.get('on_fail')}")
+
 
 def cmd_diff(baseline_dir: Path, head_dir: Path, as_json: bool = False) -> int:
     """Gate de regresion de contexto. Compara el contrato HEAD contra una BASELINE
@@ -676,54 +705,54 @@ def cmd_diff(baseline_dir: Path, head_dir: Path, as_json: bool = False) -> int:
     """
     base = load_contract(baseline_dir)["contract"]
     head = load_contract(head_dir)["contract"]
-    regressions: list[str] = []
-    changes: list[str] = []
+    state = DiffState()
 
-    avail = lambda c: c["budget"]["max_tokens"] - c["budget"].get("reserve_output", 0)
-    is_crit = lambda s: s.get("compaction") == "none"
-
-    _diff_budget(base, head, avail, regressions, changes)
-
-    bslots = {s["id"]: s for s in base["slots"]}
-    hslots = {s["id"]: s for s in head["slots"]}
-
-    _diff_slots(bslots, hslots, is_crit, regressions, changes)
-    _diff_dynamic_zone(base, head, bslots, hslots, is_crit, regressions, changes)
+    check_r1_budget(base, head, state)
+    check_r2_r3_r5_r8_slots(base, head, state)
 
     attest = {}
     apath = head_dir / "attestations.json"
     if apath.exists():
         attest = json.loads(apath.read_text(encoding="utf-8"))
+    
     registry = {}
     rpath = baseline_dir / "reviewers.json"
     if rpath.exists():
         registry = json.loads(rpath.read_text(encoding="utf-8"))
 
-    _diff_attestations(bslots, hslots, is_crit, baseline_dir, head_dir, attest, registry, regressions, changes)
-    _diff_reviewers(baseline_dir, head_dir, attest, registry, regressions, changes)
-    _diff_guardrails(base, head, regressions)
+    check_r4_r6_attestations(base, head, baseline_dir, head_dir, attest, registry, state)
+    check_r7_reviewers(baseline_dir, head_dir, attest, registry, state)
+    check_r9_guardrails(base, head, state)
 
-    findings = [{"severity": "error", "message": r} for r in regressions]
-    findings += [{"severity": "info", "message": ch} for ch in changes]
-    report = {"passed": not regressions, "regressions": regressions,
-              "changes": changes, "findings": findings}
+    findings = [{"severity": "error", "message": r} for r in state.regressions]
+    findings += [{"severity": "info", "message": ch} for ch in state.changes]
+    
+    report = {
+        "passed": state.passed,
+        "regressions": state.regressions,
+        "changes": state.changes,
+        "findings": findings
+    }
+    
     out = head_dir / "diff-report.json"
     out.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     if as_json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
-        return 1 if regressions else 0
+        return 1 if not state.passed else 0
 
-    if regressions:
+    if not state.passed:
         print("DIFF: BLOQUEADO - regresiones de contexto detectadas:")
-        for r in regressions:
+        for r in state.regressions:
             print(f"  [X] {r}")
     else:
         print("DIFF: OK - sin regresiones")
-    for ch in changes:
+    
+    for ch in state.changes:
         print(f"  [.] {ch}")
+        
     print(f"  reporte -> {out.name}")
-    return 1 if regressions else 0
+    return 1 if not state.passed else 0
 
 
 # ---- KEYGEN / ATTEST (v0.3) ------------------------------------------------

@@ -251,11 +251,85 @@ def request_human_attestation(args):
         "message": f"Se ha registrado la petición oficial para el hash {h}. Avisa al arquitecto humano que debe revisar esta petición para desbloquear el gate."
     }
 
+def extract_brace_block(source, signature):
+    idx = source.find(signature)
+    if idx == -1: return None, -1, -1
+    
+    if "{" in signature:
+        start_brace = idx + signature.rfind("{")
+    else:
+        start_brace = source.find("{", idx + len(signature))
+        
+    if start_brace == -1: return None, -1, -1
+    
+    open_braces = 0
+    in_string = False
+    string_char = None
+    escape = False
+    in_line_comment = False
+    in_block_comment = False
+    
+    i = start_brace
+    while i < len(source):
+        c = source[i]
+        
+        if in_line_comment:
+            if c == '\n':
+                in_line_comment = False
+            i += 1
+            continue
+            
+        if in_block_comment:
+            if c == '*' and i + 1 < len(source) and source[i+1] == '/':
+                in_block_comment = False
+                i += 2
+                continue
+            i += 1
+            continue
+            
+        if in_string:
+            if escape:
+                escape = False
+            elif c == '\\':
+                escape = True
+            elif c == string_char:
+                in_string = False
+            i += 1
+            continue
+            
+        if c == '/' and i + 1 < len(source):
+            if source[i+1] == '/':
+                in_line_comment = True
+                i += 2
+                continue
+            elif source[i+1] == '*':
+                in_block_comment = True
+                i += 2
+                continue
+                
+        if c in ["'", '"', '`']:
+            in_string = True
+            string_char = c
+            i += 1
+            continue
+            
+        if c == '{': 
+            open_braces += 1
+        elif c == '}':
+            open_braces -= 1
+            if open_braces == 0:
+                return source[idx:i+1], idx, i+1
+                
+        i += 1
+        
+    return None, -1, -1
+
 def run_ephemeral_agent(args):
     import urllib.request
     import subprocess
     import json
     import re
+    import socket
     
     task_path = args.get("task_path")
     model = args.get("model", "gemma-4-12b-coder")
@@ -271,34 +345,80 @@ def run_ephemeral_agent(args):
         target = tp.parent / fm["target"]
         if not target.exists():
             return {"status": "FAIL", "reason": f"Target no encontrado: {target}"}
-            
         original_source = target.read_text(encoding="utf-8")
     except Exception as e:
-        return {"status": "FAIL", "reason": f"Error parseando el contrato o leyendo target: {e}"}
+        return {"status": "FAIL", "reason": f"Error parseando: {e}"}
+        
+    signature = fm.get("signature", "")
+    target_block = None
+    start_idx = -1
+    end_idx = -1
+    
+    # Intento de compactación (Tree-shaking estático vía firmas)
+    if signature and target.suffix in [".js", ".ts", ".java", ".c", ".cpp", ".cs"]:
+        target_block, start_idx, end_idx = extract_brace_block(original_source, signature)
+        
+    if target_block:
+        sys_prompt = "Eres un Small Executor experto en refactorización. Se te dará UNA FUNCIÓN aislada. Devuelve la función refactorizada completa y SI LO NECESITAS, incluye funciones auxiliares ANTES o DESPUÉS de la principal. REGLA CRÍTICA: DEBES MANTENER LA FIRMA DE LA FUNCIÓN ORIGINAL EXACTAMENTE INTACTA."
+        user_prompt = f"### TASK CONTRACT:\n{task_content}\n\n### FIRMA ORIGINAL REQUERIDA:\n{signature}\n\n### FUNCIÓN AISLADA (Compactada):\n```\n{target_block}\n```"
+    else:
+        sys_prompt = "Eres un Small Executor experto en refactorización orientada a métricas de complejidad ciclomática."
+        user_prompt = f"### TASK CONTRACT:\\n{task_content}\\n\\n### CODIGO FUENTE COMPLETO:\\n```\\n{original_source}\\n```\\n\\nDevuelve TODO el archivo refactorizado dentro de un bloque markdown de código (```)."
         
     messages = [
-        {"role": "system", "content": "Eres un Small Executor experto en refactorización orientada a métricas de complejidad ciclomática."},
-        {"role": "user", "content": f"### TASK CONTRACT:\\n{task_content}\\n\\n### CODIGO FUENTE ({fm['target']}):\\n```\\n{original_source}\\n```\\n\\nDevuelve TODO el archivo refactorizado dentro de un bloque markdown de código (```). No alteres la firma externa ni los property tests."}
+        {"role": "system", "content": sys_prompt},
+        {"role": "user", "content": user_prompt}
     ]
     
     max_iterations = 3
     for i in range(max_iterations):
-        data = json.dumps({"model": model, "messages": messages, "temperature": 0.2, "max_tokens": 4000}).encode("utf-8")
+        data = json.dumps({"model": model, "messages": messages, "temperature": 0.2, "max_tokens": 8000, "stream": True}).encode("utf-8")
         req = urllib.request.Request(f"{api_url}/chat/completions", data=data, headers={"Content-Type": "application/json"})
         
+        partial_content = ""
+        timed_out = False
         try:
             with urllib.request.urlopen(req, timeout=300) as response:
-                res_json = json.loads(response.read().decode("utf-8"))
-                answer = res_json["choices"][0]["message"]["content"]
+                for line in response:
+                    if line.startswith(b"data: "):
+                        data_str = line[6:].decode("utf-8").strip()
+                        if data_str == "[DONE]": break
+                        try:
+                            chunk = json.loads(data_str)
+                            delta = chunk["choices"][0].get("delta", {})
+                            if "content" in delta:
+                                partial_content += delta["content"]
+                        except json.JSONDecodeError:
+                            pass
+        except socket.timeout:
+            timed_out = True
         except Exception as e:
-            return {"status": "FAIL", "iteration": i+1, "reason": f"Error conectando al LLM en {api_url}: {e}"}
+            return {"status": "FAIL", "iteration": i+1, "reason": f"Error conectando al LLM: {e}"}
             
-        code_match = re.search(r"```[a-zA-Z]*\n(.*?)```", answer, re.DOTALL)
-        new_code = code_match.group(1).strip() if code_match else answer.strip()
+        if timed_out and partial_content:
+            messages.append({"role": "assistant", "content": partial_content})
+            messages.append({"role": "user", "content": "Se alcanzó el timeout. Continúa generando el código EXACTAMENTE donde te quedaste (no repitas el inicio, solo escupe la continuación)."})
+            continue # Reintentar sin consumir el límite lógico del Gate si es posible, o consumiendo una iteración.
+            
+        # Unir si hubo continuación previa
+        full_answer = ""
+        for m in messages:
+            if m["role"] == "assistant":
+                full_answer += m["content"]
+        full_answer += partial_content
         
-        # Sobrescribir temporalmente
-        target.write_text(new_code, encoding="utf-8")
+        print(f"\n=== LLM OUTPUT ITERATION {i+1} ===\n{full_answer}\n================================\n", file=sys.stderr)
         
+        code_match = re.search(r"```[a-zA-Z]*\n(.*?)```", full_answer, re.DOTALL)
+        new_code = code_match.group(1).strip() if code_match else full_answer.strip()
+        
+        if target_block:
+            # Reensamblar el archivo original
+            merged_source = original_source[:start_idx] + new_code + original_source[end_idx:]
+            target.write_text(merged_source, encoding="utf-8")
+        else:
+            target.write_text(new_code, encoding="utf-8")
+            
         # Ejecutar task_gate.py
         gate_script = HERE / "task_gate.py"
         proc = subprocess.run([sys.executable, str(gate_script), str(tp)], capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -306,12 +426,50 @@ def run_ephemeral_agent(args):
         if proc.returncode == 0:
             return {"status": "PASS", "iterations": i+1, "gate_output": proc.stdout}
         else:
-            messages.append({"role": "assistant", "content": answer})
-            messages.append({"role": "user", "content": f"El validador task_gate.py rechazó tu código. Output:\\n{proc.stdout or proc.stderr}\\n\\nPor favor corrige tu código para que pase los requerimientos (ej. bajando la complejidad o asegurando que la firma sea exacta) y devuelve de nuevo TODO el archivo refactorizado."})
+            # Parsear el feedback cuantitativo
+            output_str = proc.stdout or proc.stderr
+            feedback_prompt = f"El validador matemático rechazó tu código. Output original:\n{output_str}\n\n"
             
-    # Restaurar si falló en todas
+            try:
+                # Tratar de encontrar el JSON dentro del output
+                match = re.search(r'(\{.*"verdict":.*"FAIL".*\})', output_str, re.DOTALL)
+                if match:
+                    gate_json = json.loads(match.group(1))
+                    stage = gate_json.get("stage")
+                    if stage == "gate2-complexity":
+                        over_budget = gate_json.get("over_budget", [])
+                        cyclo_delta = 0
+                        for ob in over_budget:
+                            if "cyclomatic=" in ob and "cyclomatic_max=" in ob:
+                                parts = re.findall(r'\d+', ob)
+                                if len(parts) >= 2:
+                                    actual = int(parts[0])
+                                    limit = int(parts[1])
+                                    cyclo_delta = actual - limit
+                                    
+                        if cyclo_delta > 0:
+                            feedback_prompt += f"[!] ÉXITO SINTÁCTICO: ¡Tu código superó las pruebas y es válido!\n\n"
+                            feedback_prompt += f"[!] ALERTA MATEMÁTICA: Sin embargo, la complejidad ciclomática actual es {actual}, y el MÁXIMO ESTRICTO permitido es {limit}. ¡ESTÁS EXCEDIDO POR {cyclo_delta} PUNTOS!\n\n"
+                            feedback_prompt += f"[!] HEURÍSTICA OBLIGATORIA: Para reducir la complejidad drásticamente, NO intentes reescribir todo en la misma función con retornos tempranos. DEBES EXTRAER bloques lógicos (validaciones, iteraciones, branches complejos) a NUEVAS sub-funciones auxiliares privadas que sean llamadas desde la función principal. Escribe estas sub-funciones en el mismo bloque markdown.\n"
+                            feedback_prompt += f"[!] REGLA CRÍTICA: La función principal DEBE mantener exactamente esta firma: `{signature}`. No la borres, no la renombres, y no la conviertas en arrow function si no lo era. MANTÉN LOS TESTS PASANDO.\n\n"
+                    elif stage == "gate1-tests":
+                        error_output = gate_json.get("output", "Error desconocido en los tests.")
+                        feedback_prompt += f"[!] ALERTA SINTÁCTICA / TESTS: La ejecución del código falló. Revisa el siguiente error que lanzó el validador (puede ser un error de sintaxis o un test fallido):\n\n```\n{error_output}\n```\n\n"
+                        feedback_prompt += f"[!] INSTRUCCIÓN: Corrige EXACTAMENTE este error lógico o de sintaxis. Asegúrate de que el código sea Javascript/TypeScript válido y que cumpla la firma requerida.\n\n"
+            except Exception:
+                pass
+                
+            feedback_prompt += "Por favor genera el código DESDE CERO aplicando estas correcciones. NO repitas el código roto."
+
+            # Stateless feedback: no incluimos full_answer para que el LLM no se contamine con su propia basura
+            messages = [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_prompt + "\n\n### FEEDBACK DEL INTENTO ANTERIOR:\n" + feedback_prompt}
+            ]
+            
+    # Restaurar si falló
     target.write_text(original_source, encoding="utf-8")
-    return {"status": "FAIL", "iterations": max_iterations, "reason": "Max iteraciones alcanzadas. Se restauró el archivo original.", "last_gate_output": proc.stdout or proc.stderr}
+    return {"status": "FAIL", "iterations": max_iterations, "reason": "Max iteraciones", "last_gate": proc.stdout or proc.stderr}
 
 
 DISPATCH = {"measure_complexity": measure_complexity,
