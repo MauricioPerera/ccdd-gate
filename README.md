@@ -36,9 +36,9 @@ veredicto van en código que no se puede engañar.
 | `runners/complexity_runner.py` | Orquestador L3 para el contrato `complexity-agent` | no |
 | `runners/complexity_gate.py` | Gate determinista; CLI o hook PostToolUse de Claude Code | no |
 | `runners/tc_lint.py` | Linter del **task-contract** (anti-desvarío del autor) | no |
-| `runners/task_gate.py` | Veredicto unificado: tc_lint + complejidad≤budget + tests congelados + firma | no |
+| `runners/task_gate.py` | Veredicto unificado: tc_lint + tests congelados (Gate 1) + complejidad≤budget (Gate 2) + firma | no |
 | `runners/approve_tests.py` | Firma humana de los tests (`tests_sha256`), a prueba de manipulación | no |
-| `runners/orchestrator.py` | Loop: pequeño implementa → gate → reintenta → escala al grande | sí (worker) |
+| `runners/orchestrator.py` | Loop **stateless**: pequeño implementa → tests fallan/complejidad falla → reintenta (sin memoria) → escala al grande | sí (worker) |
 | `runners/test_audit.py` | Auditoría *advisory* de los tests contra el contrato | sí (advisory) |
 | `runners/measure.py` | Harness de medición: tokens/intentos/escalados, costo vs loop grande | no |
 | `runners/complexity_mcp.py` | Servidor MCP (stdio JSON-RPC) que expone el sustrato | no |
@@ -86,7 +86,9 @@ Copiá `.mcp.json.example` a `.mcp.json`. Expone 4 tools (sin LLM):
 - `lint_task_contract(contract_text, test_code?)` - valida un task-contract (anti-desvarío del modelo grande).
 - `request_human_attestation(code, reason)` - permite al agente pedir una excepción firmada cuando no puede reducir la complejidad por reglas de negocio.
 
-## El loop grande/pequeño
+## El loop grande/pequeño (Stateless Feedback)
+
+El loop es **stateless** (sin estado). Si el modelo pequeño falla la validación (sintaxis rota, tests que no pasan, o complejidad excedida), el sistema **no** le envía su código roto de vuelta. En su lugar, le envía la firma requerida y el error exacto (o el delta de complejidad) y le exige volver a intentarlo **desde cero**. Esto evita el "Syntax Loop" donde el LLM pequeño alucina llaves infinitamente al tratar de parchear su propia basura.
 
 ```bash
 # OFFLINE (sin modelo): stub que entrega 1 impl rota y 1 buena -> intento 1 FAIL, intento 2 PASS
