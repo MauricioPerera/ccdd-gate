@@ -40,3 +40,10 @@ jobs:
             --repo "${{ github.repository }}" \
             --issue "${{ github.event.pull_request.number }}" \
             --post
+
+      # Dogfooding: el propio repo se somete al complexity gate. Falla si una función de
+      # PRODUCCIÓN supera el umbral CRÍTICA firmado. Sólo cubre lenguajes con backend
+      # disponible (Python siempre; TS/JS requieren tree-sitter, no instalado en este job).
+      # Los avisos ALTA se reportan pero no bloquean (espejo de la semántica del gate).
+      - name: complexity-gate sobre el propio código (dogfooding)
+        run: python runners/repo_gate.py

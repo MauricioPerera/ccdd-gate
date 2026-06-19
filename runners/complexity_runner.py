@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pre_complexity_helpers as H  # noqa: E402  (capa de transformación compartida)
+import runner_common as RC  # noqa: E402  (capa compartida: assemble + guardrails + export)
 import metrics  # noqa: E402         (registra el backend python determinista)
 import metrics_backends as mb  # noqa: E402  (registro de backends por lenguaje)
 
@@ -49,12 +50,6 @@ def ccdd(*args):
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     return subprocess.run([sys.executable, str(CCDD), *args], env=env,
                           capture_output=True, text=True, encoding="utf-8", errors="replace")
-
-
-def guardrail_onfail():
-    import yaml
-    c = yaml.safe_load((CONTRACT / "context.yaml").read_text(encoding="utf-8"))
-    return {g["id"]: g.get("on_fail") for g in c["contract"].get("guardrails", [])}
 
 
 def call_llm(provider, model, system, user, temperature=0.0):
@@ -142,54 +137,11 @@ def _utf8():
             pass
 
 
-def _assembly_verdict(last, r):
-    if last.exists():
-        return json.loads(last.read_text(encoding="utf-8"))["verdict"]
-    return {"passed": r.returncode == 0, "guardrails": []}
-
-
-def _reroute_signals(triggered, onfail):
-    return [H.auto_signal(g) for g in triggered if onfail.get(g) == "reroute"]
-
-
-def _check_guardrails(last, r):
-    """Devuelve (triggered, auto); aborta vía fail() si un guardrail corta o el ensamblado no pasó."""
-    verdict = _assembly_verdict(last, r)
-    onfail = guardrail_onfail()
-    triggered = [g["id"] for g in verdict.get("guardrails", []) if not g["passed"]]
-    aborted = [g for g in triggered if onfail.get(g) == "abort"]
-    if aborted or not verdict.get("passed", True):
-        fail(2, "guardrail abortó (sin llamada API): " + ", ".join(aborted or triggered))
-    return triggered, _reroute_signals(triggered, onfail)
-
-
-def _export_payload(a, tmp_name):
-    """Export del contexto en formato anthropic; aborta vía fail() ante cualquier corte."""
-    if a.provider == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
-        fail(3, "ANTHROPIC_API_KEY no está en el entorno (requerida antes de llamar al modelo)")
-    r = ccdd("export", str(CONTRACT), "--format", "anthropic", "--inputs", tmp_name)
-    if r.returncode != 0:
-        fail(3, "export del contexto falló:\n" + (r.stderr or r.stdout or ""))
-    return json.loads(r.stdout)
-
-
 def assemble_and_export(a, inputs):
-    """assemble + guardrails deterministas + export del payload (vía ccdd.py).
-    fail() ante cualquier corte. Devuelve (payload, triggered, auto)."""
-    last = CONTRACT / "last-assembly.json"
-    tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
-    try:
-        json.dump(inputs, tmp, ensure_ascii=False)
-        tmp.close()
-        r = ccdd("assemble", str(CONTRACT), "--inputs", tmp.name)
-        if r.returncode == 2:
-            fail(3, "ensamblado inválido (¿código demasiado corto para el piso del slot?):\n" + (r.stdout or "").strip())
-        triggered, auto = _check_guardrails(last, r)
-        payload = _export_payload(a, tmp.name)
-    finally:
-        os.unlink(tmp.name)
-        last.unlink(missing_ok=True)
-    return payload, triggered, auto
+    """Capa compartida (runner_common): assemble + guardrails + export para este contrato."""
+    return RC.assemble_and_export(
+        a, inputs, ccdd, CONTRACT, fail,
+        "ensamblado inválido (¿código demasiado corto para el piso del slot?):")
 
 
 def _gate_summary(det):
