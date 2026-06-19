@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 """repo_gate.py — dogfooding del complexity gate sobre el PROPIO repo (sin LLM).
 
-Recorre el código de PRODUCCIÓN (todos los .py salvo fixtures/, tests/ y artefactos)
-y aplica el mismo veredicto determinista que `complexity_gate.py`: FALLA (exit 1) si
-alguna función supera el umbral CRÍTICA de los thresholds firmados. Los avisos ALTA se
-reportan pero NO bloquean (espejo de la semántica del gate: "Revisar, no bloquea").
+Recorre el código de PRODUCCIÓN (toda extensión con backend registrado, salvo fixtures/,
+tests/ y artefactos) y aplica el mismo veredicto determinista que `complexity_gate.py`:
+FALLA (exit 1) si alguna función supera el umbral CRÍTICA de los thresholds firmados. Los
+avisos ALTA se reportan pero NO bloquean (espejo de la semántica del gate: "Revisar, no
+bloquea").
 
-Sólo cubre los lenguajes con backend disponible (Python siempre; TS/JS si tree-sitter
-está instalado). Los archivos sin backend son no-op anunciado.
+MULTI-LENGUAJE: cubre todo lenguaje con backend registrado (Python siempre; JS/TS/JSX/TSX
+si tree-sitter está instalado). Las extensiones sin backend se ignoran (no-op).
 
 Uso:  python runners/repo_gate.py [raíz]   (raíz por defecto: el directorio del repo)
 """
-import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metrics  # noqa: E402  (registra el backend python al importarse)
+try:
+    import metrics_treesitter  # noqa: E402,F401  (registra JS/TS/JSX/TSX si tree-sitter está)
+except Exception:
+    pass
 import metrics_backends as mb  # noqa: E402
 
 for _s in (sys.stdout, sys.stderr):
@@ -26,8 +30,9 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 # Directorios excluidos del gate del repo: fixtures (complejos a propósito, son los casos de
-# prueba del medidor) y tests (no es código de producción). Espejo del scan manual.
-_EXCLUDE_DIRS = ("fixtures", "tests", "__pycache__", ".git", ".venv", "venv")
+# prueba del medidor), tests (no es código de producción) y artefactos de build/deps.
+_EXCLUDE_DIRS = ("fixtures", "tests", "__pycache__", ".git", ".venv", "venv",
+                 "node_modules", "dist", "build")
 
 
 def _is_production(rel: Path) -> bool:
@@ -50,8 +55,11 @@ def _scan_file(path: Path):
 def main(argv=None):
     argv = argv if argv is not None else sys.argv[1:]
     root = Path(argv[0]) if argv else Path(__file__).resolve().parent.parent
+    exts = set(mb.supported_extensions())  # todo lenguaje con backend registrado
     failed, high_total, scanned = [], 0, 0
-    for path in sorted(root.rglob("*.py")):
+    for path in sorted(root.rglob("*")):
+        if path.suffix.lower() not in exts or not path.is_file():
+            continue
         rel = path.relative_to(root)
         if not _is_production(rel):
             continue

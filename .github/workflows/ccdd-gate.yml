@@ -31,6 +31,9 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
+      - name: Install optional tree-sitter (backend JS/TS para el dogfooding multi-lenguaje)
+        run: pip install tree_sitter tree_sitter_typescript
+
       - name: ccdd-gate (tc_lint + task_gate) sobre los contratos del PR
         env:
           GH_TOKEN: ${{ github.token }}   # gh CLI usa este token; sin secretos en el repo
@@ -42,8 +45,8 @@ jobs:
             --post
 
       # Dogfooding: el propio repo se somete al complexity gate. Falla si una función de
-      # PRODUCCIÓN supera el umbral CRÍTICA firmado. Sólo cubre lenguajes con backend
-      # disponible (Python siempre; TS/JS requieren tree-sitter, no instalado en este job).
+      # PRODUCCIÓN supera el umbral CRÍTICA firmado. Multi-lenguaje: cubre todo lenguaje con
+      # backend registrado (Python + JS/TS/JSX/TSX vía el tree-sitter instalado arriba).
       # Los avisos ALTA se reportan pero no bloquean (espejo de la semántica del gate).
       - name: complexity-gate sobre el propio código (dogfooding)
         run: python runners/repo_gate.py
