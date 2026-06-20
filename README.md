@@ -104,7 +104,7 @@ Desde el repo, copiá `.mcp.json.example` a `.mcp.json`. Tools (sin LLM):
   igual en todo lenguaje), anidamiento (estructural, vía el backend del lenguaje), `dsv_check` (anti-alucinación por "drift", exige coincidencia exacta con HEAD local) y específicos por
   lenguaje opt-in (`runners/guardrails_lang.yaml`, p. ej. `no-eval`). `agent` evalúa contra ese contrato. Sin `language`, Python.
 - `lint_task_contract(contract_text, test_code?)` - valida un task-contract (anti-desvarío del modelo grande).
-- `run_task_gate(contract_text, code, test_code)` - **veredicto PASS/FAIL unificado** (lint + aprobación de tests + tests congelados + complejidad ≤ budget), idéntico a la CLI `task_gate.py`.
+- `run_integration_gate(task_path)` - **veredicto PASS/FAIL unificado** de un contrato YA EN DISCO (lint + aprobación de tests + tests congelados + complejidad ≤ budget), idéntico a la CLI `task_gate.py`. Para `kind:group` compone las hijas + el test de integración sobre los archivos reales (sin sandbox). El agente NO implementa: delega a `run_ephemeral_agent`.
 - `request_human_attestation(code, reason)` - permite al agente pedir una excepción firmada cuando no puede reducir la complejidad por reglas de negocio.
 
 ## El loop grande/pequeño (Stateless Feedback y Evolución CEFL)

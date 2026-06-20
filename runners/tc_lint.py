@@ -308,6 +308,46 @@ RULES = [r_schema, r_required, r_test_command, r_language, r_intent_atomic, r_ta
          r_sections, r_stop_rule, r_no_algorithm, r_deps, r_issue_ref]
 
 
+# ---- reglas de un contrato de GRUPO (kind: group): compone funciones u otros grupos ----
+def r_group_required(ctx):
+    return [err("tc-group-required", "falta campo requerido en grupo: " + f)
+            for f in ["task", "intent", "children", "integration_test_command"] if f not in ctx["fm"]]
+
+def r_group_children(ctx):
+    ch = ctx["fm"].get("children")
+    if ch is None:
+        return []  # ausencia ya la cubre r_group_required
+    if not isinstance(ch, list) or not ch:
+        return [err("tc-group-children", "children debe ser una lista NO vacía de rutas a contratos .md")]
+    if any(not isinstance(c, str) or not c.strip() for c in ch):
+        return [err("tc-group-children", "cada child debe ser una ruta (string) a un contrato .md")]
+    return []
+
+def r_integration_command(ctx):
+    cmd = ctx["fm"].get("integration_test_command")
+    if cmd is None:
+        return []  # ausencia ya la cubre r_group_required
+    if not isinstance(cmd, str) or not cmd.strip():
+        return [err("tc-integration-command", "integration_test_command debe ser un string no vacío")]
+    return []
+
+def r_group_specs(ctx):
+    """conforms_to/produces (opcionales): specs compartidas que el grupo consume/produce."""
+    out = []
+    for field in ("conforms_to", "produces"):
+        v = ctx["fm"].get(field)
+        if v is None:
+            continue
+        if not isinstance(v, list) or any(not isinstance(x, str) or not x.strip() for x in v):
+            out.append(err("tc-group-specs", f"{field} debe ser una lista de rutas (string) a specs compartidas"))
+    return out
+
+# Un grupo NO se valida con las reglas de función (no tiene signature/target/budget/secciones).
+# r_schema sí aplica: el schema discrimina por `kind` (rama group), así la FORMA queda cubierta.
+GROUP_RULES = [r_schema, r_group_required, r_intent_atomic, r_group_children,
+               r_integration_command, r_group_specs]
+
+
 def lint(path):
     p = Path(path)
     fm, body = split_front_matter(p.read_text(encoding="utf-8"))
@@ -315,8 +355,9 @@ def lint(path):
         return [err("tc-required", "sin front-matter YAML (--- ... ---)")]
     ctx = {"fm": fm, "body": body, "path": p, "budget": fm.get("budget") or {},
            "fn_name": None, "language": fm.get("language")}
+    rules = GROUP_RULES if fm.get("kind") == "group" else RULES
     findings = []
-    for rule in RULES:
+    for rule in rules:
         findings += rule(ctx)
     return findings
 

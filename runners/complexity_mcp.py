@@ -29,11 +29,125 @@ CONTRACTS = HERE.parent / "contracts"
 DEFAULT_AGENT = "complexity-agent"
 AGENTS = {"complexity-agent", "pre-complexity-agent", "task-author-agent"}
 
+# Implementador (small executor): lo fija el SERVIDOR, no el LLM. run_ephemeral_agent NO acepta
+# model/api_url del llamador (se ignoran): SIEMPRE usa estos. Ollama sirve el modelo cloud sin descargarlo.
+DEFAULT_EXECUTOR_MODEL = "nemotron-3-nano:30b-cloud"
+DEFAULT_EXECUTOR_API = "http://localhost:11434/v1"
+
 for _s in (sys.stdout, sys.stderr):
     try:
         _s.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+
+# Contrato de ejemplo que lintea verde (verificado en tests/test_mcp_instructions.py). Se incrusta
+# en INSTRUCTIONS para que el agente tenga una plantilla válida y no descubra el formato a ciegas.
+_MINIMAL_CONTRACT = '''---
+task: add-two
+intent: Sumar dos enteros.
+target: add.py
+signature: "def add(a: int, b: int) -> int"
+budget: { cyclomatic_max: 3, nesting_max: 1, params_max: 2, lines_max: 10 }
+deps_allowed: []
+forbids: ["convertir a str"]
+tests: tests/test_add.py
+test_command: "python -m pytest tests/test_add.py"
+test_cwd: "."
+spec_version: "0.1"
+require_test_approval: false
+---
+
+## Intent
+Sumar dos enteros y devolver su suma.
+
+## Interface
+- Entrada: a, b enteros. Salida: a + b (int).
+
+## Invariants
+1. add(a, b) == a + b para todo par de enteros.
+
+## Examples
+- add(2, 3) -> 5
+- add(0, 0) -> 0
+
+## Do / Don't
+- DO: devolver int. DON'T: convertir a str.
+
+## Tests
+tests/test_add.py: oraculo independiente con casos fijos.
+
+## Constraints
+- Sin deps. PARAR y reportar si el budget no se cumple sin violar la interfaz.
+'''
+
+# Se entrega al agente anfitrión en `initialize` (campo MCP `instructions`). Documenta el flujo y
+# el formato del contrato de forma EXPLÍCITA, para que el modelo grande no los infiera por
+# error-y-reintento (la causa principal de tiempo perdido observada en uso real).
+INSTRUCTIONS = """\
+ccdd-complexity: sustrato DETERMINISTA para construir código verificado con disciplina CCDD. El
+cerebro eres TÚ (el agente anfitrión); estas tools no llaman a ningún LLM salvo run_ephemeral_agent,
+que delega la IMPLEMENTACIÓN a un modelo pequeño local y la valida contra un gate determinista.
+
+TU ROL: eres el AUTOR/ORQUESTADOR, NO el implementador. NO escribas tú el código de las funciones
+(ni con Write ni de ninguna forma). TODA implementación se delega a run_ephemeral_agent. Si una
+función no pasa el gate, NO la implementes vos: re-divídela en sub-funciones más chicas (cada una con
+su contrato + tests) y vuelve a delegar. Tú produces contratos, tests y descomposición; el código de
+producción lo escribe el implementador. (El gate verifica igual quién sea el autor, pero el
+experimento mide al implementador pequeño: si escribís código vos, lo invalidás.)
+
+FLUJO por cada función a implementar:
+  1. Redacta un task-contract (front-matter YAML + cuerpo Markdown; formato abajo) y sus
+     property-tests congelados (oráculo independiente que NO importa nada del target).
+  2. Llama lint_task_contract(contract_text, test_code) y corrige hasta {"ok": true}. NO sigas con
+     el lint en rojo: cada finding trae "rule" y "msg" con exactamente qué arreglar.
+  3. Crea en disco el target (un stub vacío basta) y el archivo de tests ANTES del paso 4.
+  4. run_ephemeral_agent(api_url, model, task_path): el modelo pequeño escribe el código e itera
+     contra el gate hasta PASS o agotar iteraciones. Devuelve status PASS/FAIL.
+
+FORMATO DEL CONTRATO (causas típicas de lint en rojo entre corchetes):
+  Front-matter, claves REQUERIDAS:
+    task: kebab-case atómico
+    intent: UNA sola frase, un verbo ("y además ..." la rompe)            [tc-intent-atomic]
+    target: ruta relativa al .md del contrato (ej: aacs/schema.py)
+    signature: ENTRE COMILLAS, un def parseable (ej: "def f(x: dict) -> str")  [tc-signature-valid]
+    budget: { cyclomatic_max, nesting_max, params_max, lines_max }
+    deps_allowed: []        (decláralo aunque sea vacío)
+    forbids: [...]          (prohibiciones duras: eval, exec, estado global, ...)
+    tests: ruta relativa al .md (ej: tests/test_f.py)
+    test_command: comando que corre los tests (ej: "python -m pytest tests/test_f.py")
+    test_cwd: (OPCIONAL) directorio desde el que correr test_command, relativo al .md. Por defecto
+              es la CARPETA DEL TARGET; pon "." para correr desde la raíz del proyecto (donde el
+              target es importable como paquete). Los paths de test_command son relativos a esto.
+    spec_version: "0.1"
+    require_test_approval: false   (true exige firmar los tests con su tests_sha256)
+  Cuerpo: secciones con ## (doble almohadilla): Intent, Interface, Invariants, Examples,
+    Do / Don't, Tests, Constraints. Constraints DEBE incluir una regla de parada
+    ("PARAR y reportar si ...").                                          [tc-sections, tc-stop-rule]
+  NO incluyas el algoritmo ni pseudocódigo de la solución en el contrato: describe QUÉ, no CÓMO.
+    El código lo escribe el implementador.                               [tc-no-algorithm]
+
+run_ephemeral_agent: el implementador. **Solo pasás task_path** (ruta ABSOLUTA al .md del contrato);
+  el MODELO Y EL ENDPOINT los decide el SERVIDOR — NO los pasás, NO los elegís y NO intentes
+  "descubrirlos" curleando /v1/models (el implementador puede ser un modelo cloud que no aparece en
+  esa lista). target y tests deben existir antes de llamar.
+
+COMPOSICIÓN (cuando una tarea son varias funciones): tras implementar las funciones hoja, escribe
+un contrato de GRUPO (kind: group) que las componga: `children` (lista de .md de las funciones u
+otros grupos), `integration_tests` + `integration_test_command` con un oráculo que pruebe el
+comportamiento ENSAMBLADO. Para gatear un grupo usá **run_integration_gate(task_path)** (corre sobre los archivos REALES en
+disco, porque el test de integración importa los módulos hijos ensamblados). El gate del grupo pasa SOLO si
+todas las hijas pasan su gate Y la composición pasa su oráculo. Es recursivo (grupo dentro de grupo:
+spec -> tarea -> función). Si una hija falla, NO la implementes vos: re-divídela en piezas más
+chicas y reintenta con el implementador.
+Para sistemas multi-componente, declara specs compartidas con `conforms_to` (las que el componente
+consume) / `produces` (las que produce): backend y front no se comunican; ambos se verifican contra
+el MISMO archivo de spec, que el gate exige que exista y esté bien formado.
+Antes de dar una tarea por terminada, corré **audit_composition**: si devuelve ungated_composition
+(funciones que importan a otras sin un kind:group que las gatee), falta agrupar+gatear ese ensamble.
+El gate de función NO cubre la composición; lo que no agrupás, no se verifica.
+
+EJEMPLO MÍNIMO que lintea verde (úsalo de plantilla):
+""" + _MINIMAL_CONTRACT
 
 TOOLS = [
     {
@@ -86,17 +200,26 @@ TOOLS = [
                           "recomendado: sin él la regla tc-tests-frozen falla)."}}},
     },
     {
-        "name": "run_task_gate",
-        "description": "Veredicto DETERMINISTA unificado de una task (lo mismo que la CLI task_gate.py, "
-                       "pero en memoria, sin tocar el repo): 0) el contrato lintea, 1) aprobación de tests "
-                       "(si el contrato la exige, sha256 de los tests = el firmado), 2) tests congelados pasan, "
-                       "3) complejidad de la función implementada ≤ budget. PASS solo si todas. Sin LLM. "
-                       "Da el PASS/FAIL final que measure+lint por separado no dan. Devuelve {verdict, stage, ...}.",
-        "inputSchema": {"type": "object", "required": ["contract_text", "code"], "properties": {
-            "contract_text": {"type": "string", "description": "El task-contract completo (--- yaml --- + cuerpo)."},
-            "code": {"type": "string", "description": "Código que implementa la función del contrato (se escribe en 'target')."},
-            "test_code": {"type": "string", "description": "Property-tests congelados (se escriben en 'tests'). "
-                          "Necesario para los gates de tests/aprobación; su sha256 debe casar con tests_sha256 del front-matter."}}},
+        "name": "audit_composition",
+        "description": "Audita un proyecto (sin LLM, determinista): destaca funciones cuyo target IMPORTA "
+                       "otro target —participan en un ensamblaje— pero NO están en ningún contrato kind:group. "
+                       "Esa composición queda SIN gatear (cada función pasa aislada, pero el ensamble no lo "
+                       "verifica nadie). Surfacer de deuda de verificación, pensado para CI. Devuelve "
+                       "{functions, groups, ungated_composition, ok}.",
+        "inputSchema": {"type": "object", "properties": {
+            "root": {"type": "string", "description": "Raíz del proyecto a auditar (default: directorio actual)."}}},
+    },
+    {
+        "name": "run_integration_gate",
+        "description": "Gatea un contrato que YA EXISTE EN DISCO (sin sandbox): reusa task_gate.gate sobre los "
+                       "archivos REALES del proyecto. Úsalo para contratos kind:group (composición: cada hija pasa "
+                       "su gate Y el test de integración prueba la composición ensamblada, importando los módulos "
+                       "hijos reales). A diferencia de run_task_gate —que aísla target+tests en un tempdir y NO ve "
+                       "otros módulos—, este ve el proyecto completo, que es lo que la composición necesita. "
+                       "Devuelve {verdict, stage, ...}.",
+        "inputSchema": {"type": "object", "required": ["task_path"], "properties": {
+            "task_path": {"type": "string", "description": "Ruta (absoluta o relativa) al contrato .md en disco. "
+                          "Para kind:group, sus children e integration_tests se resuelven relativos a él."}}},
     },
     {
         "name": "request_human_attestation",
@@ -114,11 +237,9 @@ TOOLS = [
     },
     {
         "name": "run_ephemeral_agent",
-        "description": "Delega un Task Contract a un LLM local (Small Executor). Lee el contrato, envía el código al LLM, y entra en un bucle de reflexión (max 3 veces) validando con task_gate.py hasta que el código pase el gate determinista. Retorna el resultado final y el número de intentos.",
+        "description": "Delega un Task Contract al implementador (Small Executor) y lo valida en bucle (max 3) contra task_gate.py hasta PASS o agotar intentos. EL MODELO Y EL ENDPOINT LOS DECIDE EL SERVIDOR — no se pasan ni se eligen desde aquí; tú solo indicas qué contrato implementar. Retorna status y nº de intentos.",
         "inputSchema": {"type": "object", "required": ["task_path"], "properties": {
-            "task_path": {"type": "string", "description": "Ruta relativa o absoluta al archivo del Task Contract (.md)."},
-            "model": {"type": "string", "description": "Nombre del modelo a usar (default: gemma-4-12b-coder)."},
-            "api_url": {"type": "string", "description": "URL base de la API OpenAI-compatible (default: http://localhost:1234/v1)."}
+            "task_path": {"type": "string", "description": "Ruta relativa o absoluta al archivo del Task Contract (.md). ÚNICO parámetro: el modelo lo fija el servidor."}
         }},
     },
 ]
@@ -240,31 +361,20 @@ def lint_task_contract(args):
             "tests_provided": "test_code" in args}
 
 
-def run_task_gate(args):
-    """Veredicto unificado en memoria: escribe contrato + code + tests a un tempdir y reutiliza
-    task_gate.gate() — así el resultado es IDÉNTICO al de la CLI task_gate.py. tests_sha256 vive en
-    el front-matter del contrato (lo usa el gate de aprobación), no como argumento aparte."""
-    contract_text = args["contract_text"].replace("\r\n", "\n")
-    fm, _ = tc_lint.split_front_matter(contract_text)
-    fm = fm or {}
-    files = [(fm.get("target", "target.py"), args.get("code", "")),
-             (fm.get("tests", "frozen_tests.py"), args.get("test_code", ""))]
-    with tempfile.TemporaryDirectory() as d:
-        base = Path(d)
-        (base / "task.md").write_text(contract_text, encoding="utf-8", newline="")
-        for name, content in files:
-            # Respeta subdirectorios de target/tests; nunca escribe fuera del tempdir
-            # (una ruta con `..`/absoluta cae al basename dentro del tempdir).
-            tp = base / name
-            try:
-                tp.resolve().relative_to(base.resolve())
-            except ValueError:
-                tp = base / Path(name).name
-            tp.parent.mkdir(parents=True, exist_ok=True)
-            # newline="" evita que el SO traduzca \n→\r\n: el gate de aprobación de tests es
-            # byte-exacto (sha256), así que los bytes escritos deben ser los que mandó el caller.
-            tp.write_text(content, encoding="utf-8", newline="")
-        return task_gate.gate(str(base / "task.md"))
+def audit_composition(args):
+    """Surfacer determinista de composición sin gatear (ver runners/audit_composition.py)."""
+    import audit_composition as _ac
+    return _ac.audit(args.get("root") or ".")
+
+
+def run_integration_gate(args):
+    """Gatea un contrato YA EXISTENTE en disco (sin sandbox), reusando task_gate.gate sobre los
+    archivos reales. Para kind:group, el test de integración importa los módulos hijos ensamblados;
+    por eso se gatea en disco, no en un tempdir aislado. Devuelve el verdict de task_gate."""
+    path = args.get("task_path")
+    if not isinstance(path, str) or not path or not Path(path).exists():
+        return {"verdict": "INVALID", "stage": "contract", "detail": f"contrato no encontrado en disco: {path}"}
+    return task_gate.gate(path)
 
 
 def request_human_attestation(args):
@@ -422,8 +532,10 @@ def _prepare_ephemeral_task(args):
         return None, {"status": "FAIL", "reason": f"Error parseando: {e}"}
     return {
         "tp": tp,
-        "model": args.get("model", "gemma-4-12b-coder"),
-        "api_url": args.get("api_url", "http://localhost:1234/v1"),
+        # El modelo/endpoint los fija el SERVIDOR, no el llamador: se ignora cualquier model/api_url
+        # que venga en args. Así el LLM no puede elegir ni "descubrir" el implementador.
+        "model": DEFAULT_EXECUTOR_MODEL,
+        "api_url": DEFAULT_EXECUTOR_API,
         "task_content": task_content,
         "target": target,
         "original_source": original_source,
@@ -611,7 +723,8 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "complexity_rubric": complexity_rubric,
             "scan_guardrails": scan_guardrails,
             "lint_task_contract": lint_task_contract,
-            "run_task_gate": run_task_gate,
+            "run_integration_gate": run_integration_gate,
+            "audit_composition": audit_composition,
             "request_human_attestation": request_human_attestation,
             "run_ephemeral_agent": run_ephemeral_agent}
 
@@ -643,7 +756,8 @@ def handle(msg):
     method, mid = msg.get("method"), msg.get("id")
     if method == "initialize":
         return send(mid, {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
-                          "serverInfo": {"name": "ccdd-complexity-mcp", "version": "0.1"}})
+                          "serverInfo": {"name": "ccdd-complexity-mcp", "version": "0.1"},
+                          "instructions": INSTRUCTIONS})
     if method == "tools/list":
         return send(mid, {"tools": TOOLS})
     if method == "tools/call":

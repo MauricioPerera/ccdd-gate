@@ -109,5 +109,210 @@ class TestTaskGate(unittest.TestCase):
         self.assertEqual(v["stage"], "test-approval")
 
 
+class TestTestCwd(unittest.TestCase):
+    """Regresión del fix de CWD: por defecto los tests corren en target.parent (compat), pero
+    `test_cwd` permite correrlos desde el directorio del contrato (raíz del proyecto)."""
+
+    def test_default_cwd_is_target_parent(self):
+        target = Path(tempfile.gettempdir()) / "proj" / "pkg" / "impl.py"
+        self.assertEqual(task_gate._resolve_test_cwd({}, target, target.parents[1]), str(target.parent))
+
+    def test_test_cwd_resolves_relative_to_contract(self):
+        d = Path(tempfile.mkdtemp())
+        try:
+            got = task_gate._resolve_test_cwd({"test_cwd": "."}, d / "pkg" / "impl.py", d)
+            self.assertEqual(got, str(d.resolve()))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_gate_run_tests_honors_cwd(self):
+        # test en el dir del contrato, target en un subdir. Sin test_cwd el CWD es el subdir del
+        # target y el comando no encuentra el test (FAIL); con test_cwd='.' sí (PASS).
+        d = Path(tempfile.mkdtemp())
+        try:
+            (d / "pkg").mkdir()
+            (d / "pkg" / "impl.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+            (d / "t_f.py").write_text("print('ok')\n", encoding="utf-8")
+            target, tests = d / "pkg" / "impl.py", d / "t_f.py"
+            fm = {"test_command": "python t_f.py", "tests": "t_f.py"}
+            without = task_gate._gate_run_tests(fm, target, tests, d)
+            self.assertIsNotNone(without)
+            self.assertEqual(without["stage"], "gate1-tests")
+            withcwd = task_gate._gate_run_tests({**fm, "test_cwd": "."}, target, tests, d)
+            self.assertIsNone(withcwd)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_test_command_single_quotes_survive(self):
+        # shlex (no shell): un argumento entre comillas simples sobrevive — en cmd.exe (shell=True)
+        # se rompía en los espacios. Aquí el script imprime el nº de args; debe ser exactamente 1.
+        d = Path(tempfile.mkdtemp())
+        try:
+            (d / "impl.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+            (d / "t.py").write_text("import sys\nassert len(sys.argv) == 2, sys.argv\n", encoding="utf-8")
+            fm = {"test_command": "python t.py 'un arg con espacios'", "tests": "t.py", "test_cwd": "."}
+            res = task_gate._gate_run_tests(fm, d / "impl.py", d / "t.py", d)
+            self.assertIsNone(res)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def _group_fixture(impl_text=None, integration_ok=True, with_children=True, spec=None):
+    """Grupo en tempdir: 1 hija (copia del sandbox conocido-bueno) + test de integración.
+    spec: None | 'ok' | 'missing' | 'malformed' -> añade un `produces: [api.yaml]` y, salvo
+    'missing', escribe api.yaml (bien o mal formado) para ejercer el gate de spec compartida."""
+    d = Path(tempfile.mkdtemp())
+    shutil.copy(TEST, d / "test_decode_instruction.py")
+    (d / "disassembler.py").write_text(
+        impl_text if impl_text is not None else GOOD_IMPL.read_text(encoding="utf-8"), encoding="utf-8")
+    (d / "child.md").write_text(TASK.read_text(encoding="utf-8"), encoding="utf-8")
+    # script stdlib (no pytest: CI es zero-dep). assert a nivel módulo: True->exit0, False->exit1.
+    (d / "test_integration.py").write_text(f"assert {integration_ok}\n", encoding="utf-8")
+    if spec == "ok":
+        (d / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n", encoding="utf-8")
+    elif spec == "malformed":
+        (d / "api.yaml").write_text("[1, 2", encoding="utf-8")  # YAML flow sin cerrar
+    children = "children:\n  - child.md\n" if with_children else ""
+    spec_block = "produces:\n  - api.yaml\n" if spec is not None else ""
+    (d / "group.md").write_text(
+        "---\nkind: group\ntask: compose-x\nintent: Componer las piezas.\n" + children + spec_block +
+        "integration_tests: test_integration.py\n"
+        'integration_test_command: "python test_integration.py"\n'
+        'test_cwd: "."\nspec_version: "0.1"\n---\n\n## Intent\nComponer.\n', encoding="utf-8")
+    return d / "group.md"
+
+
+class TestIntegrationGate(unittest.TestCase):
+    def test_pass_when_children_and_integration_pass(self):
+        g = _group_fixture()
+        try:
+            v = task_gate.gate(str(g))
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(v["verdict"], "PASS")
+        self.assertEqual(v["stage"], "integration-all")
+
+    def test_fail_when_a_child_fails(self):
+        g = _group_fixture(impl_text=BAD_IMPL)
+        try:
+            v = task_gate.gate(str(g))
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(v["verdict"], "FAIL")
+        self.assertEqual(v["stage"], "integration-children")
+        self.assertEqual(v["failed_child"], "child.md")
+
+    def test_fail_when_integration_tests_fail(self):
+        # las hijas pasan, pero la composición no: debe fallar en integration-tests, no antes.
+        g = _group_fixture(integration_ok=False)
+        try:
+            v = task_gate.gate(str(g))
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(v["verdict"], "FAIL")
+        self.assertEqual(v["stage"], "integration-tests")
+
+    def test_invalid_when_no_children(self):
+        g = _group_fixture(with_children=False)
+        try:
+            v = task_gate.gate(str(g))
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(v["verdict"], "INVALID")
+        # gate() ahora lintea el grupo primero (GROUP_RULES): un grupo sin children falla en
+        # 'contract' (lint), no en 'integration-contract'. Cualquiera de los dos es válido.
+        self.assertIn(v["stage"], ("contract", "integration-contract"))
+
+    def test_pass_with_wellformed_shared_spec(self):
+        g = _group_fixture(spec="ok")
+        try:
+            v = task_gate.gate(str(g))
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(v["verdict"], "PASS")
+
+    def test_fail_when_shared_spec_missing(self):
+        g = _group_fixture(spec="missing")
+        try:
+            v = task_gate.gate(str(g))
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(v["verdict"], "FAIL")
+        self.assertEqual(v["stage"], "integration-spec")
+
+    def test_fail_when_shared_spec_malformed(self):
+        g = _group_fixture(spec="malformed")
+        try:
+            v = task_gate.gate(str(g))
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(v["verdict"], "FAIL")
+        self.assertEqual(v["stage"], "integration-spec")
+
+
+class TestRunIntegrationGate(unittest.TestCase):
+    """La tool MCP run_integration_gate gatea un grupo sobre disco REAL (sin sandbox), que es lo
+    que la composición necesita (el test de integración importa los módulos hijos ensamblados)."""
+
+    def _mcp(self):
+        sys.path.insert(0, str(REPO / "runners"))
+        import complexity_mcp
+        return complexity_mcp
+
+    def test_runs_group_on_real_disk(self):
+        g = _group_fixture()
+        try:
+            v = self._mcp().run_integration_gate({"task_path": str(g)})
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(v["verdict"], "PASS")
+        self.assertEqual(v["stage"], "integration-all")
+
+    def test_missing_path_is_invalid(self):
+        v = self._mcp().run_integration_gate({"task_path": str(REPO / "no" / "existe.md")})
+        self.assertEqual(v["verdict"], "INVALID")
+
+
+class TestGroupLint(unittest.TestCase):
+    def test_good_group_lints_clean(self):
+        g = _group_fixture()
+        try:
+            errs = [f for f in tc_lint.lint(g) if f["level"] == "error"]
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(errs, [], msg=str(errs))
+
+    def test_group_missing_children_flagged(self):
+        g = _group_fixture(with_children=False)
+        try:
+            rules = {f["rule"] for f in tc_lint.lint(g) if f["level"] == "error"}
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertIn("tc-group-required", rules)
+
+    def test_group_does_not_get_function_rules(self):
+        # un grupo no debe exigir signature/target/secciones (reglas de función), ni que el
+        # schema (rama group) dispare tc-schema por faltar campos de función.
+        g = _group_fixture()
+        try:
+            rules = {f["rule"] for f in tc_lint.lint(g)}
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertNotIn("tc-required", rules)
+        self.assertNotIn("tc-sections", rules)
+        self.assertNotIn("tc-schema", rules)
+
+    def test_group_with_string_children_flagged_by_schema(self):
+        # children como string (no lista) lo caza el schema (rama group) o la regla de grupo.
+        g = _group_fixture()
+        txt = g.read_text(encoding="utf-8").replace("children:\n  - child.md\n", 'children: "child.md"\n')
+        g.write_text(txt, encoding="utf-8")
+        try:
+            rules = {f["rule"] for f in tc_lint.lint(g) if f["level"] == "error"}
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertTrue({"tc-schema", "tc-group-children"} & rules, msg=str(rules))
+
+
 if __name__ == "__main__":
     unittest.main()
