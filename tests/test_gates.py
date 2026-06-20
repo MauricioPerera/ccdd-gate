@@ -233,7 +233,8 @@ class TestGroupLint(unittest.TestCase):
         self.assertIn("tc-group-required", rules)
 
     def test_group_does_not_get_function_rules(self):
-        # un grupo no debe exigir signature/target/secciones (reglas de función)
+        # un grupo no debe exigir signature/target/secciones (reglas de función), ni que el
+        # schema (rama group) dispare tc-schema por faltar campos de función.
         g = _group_fixture()
         try:
             rules = {f["rule"] for f in tc_lint.lint(g)}
@@ -241,6 +242,18 @@ class TestGroupLint(unittest.TestCase):
             shutil.rmtree(g.parent, ignore_errors=True)
         self.assertNotIn("tc-required", rules)
         self.assertNotIn("tc-sections", rules)
+        self.assertNotIn("tc-schema", rules)
+
+    def test_group_with_string_children_flagged_by_schema(self):
+        # children como string (no lista) lo caza el schema (rama group) o la regla de grupo.
+        g = _group_fixture()
+        txt = g.read_text(encoding="utf-8").replace("children:\n  - child.md\n", 'children: "child.md"\n')
+        g.write_text(txt, encoding="utf-8")
+        try:
+            rules = {f["rule"] for f in tc_lint.lint(g) if f["level"] == "error"}
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertTrue({"tc-schema", "tc-group-children"} & rules, msg=str(rules))
 
 
 if __name__ == "__main__":

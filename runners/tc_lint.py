@@ -332,7 +332,8 @@ def r_integration_command(ctx):
     return []
 
 # Un grupo NO se valida con las reglas de función (no tiene signature/target/budget/secciones).
-GROUP_RULES = [r_group_required, r_intent_atomic, r_group_children, r_integration_command]
+# r_schema sí aplica: el schema discrimina por `kind` (rama group), así la FORMA queda cubierta.
+GROUP_RULES = [r_schema, r_group_required, r_intent_atomic, r_group_children, r_integration_command]
 
 
 def lint(path):

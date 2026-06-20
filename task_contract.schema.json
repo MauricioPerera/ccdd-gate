@@ -2,17 +2,17 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/MauricioPerera/ccdd-gate/task_contract.schema.json",
   "title": "CCDD Task Contract front-matter",
-  "description": "Forma del front-matter YAML de un task-contract. tc_lint valida la FORMA contra este schema (capa 1) y aplica sus reglas semánticas aparte (capa 2). Fuente única de la forma; sirve también a editores (YAML LSP) y al scaffold.",
+  "description": "Forma del front-matter YAML de un task-contract. tc_lint valida la FORMA contra este schema (capa 1) y aplica sus reglas semánticas aparte (capa 2). Cubre dos tipos: contrato de FUNCIÓN (default, o kind:function) y contrato de GRUPO (kind:group), que compone hijas. Fuente única de la forma; sirve también a editores (YAML LSP) y al scaffold.",
   "type": "object",
-  "required": ["task", "intent", "target", "signature", "budget", "tests", "test_command"],
   "properties": {
+    "kind": { "type": "string", "enum": ["function", "group"], "description": "Tipo de contrato. Ausente o 'function' = contrato de función; 'group' = compone funciones u otros grupos." },
     "task": { "type": "string", "minLength": 1, "description": "Id corto de la task (kebab-case)." },
-    "intent": { "type": "string", "minLength": 1, "description": "Qué hace la función, atómico (sin conectores 'y'/'and')." },
-    "target": { "type": "string", "minLength": 1, "description": "UN solo archivo objetivo (refactors multi-archivo = varios contratos)." },
-    "signature": { "type": "string", "minLength": 1, "description": "Firma de la función implementada." },
+    "intent": { "type": "string", "minLength": 1, "description": "Qué hace, atómico (sin conectores 'y'/'and')." },
+    "target": { "type": "string", "minLength": 1, "description": "(función) UN solo archivo objetivo (refactors multi-archivo = varios contratos)." },
+    "signature": { "type": "string", "minLength": 1, "description": "(función) Firma de la función implementada." },
     "budget": {
       "type": "object",
-      "description": "Topes de complejidad de la función implementada.",
+      "description": "(función) Topes de complejidad de la función implementada.",
       "properties": {
         "cyclomatic_max": { "type": "integer", "minimum": 0 },
         "nesting_max": { "type": "integer", "minimum": 0 },
@@ -21,8 +21,12 @@
       },
       "additionalProperties": true
     },
-    "tests": { "type": "string", "minLength": 1, "description": "Ruta de los property-tests congelados." },
-    "test_command": { "type": "string", "minLength": 1, "description": "Comando determinista para correr los tests (ej. 'python -m pytest')." },
+    "tests": { "type": "string", "minLength": 1, "description": "(función) Ruta de los property-tests congelados." },
+    "test_command": { "type": "string", "minLength": 1, "description": "(función) Comando determinista para correr los tests (ej. 'python -m pytest')." },
+    "test_cwd": { "type": "string", "minLength": 1, "description": "Directorio desde el que correr los tests, relativo al .md (default: carpeta del target)." },
+    "children": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "(grupo) Rutas a contratos hijos (.md), relativas a este contrato." },
+    "integration_tests": { "type": "string", "minLength": 1, "description": "(grupo) Ruta del oráculo de integración que prueba la composición ensamblada." },
+    "integration_test_command": { "type": "string", "minLength": 1, "description": "(grupo) Comando determinista para correr los tests de integración." },
     "language": { "type": "string", "minLength": 1, "description": "Lenguaje del backend de firma/métricas (default python)." },
     "deps_allowed": { "type": "array", "description": "Dependencias permitidas (puede ser [])." },
     "forbids": { "type": "array", "description": "Tokens/patrones prohibidos en el código." },
@@ -33,5 +37,12 @@
     "require_issue": { "type": "boolean", "description": "Si true, avisa cuando falta 'issue'." },
     "spec_version": { "type": "string", "description": "Versión del formato de contrato." }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "group" } }, "required": ["kind"] },
+      "then": { "required": ["task", "intent", "children", "integration_test_command"] },
+      "else": { "required": ["task", "intent", "target", "signature", "budget", "tests", "test_command"] }
+    }
+  ],
   "additionalProperties": true
 }
