@@ -63,6 +63,8 @@ def _gate_run_tests(fm, target, tests, contract_dir):
     # las comillas simples (causa de los fallos con rutas con espacios).
     cmd = shlex.split(test_cmd_str) if test_cmd_str else [sys.executable, str(tests.resolve())]
     cwd = _resolve_test_cwd(fm, target, contract_dir)
+    if not Path(cwd).is_dir():
+        return {"verdict": "FAIL", "stage": "gate1-tests", "detail": f"el cwd de tests no existe: {cwd}"}
     r = subprocess.run(cmd, cwd=cwd,
                        capture_output=True, text=True, encoding="utf-8", errors="replace",
                        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
@@ -130,6 +132,8 @@ def _gate_integration_tests(fm, group_dir):
         return {"verdict": "FAIL", "stage": "integration-tests",
                 "detail": f"integration_tests no existe: {itests}"}
     cwd = _resolve_group_cwd(fm, group_dir)
+    if not Path(cwd).is_dir():
+        return {"verdict": "FAIL", "stage": "integration-tests", "detail": f"el cwd de integración no existe: {cwd}"}
     r = subprocess.run(shlex.split(cmd_str), cwd=cwd,
                        capture_output=True, text=True, encoding="utf-8", errors="replace",
                        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
@@ -186,11 +190,11 @@ def integration_gate(group_path, fm, depth=0):
 def gate(task_path, _depth=0):
     p = Path(task_path)
     fm, _ = tc_lint.split_front_matter(p.read_text(encoding="utf-8"))
-    if fm.get("kind") == "group":
-        return integration_gate(task_path, fm, _depth)
     if any(f["level"] == "error" for f in tc_lint.lint(task_path)):
         return {"verdict": "INVALID", "stage": "contract",
                 "detail": "el task-contract no lintea (corre tc_lint.py para el detalle)"}
+    if fm.get("kind") == "group":
+        return integration_gate(task_path, fm, _depth)
     target = p.parent / fm["target"]
     tests = p.parent / fm["tests"]
     fn_name, _n = tc_lint.parse_sig(fm["signature"], fm.get("language"))

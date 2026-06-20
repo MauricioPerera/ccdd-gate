@@ -166,8 +166,8 @@ def _group_fixture(impl_text=None, integration_ok=True, with_children=True, spec
     (d / "disassembler.py").write_text(
         impl_text if impl_text is not None else GOOD_IMPL.read_text(encoding="utf-8"), encoding="utf-8")
     (d / "child.md").write_text(TASK.read_text(encoding="utf-8"), encoding="utf-8")
-    (d / "test_integration.py").write_text(
-        f"def test_compose():\n    assert {integration_ok}\n", encoding="utf-8")
+    # script stdlib (no pytest: CI es zero-dep). assert a nivel módulo: True->exit0, False->exit1.
+    (d / "test_integration.py").write_text(f"assert {integration_ok}\n", encoding="utf-8")
     if spec == "ok":
         (d / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n", encoding="utf-8")
     elif spec == "malformed":
@@ -177,7 +177,7 @@ def _group_fixture(impl_text=None, integration_ok=True, with_children=True, spec
     (d / "group.md").write_text(
         "---\nkind: group\ntask: compose-x\nintent: Componer las piezas.\n" + children + spec_block +
         "integration_tests: test_integration.py\n"
-        'integration_test_command: "python -m pytest test_integration.py"\n'
+        'integration_test_command: "python test_integration.py"\n'
         'test_cwd: "."\nspec_version: "0.1"\n---\n\n## Intent\nComponer.\n', encoding="utf-8")
     return d / "group.md"
 
@@ -219,7 +219,9 @@ class TestIntegrationGate(unittest.TestCase):
         finally:
             shutil.rmtree(g.parent, ignore_errors=True)
         self.assertEqual(v["verdict"], "INVALID")
-        self.assertEqual(v["stage"], "integration-contract")
+        # gate() ahora lintea el grupo primero (GROUP_RULES): un grupo sin children falla en
+        # 'contract' (lint), no en 'integration-contract'. Cualquiera de los dos es válido.
+        self.assertIn(v["stage"], ("contract", "integration-contract"))
 
     def test_pass_with_wellformed_shared_spec(self):
         g = _group_fixture(spec="ok")

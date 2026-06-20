@@ -29,8 +29,8 @@ CONTRACTS = HERE.parent / "contracts"
 DEFAULT_AGENT = "complexity-agent"
 AGENTS = {"complexity-agent", "pre-complexity-agent", "task-author-agent"}
 
-# Implementador (small executor) por defecto: lo decide el SERVIDOR, no el LLM. Si el llamador
-# pasa model/api_url, los respeta; si no, usa estos. Ollama sirve el modelo cloud sin descargarlo.
+# Implementador (small executor): lo fija el SERVIDOR, no el LLM. run_ephemeral_agent NO acepta
+# model/api_url del llamador (se ignoran): SIEMPRE usa estos. Ollama sirve el modelo cloud sin descargarlo.
 DEFAULT_EXECUTOR_MODEL = "nemotron-3-nano:30b-cloud"
 DEFAULT_EXECUTOR_API = "http://localhost:11434/v1"
 
@@ -372,7 +372,7 @@ def run_integration_gate(args):
     archivos reales. Para kind:group, el test de integración importa los módulos hijos ensamblados;
     por eso se gatea en disco, no en un tempdir aislado. Devuelve el verdict de task_gate."""
     path = args.get("task_path")
-    if not path or not Path(path).exists():
+    if not isinstance(path, str) or not path or not Path(path).exists():
         return {"verdict": "INVALID", "stage": "contract", "detail": f"contrato no encontrado en disco: {path}"}
     return task_gate.gate(path)
 
