@@ -91,12 +91,76 @@ def _gate_complexity(fm, target, fn_name, budget):
             "metrics": {k: m[k] for k in BUDGET_KEY}, "budget": budget}
 
 
-def gate(task_path):
+# --- Gate de integración (contratos de GRUPO) -------------------------------------------------
+# Un contrato con `kind: group` compone funciones (u otros grupos) hijas. PASS solo si TODAS las
+# hijas pasan su propio gate Y los tests de integración (la composición ensamblada) pasan. Es
+# recursivo: una hija puede ser otro grupo, modelando spec -> task -> función. Determinista.
+MAX_GROUP_DEPTH = 10
+
+
+def _resolve_group_cwd(fm, group_dir):
+    tc = fm.get("test_cwd")
+    return str((group_dir / tc).resolve()) if tc else str(group_dir)
+
+
+def _gate_children(fm, group_dir, depth):
+    children = fm.get("children")
+    if not isinstance(children, list) or not children:
+        return {"verdict": "INVALID", "stage": "integration-contract",
+                "detail": "un contrato 'group' requiere 'children' (lista no vacía)"}
+    for child in children:
+        cp = group_dir / child
+        if not cp.exists():
+            return {"verdict": "INVALID", "stage": "integration-contract",
+                    "detail": f"contrato hijo no existe: {child}"}
+        v = gate(str(cp), depth + 1)
+        if v.get("verdict") != "PASS":
+            return {"verdict": "FAIL", "stage": "integration-children",
+                    "failed_child": child, "child_verdict": v}
+    return None
+
+
+def _gate_integration_tests(fm, group_dir):
+    cmd_str = fm.get("integration_test_command")
+    if not cmd_str:
+        return {"verdict": "INVALID", "stage": "integration-contract",
+                "detail": "un contrato 'group' requiere integration_test_command"}
+    itests = fm.get("integration_tests")
+    if itests and not (group_dir / itests).exists():
+        return {"verdict": "FAIL", "stage": "integration-tests",
+                "detail": f"integration_tests no existe: {itests}"}
+    cwd = _resolve_group_cwd(fm, group_dir)
+    r = subprocess.run(shlex.split(cmd_str), cwd=cwd,
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
+    if r.returncode != 0:
+        return {"verdict": "FAIL", "stage": "integration-tests", "cwd": cwd,
+                "output": (r.stderr or r.stdout or "")[-800:]}
+    return None
+
+
+def integration_gate(group_path, fm, depth=0):
+    if depth > MAX_GROUP_DEPTH:
+        return {"verdict": "INVALID", "stage": "integration-contract",
+                "detail": f"recursión de grupos > {MAX_GROUP_DEPTH}; ¿ciclo en children?"}
+    missing = [k for k in ("task", "intent", "children", "integration_test_command") if k not in fm]
+    if missing:
+        return {"verdict": "INVALID", "stage": "integration-contract",
+                "detail": f"contrato 'group' incompleto, faltan: {missing}"}
+    group_dir = Path(group_path).parent
+    return (_gate_children(fm, group_dir, depth)
+            or _gate_integration_tests(fm, group_dir)
+            or {"verdict": "PASS", "stage": "integration-all", "children": fm["children"]})
+
+
+def gate(task_path, _depth=0):
     p = Path(task_path)
+    fm, _ = tc_lint.split_front_matter(p.read_text(encoding="utf-8"))
+    if fm.get("kind") == "group":
+        return integration_gate(task_path, fm, _depth)
     if any(f["level"] == "error" for f in tc_lint.lint(task_path)):
         return {"verdict": "INVALID", "stage": "contract",
                 "detail": "el task-contract no lintea (corre tc_lint.py para el detalle)"}
-    fm, _ = tc_lint.split_front_matter(p.read_text(encoding="utf-8"))
     target = p.parent / fm["target"]
     tests = p.parent / fm["tests"]
     fn_name, _n = tc_lint.parse_sig(fm["signature"], fm.get("language"))

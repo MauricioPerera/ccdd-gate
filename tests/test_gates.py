@@ -157,5 +157,63 @@ class TestTestCwd(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+def _group_fixture(impl_text=None, integration_ok=True, with_children=True):
+    """Grupo en tempdir: 1 hija (copia del sandbox conocido-bueno) + test de integración."""
+    d = Path(tempfile.mkdtemp())
+    shutil.copy(TEST, d / "test_decode_instruction.py")
+    (d / "disassembler.py").write_text(
+        impl_text if impl_text is not None else GOOD_IMPL.read_text(encoding="utf-8"), encoding="utf-8")
+    (d / "child.md").write_text(TASK.read_text(encoding="utf-8"), encoding="utf-8")
+    (d / "test_integration.py").write_text(
+        f"def test_compose():\n    assert {integration_ok}\n", encoding="utf-8")
+    children = "children:\n  - child.md\n" if with_children else ""
+    (d / "group.md").write_text(
+        "---\nkind: group\ntask: compose-x\nintent: Componer las piezas.\n" + children +
+        "integration_tests: test_integration.py\n"
+        'integration_test_command: "python -m pytest test_integration.py"\n'
+        'test_cwd: "."\nspec_version: "0.1"\n---\n\n## Intent\nComponer.\n', encoding="utf-8")
+    return d / "group.md"
+
+
+class TestIntegrationGate(unittest.TestCase):
+    def test_pass_when_children_and_integration_pass(self):
+        g = _group_fixture()
+        try:
+            v = task_gate.gate(str(g))
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(v["verdict"], "PASS")
+        self.assertEqual(v["stage"], "integration-all")
+
+    def test_fail_when_a_child_fails(self):
+        g = _group_fixture(impl_text=BAD_IMPL)
+        try:
+            v = task_gate.gate(str(g))
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(v["verdict"], "FAIL")
+        self.assertEqual(v["stage"], "integration-children")
+        self.assertEqual(v["failed_child"], "child.md")
+
+    def test_fail_when_integration_tests_fail(self):
+        # las hijas pasan, pero la composición no: debe fallar en integration-tests, no antes.
+        g = _group_fixture(integration_ok=False)
+        try:
+            v = task_gate.gate(str(g))
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(v["verdict"], "FAIL")
+        self.assertEqual(v["stage"], "integration-tests")
+
+    def test_invalid_when_no_children(self):
+        g = _group_fixture(with_children=False)
+        try:
+            v = task_gate.gate(str(g))
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(v["verdict"], "INVALID")
+        self.assertEqual(v["stage"], "integration-contract")
+
+
 if __name__ == "__main__":
     unittest.main()
