@@ -24,8 +24,7 @@ class McpInstructionsTest(unittest.TestCase):
         self.assertIsInstance(ins, str)
         self.assertGreater(len(ins), 400)
         for tok in ("lint_task_contract", "run_ephemeral_agent", "test_cwd",
-                    "## Intent", "signature", "tc-no-algorithm",
-                    "nemotron-3-nano:30b-cloud", "11434"):
+                    "## Intent", "signature", "tc-no-algorithm"):
             self.assertIn(tok, ins, msg=f"falta '{tok}' en las instrucciones")
 
     def test_initialize_returns_instructions(self):
@@ -40,6 +39,15 @@ class McpInstructionsTest(unittest.TestCase):
         # model/api_url, run_ephemeral_agent usa estos. Congelado para que el cambio sea deliberado.
         self.assertEqual(complexity_mcp.DEFAULT_EXECUTOR_MODEL, "nemotron-3-nano:30b-cloud")
         self.assertIn("11434", complexity_mcp.DEFAULT_EXECUTOR_API)
+
+    def test_ephemeral_schema_does_not_expose_model(self):
+        # El LLM NO debe poder elegir el modelo: el tool solo acepta task_path. model/api_url
+        # los fija el servidor. Congela el diseño "el MCP decide, no el LLM".
+        tool = next(t for t in complexity_mcp.TOOLS if t["name"] == "run_ephemeral_agent")
+        props = tool["inputSchema"]["properties"]
+        self.assertEqual(set(props), {"task_path"})
+        self.assertNotIn("model", props)
+        self.assertNotIn("api_url", props)
 
     def test_embedded_example_lints_green(self):
         # el contrato de ejemplo que se envía en las instrucciones DEBE lintar limpio: si no, la

@@ -119,10 +119,10 @@ FORMATO DEL CONTRATO (causas típicas de lint en rojo entre corchetes):
   NO incluyas el algoritmo ni pseudocódigo de la solución en el contrato: describe QUÉ, no CÓMO.
     El código lo escribe el implementador.                               [tc-no-algorithm]
 
-run_ephemeral_agent: el implementador. api_url estilo OpenAI; por defecto el implementador es
-  Ollama -> api_url = http://localhost:11434/v1, model = nemotron-3-nano:30b-cloud (32B, razonamiento;
-  el ephemeral ignora el campo reasoning y toma solo el content). task_path = ruta ABSOLUTA al .md del
-  contrato. target y tests deben existir antes de llamar.
+run_ephemeral_agent: el implementador. **Solo pasás task_path** (ruta ABSOLUTA al .md del contrato);
+  el MODELO Y EL ENDPOINT los decide el SERVIDOR — NO los pasás, NO los elegís y NO intentes
+  "descubrirlos" curleando /v1/models (el implementador puede ser un modelo cloud que no aparece en
+  esa lista). target y tests deben existir antes de llamar.
 
 EJEMPLO MÍNIMO que lintea verde (úsalo de plantilla):
 """ + _MINIMAL_CONTRACT
@@ -206,11 +206,9 @@ TOOLS = [
     },
     {
         "name": "run_ephemeral_agent",
-        "description": "Delega un Task Contract a un LLM local (Small Executor). Lee el contrato, envía el código al LLM, y entra en un bucle de reflexión (max 3 veces) validando con task_gate.py hasta que el código pase el gate determinista. Retorna el resultado final y el número de intentos.",
+        "description": "Delega un Task Contract al implementador (Small Executor) y lo valida en bucle (max 3) contra task_gate.py hasta PASS o agotar intentos. EL MODELO Y EL ENDPOINT LOS DECIDE EL SERVIDOR — no se pasan ni se eligen desde aquí; tú solo indicas qué contrato implementar. Retorna status y nº de intentos.",
         "inputSchema": {"type": "object", "required": ["task_path"], "properties": {
-            "task_path": {"type": "string", "description": "Ruta relativa o absoluta al archivo del Task Contract (.md)."},
-            "model": {"type": "string", "description": f"Nombre del modelo a usar (opcional; default del servidor: {DEFAULT_EXECUTOR_MODEL})."},
-            "api_url": {"type": "string", "description": f"URL base OpenAI-compatible (opcional; default del servidor: {DEFAULT_EXECUTOR_API})."}
+            "task_path": {"type": "string", "description": "Ruta relativa o absoluta al archivo del Task Contract (.md). ÚNICO parámetro: el modelo lo fija el servidor."}
         }},
     },
 ]
@@ -514,8 +512,10 @@ def _prepare_ephemeral_task(args):
         return None, {"status": "FAIL", "reason": f"Error parseando: {e}"}
     return {
         "tp": tp,
-        "model": args.get("model") or DEFAULT_EXECUTOR_MODEL,
-        "api_url": args.get("api_url") or DEFAULT_EXECUTOR_API,
+        # El modelo/endpoint los fija el SERVIDOR, no el llamador: se ignora cualquier model/api_url
+        # que venga en args. Así el LLM no puede elegir ni "descubrir" el implementador.
+        "model": DEFAULT_EXECUTOR_MODEL,
+        "api_url": DEFAULT_EXECUTOR_API,
         "task_content": task_content,
         "target": target,
         "original_source": original_source,
