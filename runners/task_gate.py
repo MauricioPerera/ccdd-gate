@@ -10,6 +10,7 @@ Exit: 0 PASS · 1 FAIL · 2 contrato inválido."""
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -42,21 +43,34 @@ def _gate_test_approval(fm, tests):
     return None
 
 
+# CWD para correr los tests. Default histórico (a prueba de regresión): la carpeta del target.
+# Si el contrato declara `test_cwd`, se resuelve relativo al directorio del contrato (igual que
+# target/tests), permitiendo correr los tests desde la raíz del proyecto sin paths absolutos.
+def _resolve_test_cwd(fm, target, contract_dir):
+    tc = fm.get("test_cwd")
+    if tc:
+        return str((contract_dir / tc).resolve())
+    return str(target.parent)
+
+
 # gate 1 — property-tests congelados (determinista) y sintaxis
-def _gate_run_tests(fm, target, tests):
+def _gate_run_tests(fm, target, tests, contract_dir):
     if not tests.exists():
         return {"verdict": "FAIL", "stage": "gate1-tests", "detail": f"tests no existe: {fm['tests']}"}
     test_cmd_str = fm.get("test_command")
-    if test_cmd_str:
-        cmd, use_shell = test_cmd_str, True
-    else:
-        cmd, use_shell = [sys.executable, str(tests.resolve())], False
-    r = subprocess.run(cmd, cwd=str(target.parent), shell=use_shell,
+    # shlex.split + sin shell: comando portable y determinista. Respeta comillas (simples y dobles)
+    # igual en todas las plataformas, a diferencia de shell=True que en Windows usa cmd.exe y rompe
+    # las comillas simples (causa de los fallos con rutas con espacios).
+    cmd = shlex.split(test_cmd_str) if test_cmd_str else [sys.executable, str(tests.resolve())]
+    cwd = _resolve_test_cwd(fm, target, contract_dir)
+    r = subprocess.run(cmd, cwd=cwd,
                        capture_output=True, text=True, encoding="utf-8", errors="replace",
                        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
     if r.returncode != 0:
+        # `cwd` en el detalle: si el comando no encuentra el test, el autor ve desde DÓNDE corrió
+        # (los paths del test_command son relativos a esto) y puede ajustar test_cwd sin adivinar.
         return {"verdict": "FAIL", "stage": "gate1-tests", "detail": "property-tests o sintaxis fallaron",
-                "output": (r.stderr or r.stdout or "")[-800:]}
+                "cwd": cwd, "output": (r.stderr or r.stdout or "")[-800:]}
     return None
 
 
@@ -88,7 +102,7 @@ def gate(task_path):
     fn_name, _n = tc_lint.parse_sig(fm["signature"], fm.get("language"))
 
     return (_gate_test_approval(fm, tests)
-            or _gate_run_tests(fm, target, tests)
+            or _gate_run_tests(fm, target, tests, p.parent)
             or _gate_complexity(fm, target, fn_name, fm["budget"]))
 
 

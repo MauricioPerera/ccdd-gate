@@ -109,5 +109,53 @@ class TestTaskGate(unittest.TestCase):
         self.assertEqual(v["stage"], "test-approval")
 
 
+class TestTestCwd(unittest.TestCase):
+    """Regresión del fix de CWD: por defecto los tests corren en target.parent (compat), pero
+    `test_cwd` permite correrlos desde el directorio del contrato (raíz del proyecto)."""
+
+    def test_default_cwd_is_target_parent(self):
+        target = Path(tempfile.gettempdir()) / "proj" / "pkg" / "impl.py"
+        self.assertEqual(task_gate._resolve_test_cwd({}, target, target.parents[1]), str(target.parent))
+
+    def test_test_cwd_resolves_relative_to_contract(self):
+        d = Path(tempfile.mkdtemp())
+        try:
+            got = task_gate._resolve_test_cwd({"test_cwd": "."}, d / "pkg" / "impl.py", d)
+            self.assertEqual(got, str(d.resolve()))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_gate_run_tests_honors_cwd(self):
+        # test en el dir del contrato, target en un subdir. Sin test_cwd el CWD es el subdir del
+        # target y el comando no encuentra el test (FAIL); con test_cwd='.' sí (PASS).
+        d = Path(tempfile.mkdtemp())
+        try:
+            (d / "pkg").mkdir()
+            (d / "pkg" / "impl.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+            (d / "t_f.py").write_text("print('ok')\n", encoding="utf-8")
+            target, tests = d / "pkg" / "impl.py", d / "t_f.py"
+            fm = {"test_command": "python t_f.py", "tests": "t_f.py"}
+            without = task_gate._gate_run_tests(fm, target, tests, d)
+            self.assertIsNotNone(without)
+            self.assertEqual(without["stage"], "gate1-tests")
+            withcwd = task_gate._gate_run_tests({**fm, "test_cwd": "."}, target, tests, d)
+            self.assertIsNone(withcwd)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_test_command_single_quotes_survive(self):
+        # shlex (no shell): un argumento entre comillas simples sobrevive — en cmd.exe (shell=True)
+        # se rompía en los espacios. Aquí el script imprime el nº de args; debe ser exactamente 1.
+        d = Path(tempfile.mkdtemp())
+        try:
+            (d / "impl.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+            (d / "t.py").write_text("import sys\nassert len(sys.argv) == 2, sys.argv\n", encoding="utf-8")
+            fm = {"test_command": "python t.py 'un arg con espacios'", "tests": "t.py", "test_cwd": "."}
+            res = task_gate._gate_run_tests(fm, d / "impl.py", d / "t.py", d)
+            self.assertIsNone(res)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
