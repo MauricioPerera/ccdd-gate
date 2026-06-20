@@ -142,6 +142,9 @@ chicas y reintenta con el implementador.
 Para sistemas multi-componente, declara specs compartidas con `conforms_to` (las que el componente
 consume) / `produces` (las que produce): backend y front no se comunican; ambos se verifican contra
 el MISMO archivo de spec, que el gate exige que exista y esté bien formado.
+Antes de dar una tarea por terminada, corré **audit_composition**: si devuelve ungated_composition
+(funciones que importan a otras sin un kind:group que las gatee), falta agrupar+gatear ese ensamble.
+El gate de función NO cubre la composición; lo que no agrupás, no se verifica.
 
 EJEMPLO MÍNIMO que lintea verde (úsalo de plantilla):
 """ + _MINIMAL_CONTRACT
@@ -195,6 +198,16 @@ TOOLS = [
             "contract_text": {"type": "string", "description": "El task-contract completo (--- yaml --- + cuerpo)."},
             "test_code": {"type": "string", "description": "Código de los property-tests congelados (opcional pero "
                           "recomendado: sin él la regla tc-tests-frozen falla)."}}},
+    },
+    {
+        "name": "audit_composition",
+        "description": "Audita un proyecto (sin LLM, determinista): destaca funciones cuyo target IMPORTA "
+                       "otro target —participan en un ensamblaje— pero NO están en ningún contrato kind:group. "
+                       "Esa composición queda SIN gatear (cada función pasa aislada, pero el ensamble no lo "
+                       "verifica nadie). Surfacer de deuda de verificación, pensado para CI. Devuelve "
+                       "{functions, groups, ungated_composition, ok}.",
+        "inputSchema": {"type": "object", "properties": {
+            "root": {"type": "string", "description": "Raíz del proyecto a auditar (default: directorio actual)."}}},
     },
     {
         "name": "run_integration_gate",
@@ -346,6 +359,12 @@ def lint_task_contract(args):
     return {"ok": errors == 0, "errors": errors,
             "warnings": len(findings) - errors, "findings": findings,
             "tests_provided": "test_code" in args}
+
+
+def audit_composition(args):
+    """Surfacer determinista de composición sin gatear (ver runners/audit_composition.py)."""
+    import audit_composition as _ac
+    return _ac.audit(args.get("root") or ".")
 
 
 def run_integration_gate(args):
@@ -705,6 +724,7 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "scan_guardrails": scan_guardrails,
             "lint_task_contract": lint_task_contract,
             "run_integration_gate": run_integration_gate,
+            "audit_composition": audit_composition,
             "request_human_attestation": request_human_attestation,
             "run_ephemeral_agent": run_ephemeral_agent}
 
