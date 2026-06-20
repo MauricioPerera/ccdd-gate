@@ -114,8 +114,10 @@ FORMATO DEL CONTRATO (causas típicas de lint en rojo entre corchetes):
   NO incluyas el algoritmo ni pseudocódigo de la solución en el contrato: describe QUÉ, no CÓMO.
     El código lo escribe el implementador.                               [tc-no-algorithm]
 
-run_ephemeral_agent: api_url estilo OpenAI (ej: http://localhost:1234/v1), model = id del modelo
-  local, task_path = ruta ABSOLUTA al .md del contrato. target y tests deben existir antes de llamar.
+run_ephemeral_agent: el implementador. api_url estilo OpenAI; por defecto el implementador es
+  Ollama -> api_url = http://localhost:11434/v1, model = nemotron-3-nano:30b-cloud (32B, razonamiento;
+  el ephemeral ignora el campo reasoning y toma solo el content). task_path = ruta ABSOLUTA al .md del
+  contrato. target y tests deben existir antes de llamar.
 
 EJEMPLO MÍNIMO que lintea verde (úsalo de plantilla):
 """ + _MINIMAL_CONTRACT
