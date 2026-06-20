@@ -25,7 +25,7 @@ class McpInstructionsTest(unittest.TestCase):
         self.assertGreater(len(ins), 400)
         for tok in ("lint_task_contract", "run_ephemeral_agent", "test_cwd",
                     "## Intent", "signature", "tc-no-algorithm",
-                    "kind: group", "children", "conforms_to"):
+                    "kind: group", "children", "conforms_to", "run_integration_gate"):
             self.assertIn(tok, ins, msg=f"falta '{tok}' en las instrucciones")
 
     def test_initialize_returns_instructions(self):

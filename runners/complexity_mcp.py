@@ -127,9 +127,12 @@ run_ephemeral_agent: el implementador. **Solo pasás task_path** (ruta ABSOLUTA 
 COMPOSICIÓN (cuando una tarea son varias funciones): tras implementar las funciones hoja, escribe
 un contrato de GRUPO (kind: group) que las componga: `children` (lista de .md de las funciones u
 otros grupos), `integration_tests` + `integration_test_command` con un oráculo que pruebe el
-comportamiento ENSAMBLADO. El gate sobre el grupo pasa SOLO si todas las hijas pasan su gate Y la
-composición pasa su oráculo. Es recursivo (grupo dentro de grupo: spec -> tarea -> función). Si una
-hija falla, NO la implementes vos: re-divídela en piezas más chicas y reintenta con el implementador.
+comportamiento ENSAMBLADO. Para gatear un grupo usá **run_integration_gate(task_path)** (corre sobre los archivos REALES en
+disco, porque el test de integración importa los módulos hijos ensamblados); NO uses run_task_gate
+para grupos (aísla target+tests en un tempdir y no vería las hijas). El gate del grupo pasa SOLO si
+todas las hijas pasan su gate Y la composición pasa su oráculo. Es recursivo (grupo dentro de grupo:
+spec -> tarea -> función). Si una hija falla, NO la implementes vos: re-divídela en piezas más
+chicas y reintenta con el implementador.
 Para sistemas multi-componente, declara specs compartidas con `conforms_to` (las que el componente
 consume) / `produces` (las que produce): backend y front no se comunican; ambos se verifican contra
 el MISMO archivo de spec, que el gate exige que exista y esté bien formado.
@@ -199,6 +202,18 @@ TOOLS = [
             "code": {"type": "string", "description": "Código que implementa la función del contrato (se escribe en 'target')."},
             "test_code": {"type": "string", "description": "Property-tests congelados (se escriben en 'tests'). "
                           "Necesario para los gates de tests/aprobación; su sha256 debe casar con tests_sha256 del front-matter."}}},
+    },
+    {
+        "name": "run_integration_gate",
+        "description": "Gatea un contrato que YA EXISTE EN DISCO (sin sandbox): reusa task_gate.gate sobre los "
+                       "archivos REALES del proyecto. Úsalo para contratos kind:group (composición: cada hija pasa "
+                       "su gate Y el test de integración prueba la composición ensamblada, importando los módulos "
+                       "hijos reales). A diferencia de run_task_gate —que aísla target+tests en un tempdir y NO ve "
+                       "otros módulos—, este ve el proyecto completo, que es lo que la composición necesita. "
+                       "Devuelve {verdict, stage, ...}.",
+        "inputSchema": {"type": "object", "required": ["task_path"], "properties": {
+            "task_path": {"type": "string", "description": "Ruta (absoluta o relativa) al contrato .md en disco. "
+                          "Para kind:group, sus children e integration_tests se resuelven relativos a él."}}},
     },
     {
         "name": "request_human_attestation",
@@ -365,6 +380,16 @@ def run_task_gate(args):
             # byte-exacto (sha256), así que los bytes escritos deben ser los que mandó el caller.
             tp.write_text(content, encoding="utf-8", newline="")
         return task_gate.gate(str(base / "task.md"))
+
+
+def run_integration_gate(args):
+    """Gatea un contrato YA EXISTENTE en disco (sin sandbox), reusando task_gate.gate sobre los
+    archivos reales. Para kind:group, el test de integración importa los módulos hijos ensamblados;
+    por eso NO se puede sandboxear como run_task_gate. Devuelve el verdict de task_gate."""
+    path = args.get("task_path")
+    if not path or not Path(path).exists():
+        return {"verdict": "INVALID", "stage": "contract", "detail": f"contrato no encontrado en disco: {path}"}
+    return task_gate.gate(path)
 
 
 def request_human_attestation(args):
@@ -714,6 +739,7 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "scan_guardrails": scan_guardrails,
             "lint_task_contract": lint_task_contract,
             "run_task_gate": run_task_gate,
+            "run_integration_gate": run_integration_gate,
             "request_human_attestation": request_human_attestation,
             "run_ephemeral_agent": run_ephemeral_agent}
 

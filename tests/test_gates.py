@@ -248,6 +248,29 @@ class TestIntegrationGate(unittest.TestCase):
         self.assertEqual(v["stage"], "integration-spec")
 
 
+class TestRunIntegrationGate(unittest.TestCase):
+    """La tool MCP run_integration_gate gatea un grupo sobre disco REAL (sin sandbox), que es lo
+    que la composición necesita (el test de integración importa los módulos hijos ensamblados)."""
+
+    def _mcp(self):
+        sys.path.insert(0, str(REPO / "runners"))
+        import complexity_mcp
+        return complexity_mcp
+
+    def test_runs_group_on_real_disk(self):
+        g = _group_fixture()
+        try:
+            v = self._mcp().run_integration_gate({"task_path": str(g)})
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(v["verdict"], "PASS")
+        self.assertEqual(v["stage"], "integration-all")
+
+    def test_missing_path_is_invalid(self):
+        v = self._mcp().run_integration_gate({"task_path": str(REPO / "no" / "existe.md")})
+        self.assertEqual(v["verdict"], "INVALID")
+
+
 class TestGroupLint(unittest.TestCase):
     def test_good_group_lints_clean(self):
         g = _group_fixture()
