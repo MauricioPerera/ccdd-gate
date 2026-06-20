@@ -35,6 +35,91 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
+# Contrato de ejemplo que lintea verde (verificado en tests/test_mcp_instructions.py). Se incrusta
+# en INSTRUCTIONS para que el agente tenga una plantilla válida y no descubra el formato a ciegas.
+_MINIMAL_CONTRACT = '''---
+task: add-two
+intent: Sumar dos enteros.
+target: add.py
+signature: "def add(a: int, b: int) -> int"
+budget: { cyclomatic_max: 3, nesting_max: 1, params_max: 2, lines_max: 10 }
+deps_allowed: []
+forbids: ["convertir a str"]
+tests: tests/test_add.py
+test_command: "python -m pytest tests/test_add.py"
+test_cwd: "."
+spec_version: "0.1"
+require_test_approval: false
+---
+
+## Intent
+Sumar dos enteros y devolver su suma.
+
+## Interface
+- Entrada: a, b enteros. Salida: a + b (int).
+
+## Invariants
+1. add(a, b) == a + b para todo par de enteros.
+
+## Examples
+- add(2, 3) -> 5
+- add(0, 0) -> 0
+
+## Do / Don't
+- DO: devolver int. DON'T: convertir a str.
+
+## Tests
+tests/test_add.py: oraculo independiente con casos fijos.
+
+## Constraints
+- Sin deps. PARAR y reportar si el budget no se cumple sin violar la interfaz.
+'''
+
+# Se entrega al agente anfitrión en `initialize` (campo MCP `instructions`). Documenta el flujo y
+# el formato del contrato de forma EXPLÍCITA, para que el modelo grande no los infiera por
+# error-y-reintento (la causa principal de tiempo perdido observada en uso real).
+INSTRUCTIONS = """\
+ccdd-complexity: sustrato DETERMINISTA para construir código verificado con disciplina CCDD. El
+cerebro eres TÚ (el agente anfitrión); estas tools no llaman a ningún LLM salvo run_ephemeral_agent,
+que delega la IMPLEMENTACIÓN a un modelo pequeño local y la valida contra un gate determinista.
+
+FLUJO por cada función a implementar:
+  1. Redacta un task-contract (front-matter YAML + cuerpo Markdown; formato abajo) y sus
+     property-tests congelados (oráculo independiente que NO importa nada del target).
+  2. Llama lint_task_contract(contract_text, test_code) y corrige hasta {"ok": true}. NO sigas con
+     el lint en rojo: cada finding trae "rule" y "msg" con exactamente qué arreglar.
+  3. Crea en disco el target (un stub vacío basta) y el archivo de tests ANTES del paso 4.
+  4. run_ephemeral_agent(api_url, model, task_path): el modelo pequeño escribe el código e itera
+     contra el gate hasta PASS o agotar iteraciones. Devuelve status PASS/FAIL.
+
+FORMATO DEL CONTRATO (causas típicas de lint en rojo entre corchetes):
+  Front-matter, claves REQUERIDAS:
+    task: kebab-case atómico
+    intent: UNA sola frase, un verbo ("y además ..." la rompe)            [tc-intent-atomic]
+    target: ruta relativa al .md del contrato (ej: aacs/schema.py)
+    signature: ENTRE COMILLAS, un def parseable (ej: "def f(x: dict) -> str")  [tc-signature-valid]
+    budget: { cyclomatic_max, nesting_max, params_max, lines_max }
+    deps_allowed: []        (decláralo aunque sea vacío)
+    forbids: [...]          (prohibiciones duras: eval, exec, estado global, ...)
+    tests: ruta relativa al .md (ej: tests/test_f.py)
+    test_command: comando que corre los tests (ej: "python -m pytest tests/test_f.py")
+    test_cwd: (OPCIONAL) directorio desde el que correr test_command, relativo al .md. Por defecto
+              es la CARPETA DEL TARGET; pon "." para correr desde la raíz del proyecto (donde el
+              target es importable como paquete). Los paths de test_command son relativos a esto.
+    spec_version: "0.1"
+    require_test_approval: false   (true exige firmar los tests con su tests_sha256)
+  Cuerpo: secciones con ## (doble almohadilla): Intent, Interface, Invariants, Examples,
+    Do / Don't, Tests, Constraints. Constraints DEBE incluir una regla de parada
+    ("PARAR y reportar si ...").                                          [tc-sections, tc-stop-rule]
+  NO incluyas el algoritmo ni pseudocódigo de la solución en el contrato: describe QUÉ, no CÓMO.
+    El código lo escribe el implementador.                               [tc-no-algorithm]
+
+run_ephemeral_agent: api_url estilo OpenAI (ej: http://localhost:1234/v1), model = id del modelo
+  local, task_path = ruta ABSOLUTA al .md del contrato. target y tests deben existir antes de llamar.
+
+EJEMPLO MÍNIMO que lintea verde (úsalo de plantilla):
+""" + _MINIMAL_CONTRACT
+
 TOOLS = [
     {
         "name": "measure_complexity",
@@ -643,7 +728,8 @@ def handle(msg):
     method, mid = msg.get("method"), msg.get("id")
     if method == "initialize":
         return send(mid, {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
-                          "serverInfo": {"name": "ccdd-complexity-mcp", "version": "0.1"}})
+                          "serverInfo": {"name": "ccdd-complexity-mcp", "version": "0.1"},
+                          "instructions": INSTRUCTIONS})
     if method == "tools/list":
         return send(mid, {"tools": TOOLS})
     if method == "tools/call":
