@@ -35,6 +35,12 @@ class McpInstructionsTest(unittest.TestCase):
         out = json.loads(buf.getvalue().strip())
         self.assertEqual(out["result"]["instructions"], complexity_mcp.INSTRUCTIONS)
 
+    def test_executor_default_is_nemotron_via_ollama(self):
+        # El SERVIDOR decide el implementador por defecto (no el LLM): si el llamador no pasa
+        # model/api_url, run_ephemeral_agent usa estos. Congelado para que el cambio sea deliberado.
+        self.assertEqual(complexity_mcp.DEFAULT_EXECUTOR_MODEL, "nemotron-3-nano:30b-cloud")
+        self.assertIn("11434", complexity_mcp.DEFAULT_EXECUTOR_API)
+
     def test_embedded_example_lints_green(self):
         # el contrato de ejemplo que se envía en las instrucciones DEBE lintar limpio: si no, la
         # plantilla que ve el agente estaría rota.

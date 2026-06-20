@@ -29,6 +29,11 @@ CONTRACTS = HERE.parent / "contracts"
 DEFAULT_AGENT = "complexity-agent"
 AGENTS = {"complexity-agent", "pre-complexity-agent", "task-author-agent"}
 
+# Implementador (small executor) por defecto: lo decide el SERVIDOR, no el LLM. Si el llamador
+# pasa model/api_url, los respeta; si no, usa estos. Ollama sirve el modelo cloud sin descargarlo.
+DEFAULT_EXECUTOR_MODEL = "nemotron-3-nano:30b-cloud"
+DEFAULT_EXECUTOR_API = "http://localhost:11434/v1"
+
 for _s in (sys.stdout, sys.stderr):
     try:
         _s.reconfigure(encoding="utf-8", errors="replace")
@@ -204,8 +209,8 @@ TOOLS = [
         "description": "Delega un Task Contract a un LLM local (Small Executor). Lee el contrato, envía el código al LLM, y entra en un bucle de reflexión (max 3 veces) validando con task_gate.py hasta que el código pase el gate determinista. Retorna el resultado final y el número de intentos.",
         "inputSchema": {"type": "object", "required": ["task_path"], "properties": {
             "task_path": {"type": "string", "description": "Ruta relativa o absoluta al archivo del Task Contract (.md)."},
-            "model": {"type": "string", "description": "Nombre del modelo a usar (default: gemma-4-12b-coder)."},
-            "api_url": {"type": "string", "description": "URL base de la API OpenAI-compatible (default: http://localhost:1234/v1)."}
+            "model": {"type": "string", "description": f"Nombre del modelo a usar (opcional; default del servidor: {DEFAULT_EXECUTOR_MODEL})."},
+            "api_url": {"type": "string", "description": f"URL base OpenAI-compatible (opcional; default del servidor: {DEFAULT_EXECUTOR_API})."}
         }},
     },
 ]
@@ -509,8 +514,8 @@ def _prepare_ephemeral_task(args):
         return None, {"status": "FAIL", "reason": f"Error parseando: {e}"}
     return {
         "tp": tp,
-        "model": args.get("model", "gemma-4-12b-coder"),
-        "api_url": args.get("api_url", "http://localhost:1234/v1"),
+        "model": args.get("model") or DEFAULT_EXECUTOR_MODEL,
+        "api_url": args.get("api_url") or DEFAULT_EXECUTOR_API,
         "task_content": task_content,
         "target": target,
         "original_source": original_source,
