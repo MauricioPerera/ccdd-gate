@@ -88,6 +88,13 @@ ccdd-complexity: sustrato DETERMINISTA para construir código verificado con dis
 cerebro eres TÚ (el agente anfitrión); estas tools no llaman a ningún LLM salvo run_ephemeral_agent,
 que delega la IMPLEMENTACIÓN a un modelo pequeño local y la valida contra un gate determinista.
 
+TU ROL: eres el AUTOR/ORQUESTADOR, NO el implementador. NO escribas tú el código de las funciones
+(ni con Write ni de ninguna forma). TODA implementación se delega a run_ephemeral_agent. Si una
+función no pasa el gate, NO la implementes vos: re-divídela en sub-funciones más chicas (cada una con
+su contrato + tests) y vuelve a delegar. Tú produces contratos, tests y descomposición; el código de
+producción lo escribe el implementador. (El gate verifica igual quién sea el autor, pero el
+experimento mide al implementador pequeño: si escribís código vos, lo invalidás.)
+
 FLUJO por cada función a implementar:
   1. Redacta un task-contract (front-matter YAML + cuerpo Markdown; formato abajo) y sus
      property-tests congelados (oráculo independiente que NO importa nada del target).
@@ -128,8 +135,7 @@ COMPOSICIÓN (cuando una tarea son varias funciones): tras implementar las funci
 un contrato de GRUPO (kind: group) que las componga: `children` (lista de .md de las funciones u
 otros grupos), `integration_tests` + `integration_test_command` con un oráculo que pruebe el
 comportamiento ENSAMBLADO. Para gatear un grupo usá **run_integration_gate(task_path)** (corre sobre los archivos REALES en
-disco, porque el test de integración importa los módulos hijos ensamblados); NO uses run_task_gate
-para grupos (aísla target+tests en un tempdir y no vería las hijas). El gate del grupo pasa SOLO si
+disco, porque el test de integración importa los módulos hijos ensamblados). El gate del grupo pasa SOLO si
 todas las hijas pasan su gate Y la composición pasa su oráculo. Es recursivo (grupo dentro de grupo:
 spec -> tarea -> función). Si una hija falla, NO la implementes vos: re-divídela en piezas más
 chicas y reintenta con el implementador.
@@ -189,19 +195,6 @@ TOOLS = [
             "contract_text": {"type": "string", "description": "El task-contract completo (--- yaml --- + cuerpo)."},
             "test_code": {"type": "string", "description": "Código de los property-tests congelados (opcional pero "
                           "recomendado: sin él la regla tc-tests-frozen falla)."}}},
-    },
-    {
-        "name": "run_task_gate",
-        "description": "Veredicto DETERMINISTA unificado de una task (lo mismo que la CLI task_gate.py, "
-                       "pero en memoria, sin tocar el repo): 0) el contrato lintea, 1) aprobación de tests "
-                       "(si el contrato la exige, sha256 de los tests = el firmado), 2) tests congelados pasan, "
-                       "3) complejidad de la función implementada ≤ budget. PASS solo si todas. Sin LLM. "
-                       "Da el PASS/FAIL final que measure+lint por separado no dan. Devuelve {verdict, stage, ...}.",
-        "inputSchema": {"type": "object", "required": ["contract_text", "code"], "properties": {
-            "contract_text": {"type": "string", "description": "El task-contract completo (--- yaml --- + cuerpo)."},
-            "code": {"type": "string", "description": "Código que implementa la función del contrato (se escribe en 'target')."},
-            "test_code": {"type": "string", "description": "Property-tests congelados (se escriben en 'tests'). "
-                          "Necesario para los gates de tests/aprobación; su sha256 debe casar con tests_sha256 del front-matter."}}},
     },
     {
         "name": "run_integration_gate",
@@ -355,37 +348,10 @@ def lint_task_contract(args):
             "tests_provided": "test_code" in args}
 
 
-def run_task_gate(args):
-    """Veredicto unificado en memoria: escribe contrato + code + tests a un tempdir y reutiliza
-    task_gate.gate() — así el resultado es IDÉNTICO al de la CLI task_gate.py. tests_sha256 vive en
-    el front-matter del contrato (lo usa el gate de aprobación), no como argumento aparte."""
-    contract_text = args["contract_text"].replace("\r\n", "\n")
-    fm, _ = tc_lint.split_front_matter(contract_text)
-    fm = fm or {}
-    files = [(fm.get("target", "target.py"), args.get("code", "")),
-             (fm.get("tests", "frozen_tests.py"), args.get("test_code", ""))]
-    with tempfile.TemporaryDirectory() as d:
-        base = Path(d)
-        (base / "task.md").write_text(contract_text, encoding="utf-8", newline="")
-        for name, content in files:
-            # Respeta subdirectorios de target/tests; nunca escribe fuera del tempdir
-            # (una ruta con `..`/absoluta cae al basename dentro del tempdir).
-            tp = base / name
-            try:
-                tp.resolve().relative_to(base.resolve())
-            except ValueError:
-                tp = base / Path(name).name
-            tp.parent.mkdir(parents=True, exist_ok=True)
-            # newline="" evita que el SO traduzca \n→\r\n: el gate de aprobación de tests es
-            # byte-exacto (sha256), así que los bytes escritos deben ser los que mandó el caller.
-            tp.write_text(content, encoding="utf-8", newline="")
-        return task_gate.gate(str(base / "task.md"))
-
-
 def run_integration_gate(args):
     """Gatea un contrato YA EXISTENTE en disco (sin sandbox), reusando task_gate.gate sobre los
     archivos reales. Para kind:group, el test de integración importa los módulos hijos ensamblados;
-    por eso NO se puede sandboxear como run_task_gate. Devuelve el verdict de task_gate."""
+    por eso se gatea en disco, no en un tempdir aislado. Devuelve el verdict de task_gate."""
     path = args.get("task_path")
     if not path or not Path(path).exists():
         return {"verdict": "INVALID", "stage": "contract", "detail": f"contrato no encontrado en disco: {path}"}
@@ -738,7 +704,6 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "complexity_rubric": complexity_rubric,
             "scan_guardrails": scan_guardrails,
             "lint_task_contract": lint_task_contract,
-            "run_task_gate": run_task_gate,
             "run_integration_gate": run_integration_gate,
             "request_human_attestation": request_human_attestation,
             "run_ephemeral_agent": run_ephemeral_agent}

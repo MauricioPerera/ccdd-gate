@@ -25,7 +25,8 @@ class McpInstructionsTest(unittest.TestCase):
         self.assertGreater(len(ins), 400)
         for tok in ("lint_task_contract", "run_ephemeral_agent", "test_cwd",
                     "## Intent", "signature", "tc-no-algorithm",
-                    "kind: group", "children", "conforms_to", "run_integration_gate"):
+                    "kind: group", "children", "conforms_to", "run_integration_gate",
+                    "NO escribas"):
             self.assertIn(tok, ins, msg=f"falta '{tok}' en las instrucciones")
 
     def test_initialize_returns_instructions(self):
@@ -40,6 +41,13 @@ class McpInstructionsTest(unittest.TestCase):
         # model/api_url, run_ephemeral_agent usa estos. Congelado para que el cambio sea deliberado.
         self.assertEqual(complexity_mcp.DEFAULT_EXECUTOR_MODEL, "nemotron-3-nano:30b-cloud")
         self.assertIn("11434", complexity_mcp.DEFAULT_EXECUTOR_API)
+
+    def test_run_task_gate_removed_from_surface(self):
+        # El hatch de implementacion directa (run_task_gate(code)) se saca de la superficie MCP:
+        # implementar -> run_ephemeral_agent; verificar en disco -> run_integration_gate.
+        self.assertNotIn("run_task_gate", complexity_mcp.DISPATCH)
+        self.assertFalse(any(t["name"] == "run_task_gate" for t in complexity_mcp.TOOLS))
+        self.assertIn("run_integration_gate", complexity_mcp.DISPATCH)
 
     def test_ephemeral_schema_does_not_expose_model(self):
         # El LLM NO debe poder elegir el modelo: el tool solo acepta task_path. model/api_url
