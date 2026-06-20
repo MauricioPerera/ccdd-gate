@@ -215,5 +215,33 @@ class TestIntegrationGate(unittest.TestCase):
         self.assertEqual(v["stage"], "integration-contract")
 
 
+class TestGroupLint(unittest.TestCase):
+    def test_good_group_lints_clean(self):
+        g = _group_fixture()
+        try:
+            errs = [f for f in tc_lint.lint(g) if f["level"] == "error"]
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(errs, [], msg=str(errs))
+
+    def test_group_missing_children_flagged(self):
+        g = _group_fixture(with_children=False)
+        try:
+            rules = {f["rule"] for f in tc_lint.lint(g) if f["level"] == "error"}
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertIn("tc-group-required", rules)
+
+    def test_group_does_not_get_function_rules(self):
+        # un grupo no debe exigir signature/target/secciones (reglas de función)
+        g = _group_fixture()
+        try:
+            rules = {f["rule"] for f in tc_lint.lint(g)}
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertNotIn("tc-required", rules)
+        self.assertNotIn("tc-sections", rules)
+
+
 if __name__ == "__main__":
     unittest.main()
