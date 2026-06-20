@@ -139,6 +139,35 @@ def _gate_integration_tests(fm, group_dir):
     return None
 
 
+# Spec compartida (zero-dep): un grupo declara las specs que CONSUME (`conforms_to`) o PRODUCE
+# (`produces`). El gate verifica que existan y estén BIEN FORMADAS. La alineación backend<->front
+# se garantiza porque ambos apuntan al MISMO archivo (misma verdad). La conformidad de COMPORTAMIENTO
+# (¿la API servida cumple el OpenAPI?) es el integration_test_command (validador pluggable, opcional).
+def _spec_wellformed(path):
+    if not path.exists():
+        return f"spec compartida no existe: {path.name}"
+    suf = path.suffix.lower()
+    try:
+        text = path.read_text(encoding="utf-8")
+        if suf in (".yaml", ".yml"):
+            import yaml
+            yaml.safe_load(text)
+        elif suf == ".json":
+            json.loads(text)
+    except Exception as e:
+        return f"spec compartida mal formada ({path.name}): {e}"
+    return None
+
+
+def _gate_spec_conformance(fm, group_dir):
+    refs = list(fm.get("conforms_to") or []) + list(fm.get("produces") or [])
+    for ref in refs:
+        problem = _spec_wellformed(group_dir / ref)
+        if problem:
+            return {"verdict": "FAIL", "stage": "integration-spec", "detail": problem}
+    return None
+
+
 def integration_gate(group_path, fm, depth=0):
     if depth > MAX_GROUP_DEPTH:
         return {"verdict": "INVALID", "stage": "integration-contract",
@@ -149,6 +178,7 @@ def integration_gate(group_path, fm, depth=0):
                 "detail": f"contrato 'group' incompleto, faltan: {missing}"}
     group_dir = Path(group_path).parent
     return (_gate_children(fm, group_dir, depth)
+            or _gate_spec_conformance(fm, group_dir)
             or _gate_integration_tests(fm, group_dir)
             or {"verdict": "PASS", "stage": "integration-all", "children": fm["children"]})
 

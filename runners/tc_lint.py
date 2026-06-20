@@ -331,9 +331,21 @@ def r_integration_command(ctx):
         return [err("tc-integration-command", "integration_test_command debe ser un string no vacío")]
     return []
 
+def r_group_specs(ctx):
+    """conforms_to/produces (opcionales): specs compartidas que el grupo consume/produce."""
+    out = []
+    for field in ("conforms_to", "produces"):
+        v = ctx["fm"].get(field)
+        if v is None:
+            continue
+        if not isinstance(v, list) or any(not isinstance(x, str) or not x.strip() for x in v):
+            out.append(err("tc-group-specs", f"{field} debe ser una lista de rutas (string) a specs compartidas"))
+    return out
+
 # Un grupo NO se valida con las reglas de función (no tiene signature/target/budget/secciones).
 # r_schema sí aplica: el schema discrimina por `kind` (rama group), así la FORMA queda cubierta.
-GROUP_RULES = [r_schema, r_group_required, r_intent_atomic, r_group_children, r_integration_command]
+GROUP_RULES = [r_schema, r_group_required, r_intent_atomic, r_group_children,
+               r_integration_command, r_group_specs]
 
 
 def lint(path):

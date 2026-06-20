@@ -157,8 +157,10 @@ class TestTestCwd(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
-def _group_fixture(impl_text=None, integration_ok=True, with_children=True):
-    """Grupo en tempdir: 1 hija (copia del sandbox conocido-bueno) + test de integración."""
+def _group_fixture(impl_text=None, integration_ok=True, with_children=True, spec=None):
+    """Grupo en tempdir: 1 hija (copia del sandbox conocido-bueno) + test de integración.
+    spec: None | 'ok' | 'missing' | 'malformed' -> añade un `produces: [api.yaml]` y, salvo
+    'missing', escribe api.yaml (bien o mal formado) para ejercer el gate de spec compartida."""
     d = Path(tempfile.mkdtemp())
     shutil.copy(TEST, d / "test_decode_instruction.py")
     (d / "disassembler.py").write_text(
@@ -166,9 +168,14 @@ def _group_fixture(impl_text=None, integration_ok=True, with_children=True):
     (d / "child.md").write_text(TASK.read_text(encoding="utf-8"), encoding="utf-8")
     (d / "test_integration.py").write_text(
         f"def test_compose():\n    assert {integration_ok}\n", encoding="utf-8")
+    if spec == "ok":
+        (d / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n", encoding="utf-8")
+    elif spec == "malformed":
+        (d / "api.yaml").write_text("[1, 2", encoding="utf-8")  # YAML flow sin cerrar
     children = "children:\n  - child.md\n" if with_children else ""
+    spec_block = "produces:\n  - api.yaml\n" if spec is not None else ""
     (d / "group.md").write_text(
-        "---\nkind: group\ntask: compose-x\nintent: Componer las piezas.\n" + children +
+        "---\nkind: group\ntask: compose-x\nintent: Componer las piezas.\n" + children + spec_block +
         "integration_tests: test_integration.py\n"
         'integration_test_command: "python -m pytest test_integration.py"\n'
         'test_cwd: "."\nspec_version: "0.1"\n---\n\n## Intent\nComponer.\n', encoding="utf-8")
@@ -213,6 +220,32 @@ class TestIntegrationGate(unittest.TestCase):
             shutil.rmtree(g.parent, ignore_errors=True)
         self.assertEqual(v["verdict"], "INVALID")
         self.assertEqual(v["stage"], "integration-contract")
+
+    def test_pass_with_wellformed_shared_spec(self):
+        g = _group_fixture(spec="ok")
+        try:
+            v = task_gate.gate(str(g))
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(v["verdict"], "PASS")
+
+    def test_fail_when_shared_spec_missing(self):
+        g = _group_fixture(spec="missing")
+        try:
+            v = task_gate.gate(str(g))
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(v["verdict"], "FAIL")
+        self.assertEqual(v["stage"], "integration-spec")
+
+    def test_fail_when_shared_spec_malformed(self):
+        g = _group_fixture(spec="malformed")
+        try:
+            v = task_gate.gate(str(g))
+        finally:
+            shutil.rmtree(g.parent, ignore_errors=True)
+        self.assertEqual(v["verdict"], "FAIL")
+        self.assertEqual(v["stage"], "integration-spec")
 
 
 class TestGroupLint(unittest.TestCase):

@@ -27,6 +27,8 @@
     "children": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "(grupo) Rutas a contratos hijos (.md), relativas a este contrato." },
     "integration_tests": { "type": "string", "minLength": 1, "description": "(grupo) Ruta del oráculo de integración que prueba la composición ensamblada." },
     "integration_test_command": { "type": "string", "minLength": 1, "description": "(grupo) Comando determinista para correr los tests de integración." },
+    "conforms_to": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "(grupo) Specs compartidas que este componente CONSUME (debe cumplirlas)." },
+    "produces": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "(grupo) Specs compartidas que este componente PRODUCE." },
     "language": { "type": "string", "minLength": 1, "description": "Lenguaje del backend de firma/métricas (default python)." },
     "deps_allowed": { "type": "array", "description": "Dependencias permitidas (puede ser [])." },
     "forbids": { "type": "array", "description": "Tokens/patrones prohibidos en el código." },
