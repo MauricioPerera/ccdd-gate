@@ -124,6 +124,16 @@ run_ephemeral_agent: el implementador. **Solo pasás task_path** (ruta ABSOLUTA 
   "descubrirlos" curleando /v1/models (el implementador puede ser un modelo cloud que no aparece en
   esa lista). target y tests deben existir antes de llamar.
 
+COMPOSICIÓN (cuando una tarea son varias funciones): tras implementar las funciones hoja, escribe
+un contrato de GRUPO (kind: group) que las componga: `children` (lista de .md de las funciones u
+otros grupos), `integration_tests` + `integration_test_command` con un oráculo que pruebe el
+comportamiento ENSAMBLADO. El gate sobre el grupo pasa SOLO si todas las hijas pasan su gate Y la
+composición pasa su oráculo. Es recursivo (grupo dentro de grupo: spec -> tarea -> función). Si una
+hija falla, NO la implementes vos: re-divídela en piezas más chicas y reintenta con el implementador.
+Para sistemas multi-componente, declara specs compartidas con `conforms_to` (las que el componente
+consume) / `produces` (las que produce): backend y front no se comunican; ambos se verifican contra
+el MISMO archivo de spec, que el gate exige que exista y esté bien formado.
+
 EJEMPLO MÍNIMO que lintea verde (úsalo de plantilla):
 """ + _MINIMAL_CONTRACT
 
