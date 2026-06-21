@@ -36,7 +36,11 @@ veredicto van en código que no se puede engañar.
 | `runners/complexity_runner.py` | Orquestador L3 para el contrato `complexity-agent` | no |
 | `runners/complexity_gate.py` | Gate determinista; CLI o hook PostToolUse de Claude Code | no |
 | `runners/tc_lint.py` | Linter del **task-contract** (anti-desvarío del autor) | no |
-| `runners/task_gate.py` | Veredicto unificado: tc_lint + tests congelados (Gate 1) + complejidad≤budget (Gate 2) + firma | no |
+| `runners/task_gate.py` | Veredicto unificado: tc_lint + tests congelados (Gate 1) + complejidad≤budget (Gate 2) + anotaciones (Gate 3) + firma; `kind:group` compone hijas + test de integración | no |
+| `runners/audit_composition.py` | Auditor project-wide: composición sin gatear (función importa a otra sin `kind:group`); distingue deuda de FORMA vs de COMPORTAMIENTO | no |
+| `runners/audit_orphan_targets.py` | Auditor project-wide: `.py` de implementación que no son target de ningún contrato (código fuera del flujo gate); exime datos puros | no |
+| `runners/audit_annotations.py` | Auditor project-wide: nombres en anotaciones sin importar/definir; caza bugs de portabilidad que lazy annotations (PEP 649) enmascara | no |
+| `runners/mutation_audit.py` | Mide la fuerza del oráculo vía mutation testing determinista (mutaciones fijas → corre los tests congelados por mutante); superviviente = test débil | no |
 | `runners/approve_tests.py` | Firma humana de los tests (`tests_sha256`), a prueba de manipulación | no |
 | `runners/orchestrator.py` | Loop **stateless**: pequeño implementa → tests fallan/complejidad falla → reintenta (sin memoria) → escala al grande | sí (worker) |
 | `runners/test_audit.py` | Auditoría *advisory* de los tests contra el contrato | sí (advisory) |
@@ -105,7 +109,14 @@ Desde el repo, copiá `.mcp.json.example` a `.mcp.json`. Tools (sin LLM):
   lenguaje opt-in (`runners/guardrails_lang.yaml`, p. ej. `no-eval`). `agent` evalúa contra ese contrato. Sin `language`, Python.
 - `lint_task_contract(contract_text, test_code?)` - valida un task-contract (anti-desvarío del modelo grande).
 - `run_integration_gate(task_path)` - **veredicto PASS/FAIL unificado** de un contrato YA EN DISCO (lint + aprobación de tests + tests congelados + complejidad ≤ budget), idéntico a la CLI `task_gate.py`. Para `kind:group` compone las hijas + el test de integración sobre los archivos reales (sin sandbox). El agente NO implementa: delega a `run_ephemeral_agent`.
+- `run_ephemeral_agent(task_path)` - delega la **implementación** al modelo pequeño local y la valida contra el gate. El **servidor** fija modelo y endpoint; el LLM anfitrión solo pasa `task_path` (no elige el modelo).
+- `audit_composition(root?)` - composición sin gatear project-wide; separa deuda de FORMA (composición ejercitada por el test del composer) de deuda de COMPORTAMIENTO (mock o test ausente). `ok` = sin deuda de comportamiento.
+- `audit_orphan_targets(root?)` - `.py` de implementación que no son target de ningún contrato (exime tests/`__init__`/datos puros). Para proyectos 100% CCDD.
+- `audit_annotations(root?)` - nombres usados en anotaciones sin importar/definir, sobre todos los targets; caza bugs de portabilidad que Python 3.14 (lazy annotations) enmascara en runtime.
+- `mutation_audit(task_path)` - fuerza del oráculo vía mutation testing determinista; un mutante sobreviviente delata un test débil. Opt-in (corre los tests por mutante).
 - `request_human_attestation(code, reason)` - permite al agente pedir una excepción firmada cuando no puede reducir la complejidad por reglas de negocio.
+
+**Checklist de cierre** (antes de dar una tarea por terminada): corré las cuatro auditorías —`audit_composition`, `audit_orphan_targets`, `audit_annotations` y `mutation_audit`— hasta `ok:true`. El gate de función no cubre composición, código huérfano, anotaciones ni la fuerza del oráculo; quedarse con la auditoría que da verde y declarar "todo en verde" es el modo de falla que la checklist existe para cerrar (y que el CI hace no-opcional).
 
 ## El loop grande/pequeño (Stateless Feedback y Evolución CEFL)
 
@@ -169,9 +180,13 @@ funciona en local. Usa `gh` CLI; tokens por entorno, nunca en el repo.
 - `ci_gate.py` + `.github/workflows/ccdd-gate.yml` — **GitHub Action**: en cada PR descubre los
   task-contracts afectados (el `.md` o su `target`), corre `tc_lint` + `task_gate` y **bloquea el
   merge** (exit 1) si el veredicto no pasa; publica el resumen como comentario idempotente vía el
-  Reporter. Sin LLM, sin secretos (usa el `GH_TOKEN` del runner). **Copiable a un repo
-  consumidor**: copia `.github/workflows/ccdd-gate.yml` e `integrations/github/` (o vendoriza/instala
-  ccdd-gate) y activa branch protection sobre el check `ccdd-gate`.
+  Reporter. Además corre **no-opcionalmente** `audit_composition` y `audit_annotations`
+  project-wide y `mutation_audit` sobre los contratos afectados: composición sin gatear, anotaciones
+  sin importar o mutantes sobrevivientes también ponen el check en rojo (lo que el autor tiende a
+  saltar cuando es opt-in, acá no se puede saltar). Sin LLM, sin secretos (usa el `GH_TOKEN` del
+  runner). **Copiable a un repo consumidor**: copia `.github/workflows/ccdd-gate.yml` e
+  `integrations/github/` (o vendoriza/instala ccdd-gate) y activa branch protection sobre el check
+  `ccdd-gate`.
 - `scaffold.py` — genera el esqueleto de un task-contract desde un issue (`--issue owner/repo#N`
   o `--from-json` offline). Captura la intención (título/cuerpo/labels) con placeholders `TODO`;
   el resultado es **incompleto a propósito** (`tc_lint` lo marca, no falsamente verde).
