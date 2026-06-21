@@ -64,6 +64,16 @@ class PureDataExemptionTest(unittest.TestCase):
         self.assertNotIn("model.py", res["orphans"])  # data pura: exenta
         self.assertIn("logic.py", res["orphans"])      # lógica sin contrato: huérfano
 
+    def test_toplevel_logic_without_def_not_exempt(self):
+        # sin 'def' pero con lógica ejecutable a nivel módulo: NO es data pura -> huérfano
+        d = Path(tempfile.mkdtemp())
+        try:
+            (d / "side.py").write_text("import os\nfor k in os.environ:\n    print(k)\n", encoding="utf-8")
+            res = audit_orphan_targets.audit(d)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertIn("side.py", res["orphans"])
+
 
 if __name__ == "__main__":
     unittest.main()

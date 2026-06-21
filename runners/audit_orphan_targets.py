@@ -31,14 +31,26 @@ def _is_excluded(rel):
     return rel.name in ("__init__.py", "conftest.py") or rel.name.startswith("test_")
 
 
+_DATA_STMT = (ast.Import, ast.ImportFrom, ast.ClassDef, ast.Assign, ast.AnnAssign, ast.Pass)
+
+
+def _is_declarative(stmt):
+    """True si un statement top-level es declarativo (no lógica ejecutable): import, clase,
+    asignación, o un literal suelto (docstring)."""
+    return isinstance(stmt, _DATA_STMT) or (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant))
+
+
 def _is_pure_data(pyfile):
-    """True si el módulo NO define ninguna función/método (solo dataclasses, constantes, imports):
-    una declaración de datos no tiene lógica que gatear, así que no es 'código sin contrato'."""
+    """True si el módulo es SOLO declaraciones de datos: sin funciones/métodos (ningún FunctionDef en
+    todo el árbol) Y sin lógica ejecutable a nivel módulo (sin for/while/if/with/try ni llamadas
+    sueltas). Esos módulos no tienen nada que gatear, así que no son 'código sin contrato'."""
     try:
         tree = ast.parse(Path(pyfile).read_text(encoding="utf-8"))
     except Exception:
         return False
-    return not any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) for n in ast.walk(tree))
+    if any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) for n in ast.walk(tree)):
+        return False
+    return all(_is_declarative(s) for s in tree.body)
 
 
 def audit(root):
