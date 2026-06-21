@@ -205,7 +205,8 @@ def r_tests_assert(ctx):
     """El test congelado (Python) DEBE tener al menos una aserción: un oráculo sin assert hace que
     el gate pase sin verificar nada (test vacuo). Zero-dep, determinista. Solo Python; otros
     lenguajes se omiten (sus aserciones tienen otra forma)."""
-    if (ctx["language"] or DEFAULT_LANGUAGE).lower() != "python":
+    lang = ctx["language"] if isinstance(ctx["language"], str) else DEFAULT_LANGUAGE
+    if lang.lower() != "python":
         return []
     tests = ctx["fm"].get("tests")
     if not tests:
@@ -217,8 +218,8 @@ def r_tests_assert(ctx):
         tree = ast.parse(tp.read_text(encoding="utf-8"))
     except Exception:
         return []  # sintaxis no analizable como Python
-    has = any(isinstance(n, ast.Assert) for n in ast.walk(tree)) or \
-        any(isinstance(n, ast.Call) and _is_assert_call(n) for n in ast.walk(tree))
+    has = any(isinstance(n, ast.Assert) or (isinstance(n, ast.Call) and _is_assert_call(n))
+              for n in ast.walk(tree))
     if not has:
         return [err("tc-tests-assert", "el test congelado no tiene ninguna aserción (oráculo vacío): "
                     "un test sin assert hace que el gate pase sin verificar nada")]
