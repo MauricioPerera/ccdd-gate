@@ -220,6 +220,15 @@ TOOLS = [
             "root": {"type": "string", "description": "Raíz del proyecto a auditar (default: directorio actual)."}}},
     },
     {
+        "name": "audit_annotations",
+        "description": "Audita un proyecto (sin LLM, determinista, barato): corre el check de anotaciones "
+                       "(nombres usados en anotaciones sin importar/definir) sobre TODOS los targets de "
+                       "contratos de función, no solo los del diff. Caza project-wide los bugs de portabilidad "
+                       "que el runtime (Python 3.14 lazy annotations) enmascara. Devuelve {checked, failures, ok}.",
+        "inputSchema": {"type": "object", "properties": {
+            "root": {"type": "string", "description": "Raíz del proyecto a auditar (default: directorio actual)."}}},
+    },
+    {
         "name": "mutation_audit",
         "description": "Mide la FUERZA del oráculo de un contrato (sin LLM, determinista): aplica un set "
                        "fijo de mutaciones al target (flip de comparadores/operadores, bool, return None) y "
@@ -391,6 +400,12 @@ def audit_orphan_targets(args):
     """Surfacer determinista de código fuera del flujo de contrato (ver audit_orphan_targets.py)."""
     import audit_orphan_targets as _ao
     return _ao.audit(args.get("root") or ".")
+
+
+def audit_annotations(args):
+    """Scan project-wide del gate de anotaciones (ver runners/audit_annotations.py)."""
+    import audit_annotations as _aa
+    return _aa.audit(args.get("root") or ".")
 
 
 def mutation_audit(args):
@@ -758,6 +773,7 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "run_integration_gate": run_integration_gate,
             "audit_composition": audit_composition,
             "audit_orphan_targets": audit_orphan_targets,
+            "audit_annotations": audit_annotations,
             "mutation_audit": mutation_audit,
             "request_human_attestation": request_human_attestation,
             "run_ephemeral_agent": run_ephemeral_agent}

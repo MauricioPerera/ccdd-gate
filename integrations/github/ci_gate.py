@@ -28,6 +28,8 @@ import tc_lint  # noqa: E402
 import task_gate  # noqa: E402
 import reporter  # noqa: E402
 import audit_composition  # noqa: E402
+import audit_annotations  # noqa: E402
+import mutation_audit  # noqa: E402
 
 
 def is_contract(path):
@@ -95,6 +97,38 @@ def composition_note(audit):
     return "\n".join(lines) + "\n"
 
 
+def annotations_note(ann):
+    """Markdown de nombres de anotación sin importar (project-wide). '' si ok. Pura."""
+    if ann.get("ok", True):
+        return ""
+    fails = ann.get("failures", [])
+    lines = [f"### ❌ ccdd-gate: anotaciones sin resolver ({len(fails)})",
+             "_Targets con nombres usados en anotaciones sin importar/definir (rompen en <Py3.14):_", ""]
+    lines += [f"- `{f['target']}`: {f['detail'].split(':')[-1].strip()}" for f in fails]
+    return "\n".join(lines) + "\n"
+
+
+def mutation_survivors(contract_paths):
+    """Corre mutation_audit SOLO en los contratos afectados (acotado). Devuelve lista de
+    {contract, survived} con mutantes sobrevivientes. Pura respecto del estado (restaura el target)."""
+    out = []
+    for c in contract_paths:
+        res = mutation_audit.audit(str(c))
+        if res.get("survived"):
+            out.append({"contract": str(c), "survived": res["survived"]})
+    return out
+
+
+def mutation_note(survivors):
+    """Markdown de mutantes sobrevivientes (oráculo débil) en los contratos del PR. '' si ninguno."""
+    if not survivors:
+        return ""
+    lines = [f"### ❌ ccdd-gate: oráculo débil — mutantes sobrevivientes ({len(survivors)} contrato/s)",
+             "_El test no caza estas mutaciones del target (oráculo no pinea esa lógica):_", ""]
+    lines += [f"- `{s['contract']}`: {', '.join(s['survived'])}" for s in survivors]
+    return "\n".join(lines) + "\n"
+
+
 def combined_report(results):
     """Markdown combinado con un único MARKER (idempotente). Pura."""
     if not results:
@@ -126,14 +160,17 @@ def main(argv=None):
 
     paths = _select_contracts(a)
     results = run(paths)
-    audit = audit_composition.audit(ROOT)
+    audit = audit_composition.audit(ROOT)          # composición: project-wide
+    ann = audit_annotations.audit(ROOT)            # anotaciones: project-wide (barato)
+    survivors = mutation_survivors(paths)          # oráculo: SOLO los contratos del PR (acotado)
     body = combined_report(results)
-    note = composition_note(audit)
-    if note:
-        body = body.rstrip() + "\n\n" + note
+    for extra in (composition_note(audit), annotations_note(ann), mutation_note(survivors)):
+        if extra:
+            body = body.rstrip() + "\n\n" + extra
     print(body)
     _maybe_post(a, body)
-    return 0 if (overall_pass(results) and audit.get("ok", True)) else 1
+    ok = overall_pass(results) and audit.get("ok", True) and ann.get("ok", True) and not survivors
+    return 0 if ok else 1
 
 
 def _select_contracts(a):

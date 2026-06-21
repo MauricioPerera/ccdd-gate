@@ -111,5 +111,21 @@ class CompositionNoteTest(unittest.TestCase):
         self.assertIn("b, c", note)
 
 
+class AnnotationsAndMutationNotesTest(unittest.TestCase):
+    def test_annotations_note(self):
+        self.assertEqual(ci_gate.annotations_note({"ok": True}), "")
+        note = ci_gate.annotations_note({"ok": False, "failures": [
+            {"target": "aacs/x.py", "detail": "nombres ...: ['Node']"}]})
+        self.assertIn("anotaciones sin resolver (1)", note)
+        self.assertIn("aacs/x.py", note)
+        self.assertIn("Node", note)
+
+    def test_mutation_note(self):
+        self.assertEqual(ci_gate.mutation_note([]), "")
+        note = ci_gate.mutation_note([{"contract": "a.md", "survived": ["op@L13"]}])
+        self.assertIn("mutantes sobrevivientes", note)
+        self.assertIn("op@L13", note)
+
+
 if __name__ == "__main__":
     unittest.main()
