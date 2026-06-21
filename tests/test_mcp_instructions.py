@@ -7,6 +7,7 @@ explícito al conectar."""
 import contextlib
 import io
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -36,10 +37,12 @@ class McpInstructionsTest(unittest.TestCase):
         out = json.loads(buf.getvalue().strip())
         self.assertEqual(out["result"]["instructions"], complexity_mcp.INSTRUCTIONS)
 
-    def test_executor_default_is_nemotron_via_ollama(self):
-        # El SERVIDOR decide el implementador por defecto (no el LLM): si el llamador no pasa
-        # model/api_url, run_ephemeral_agent usa estos. Congelado para que el cambio sea deliberado.
-        self.assertEqual(complexity_mcp.DEFAULT_EXECUTOR_MODEL, "nemotron-3-nano:30b-cloud")
+    def test_executor_default_and_env_configurable(self):
+        # El SERVIDOR/operador decide el implementador por defecto (no el LLM): si el llamador no pasa
+        # model/api_url, run_ephemeral_agent usa estos. El operador puede sobreescribir por entorno
+        # (CCDD_EXECUTOR_MODEL / CCDD_EXECUTOR_API); el LLM no. Default validado por benchmark.
+        self.assertEqual(complexity_mcp.DEFAULT_EXECUTOR_MODEL,
+                         os.environ.get("CCDD_EXECUTOR_MODEL", "qwen3-coder:480b-cloud"))
         self.assertIn("11434", complexity_mcp.DEFAULT_EXECUTOR_API)
 
     def test_run_task_gate_removed_from_surface(self):
