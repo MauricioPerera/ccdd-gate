@@ -301,6 +301,25 @@ class TestGateAnnotations(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
         self.assertIsNone(r)
 
+    def test_tuple_unpacking_defines_names(self):
+        # A, B = ... define A y B: usarlos en anotación NO debe marcar falso positivo.
+        d, p = self._target("A, B = object(), object()\n\n\ndef f(x: A) -> B:\n    return x\n")
+        try:
+            r = task_gate._gate_annotations({}, p)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertIsNone(r)
+
+    @unittest.skipIf(sys.version_info < (3, 12), "PEP 695 requiere Python 3.12+")
+    def test_pep695_type_alias_and_generics(self):
+        src = "type Point = tuple\n\n\ndef f[T](x: T) -> Point:\n    return x\n"
+        d, p = self._target(src)
+        try:
+            r = task_gate._gate_annotations({}, p)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertIsNone(r)
+
 
 class TestRunIntegrationGate(unittest.TestCase):
     """La tool MCP run_integration_gate gatea un grupo sobre disco REAL (sin sandbox), que es lo

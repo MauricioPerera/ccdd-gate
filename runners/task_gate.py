@@ -193,9 +193,15 @@ def integration_gate(group_path, fm, depth=0):
 # nombre usado en una anotación sin importarlo/definirlo (p.ej. `x: Node` sin `import Node`). En
 # Python 3.14 las lazy annotations lo dejan pasar en runtime, pero rompe en <3.14 y es incorrecto.
 # Determinista, zero-dep (AST puro), independiente de la versión de Python. Solo aplica a Python.
+def _type_param_names(node):
+    """Nombres de los type_params PEP 695 (def f[T], class C[T], type X[T]). [] si no hay."""
+    return [tp.name for tp in getattr(node, "type_params", [])]
+
+
 def _names_from_node(node):
-    """Nombres que un nodo define (import/def/clase/asignación). Lista (posible vacía), o None si
-    es un `from x import *` (no analizable de forma segura)."""
+    """Nombres que un nodo define (import/def/clase/asignación/type-alias). Lista (posible vacía),
+    o None si es un `from x import *` (no analizable de forma segura). Permisivo a propósito: ante
+    la duda incluye de más (evita falsos positivos en un gate default-on)."""
     if isinstance(node, ast.Import):
         return [(a.asname or a.name).split(".")[0] for a in node.names]
     if isinstance(node, ast.ImportFrom):
@@ -203,11 +209,13 @@ def _names_from_node(node):
             return None
         return [a.asname or a.name for a in node.names]
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return [node.name]
-    if isinstance(node, ast.Assign):
-        return [t.id for t in node.targets if isinstance(t, ast.Name)]
+        return [node.name, *_type_param_names(node)]
+    if isinstance(node, ast.Assign):  # incluye desempaquetado: A, B = ... ; (a[0], obj.x) = ...
+        return [n.id for t in node.targets for n in ast.walk(t) if isinstance(n, ast.Name)]
     if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
         return [node.target.id]
+    if hasattr(ast, "TypeAlias") and isinstance(node, ast.TypeAlias):  # PEP 695: type X = ...
+        return [node.name.id, *_type_param_names(node)]
     return []
 
 
