@@ -13,6 +13,7 @@ Tools:
 Transporte: MCP stdio = mensajes JSON-RPC delimitados por salto de línea.
 """
 import json
+import os
 import re
 import sys
 import tempfile
@@ -29,10 +30,13 @@ CONTRACTS = HERE.parent / "contracts"
 DEFAULT_AGENT = "complexity-agent"
 AGENTS = {"complexity-agent", "pre-complexity-agent", "task-author-agent"}
 
-# Implementador (small executor): lo fija el SERVIDOR, no el LLM. run_ephemeral_agent NO acepta
-# model/api_url del llamador (se ignoran): SIEMPRE usa estos. Ollama sirve el modelo cloud sin descargarlo.
-DEFAULT_EXECUTOR_MODEL = "nemotron-3-nano:30b-cloud"
-DEFAULT_EXECUTOR_API = "http://localhost:11434/v1"
+# Implementador (small executor): lo fija el SERVIDOR/operador, no el LLM. run_ephemeral_agent NO
+# acepta model/api_url del llamador (se ignoran): SIEMPRE usa estos. El OPERADOR puede sobreescribir
+# por entorno (CCDD_EXECUTOR_MODEL / CCDD_EXECUTOR_API) sin tocar la fuente; el LLM no puede.
+# Default validado por benchmark: qwen3-coder:480b cubre de trivial a LeetCode-Hard en ~4-6s a primer
+# intento (un modelo más grande no aportó capacidad, solo latencia). Ollama sirve el cloud sin descargar.
+DEFAULT_EXECUTOR_MODEL = os.environ.get("CCDD_EXECUTOR_MODEL", "qwen3-coder:480b-cloud")
+DEFAULT_EXECUTOR_API = os.environ.get("CCDD_EXECUTOR_API", "http://localhost:11434/v1")
 
 for _s in (sys.stdout, sys.stderr):
     try:
