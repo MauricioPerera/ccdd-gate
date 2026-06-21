@@ -61,32 +61,49 @@ def _rel(path, rootp):
         return str(path)
 
 
+_MOCK_HINTS = ("unittest.mock", "from mock", "import mock", "MagicMock", "patch(", "monkeypatch", "Mock(")
+
+
+def _test_verifies(test):
+    """True si el test del composer EXISTE y NO mockea: entonces ejercita los hijos reales y la
+    composición está verificada por el gate de la función (deuda de forma, no de comportamiento)."""
+    if not test or not test.exists():
+        return False
+    try:
+        src = test.read_text(encoding="utf-8")
+    except Exception:
+        return False
+    return not any(h in src for h in _MOCK_HINTS)
+
+
 def audit(root):
-    """Devuelve {functions, groups, ungated_composition, ok}. ungated_composition lista las
-    funciones que importan a otro target sin estar en ningún grupo (ensamblaje sin gate).
-    Las rutas de contrato se reportan RELATIVAS a `root`."""
+    """Devuelve {functions, groups, ungated_composition, behavior_unverified, ok}. Lista las
+    funciones que importan a otro target sin un kind:group; `behavior_verified` por arista distingue
+    deuda de FORMA (el test del composer ejercita los hijos reales) de deuda de COMPORTAMIENTO (el
+    test mockea o falta -> el ensamble NO se verifica). `ok` = sin deuda de comportamiento. Rutas
+    relativas a `root`."""
     rootp = Path(root).resolve()
-    contracts = _contracts(root)
-    funcs = {}        # stem del target -> ruta del contrato de función
-    grouped = set()   # rutas (resueltas) de contratos hijos de algún grupo
+    funcs = {}        # stem -> (cpath, target, test)
+    grouped = set()
     groups = 0
-    for p, fm in contracts:
+    for p, fm in _contracts(root):
         if fm.get("kind") == "group":
             groups += 1
-            for ch in (fm.get("children") or []):
-                grouped.add((p.parent / ch).resolve())
+            grouped.update((p.parent / ch).resolve() for ch in (fm.get("children") or []))
         elif "target" in fm:
-            funcs[Path(fm["target"]).stem] = (p.resolve(), p.parent / fm["target"])
+            test = (p.parent / fm["tests"]) if fm.get("tests") else None
+            funcs[Path(fm["target"]).stem] = (p.resolve(), p.parent / fm["target"], test)
     uncovered = []
-    for stem, (cpath, tgt) in sorted(funcs.items()):
+    for stem, (cpath, tgt, test) in sorted(funcs.items()):
         if not tgt.exists():
             continue
-        imps = _imported_stems(tgt)
-        composes = sorted(s for s in funcs if s != stem and s in imps)
+        composes = sorted(s for s in funcs if s != stem and s in _imported_stems(tgt))
         if composes and cpath not in grouped:
-            uncovered.append({"contract": _rel(cpath, rootp), "composes": composes})
-    return {"functions": len(funcs), "groups": groups,
-            "ungated_composition": uncovered, "ok": not uncovered}
+            uncovered.append({"contract": _rel(cpath, rootp), "composes": composes,
+                              "behavior_verified": _test_verifies(test)})
+    behavior_debt = [u for u in uncovered if not u["behavior_verified"]]
+    return {"functions": len(funcs), "groups": groups, "ungated_composition": uncovered,
+            "behavior_unverified": behavior_debt, "ok": not behavior_debt}
 
 
 def main():

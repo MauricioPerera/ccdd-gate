@@ -201,20 +201,21 @@ TOOLS = [
     },
     {
         "name": "audit_composition",
-        "description": "Audita un proyecto (sin LLM, determinista): destaca funciones cuyo target IMPORTA "
-                       "otro target —participan en un ensamblaje— pero NO están en ningún contrato kind:group. "
-                       "Esa composición queda SIN gatear (cada función pasa aislada, pero el ensamble no lo "
-                       "verifica nadie). Surfacer de deuda de verificación, pensado para CI. Devuelve "
-                       "{functions, groups, ungated_composition, ok}.",
+        "description": "Audita un proyecto (sin LLM, determinista): funciones cuyo target IMPORTA otro target "
+                       "sin un contrato kind:group. Distingue deuda de FORMA (el test del composer ejercita los "
+                       "hijos reales -> la composición SÍ se verifica vía el gate de la función) de deuda de "
+                       "COMPORTAMIENTO (el test mockea o falta -> el ensamble NO se verifica). Devuelve "
+                       "{functions, groups, ungated_composition, behavior_unverified, ok}; ok=sin deuda de comportamiento.",
         "inputSchema": {"type": "object", "properties": {
             "root": {"type": "string", "description": "Raíz del proyecto a auditar (default: directorio actual)."}}},
     },
     {
         "name": "audit_orphan_targets",
         "description": "Audita un proyecto (sin LLM, determinista): destaca los .py de implementación "
-                       "(excluye tests, __init__, conftest) que NO son el target de ningún contrato — código "
-                       "que entró FUERA del flujo gate (orquestador implementando directo, glue sin verificar, "
-                       "cruft). Para proyectos 100% CCDD. Devuelve {py_files, contracts, orphans, ok}.",
+                       "(excluye tests, __init__, conftest, y módulos de DATOS PUROS —dataclasses sin funciones, "
+                       "que no tienen lógica que gatear—) que NO son el target de ningún contrato: código que "
+                       "entró FUERA del flujo gate (orquestador implementando directo, glue con lógica, cruft). "
+                       "Para proyectos 100% CCDD. Devuelve {py_files, contracts, orphans, ok}.",
         "inputSchema": {"type": "object", "properties": {
             "root": {"type": "string", "description": "Raíz del proyecto a auditar (default: directorio actual)."}}},
     },

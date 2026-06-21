@@ -11,6 +11,7 @@ ser el target de un contrato). NO se cablea al ci_gate de ccdd-gate mismo: ccdd-
 sobre sí mismo, así que sus runners no son targets. exit 1 si hay huérfanos.
 
 Uso:  python audit_orphan_targets.py [raíz]"""
+import ast
 import json
 import sys
 from pathlib import Path
@@ -30,6 +31,28 @@ def _is_excluded(rel):
     return rel.name in ("__init__.py", "conftest.py") or rel.name.startswith("test_")
 
 
+_DATA_STMT = (ast.Import, ast.ImportFrom, ast.ClassDef, ast.Assign, ast.AnnAssign, ast.Pass)
+
+
+def _is_declarative(stmt):
+    """True si un statement top-level es declarativo (no lógica ejecutable): import, clase,
+    asignación, o un literal suelto (docstring)."""
+    return isinstance(stmt, _DATA_STMT) or (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant))
+
+
+def _is_pure_data(pyfile):
+    """True si el módulo es SOLO declaraciones de datos: sin funciones/métodos (ningún FunctionDef en
+    todo el árbol) Y sin lógica ejecutable a nivel módulo (sin for/while/if/with/try ni llamadas
+    sueltas). Esos módulos no tienen nada que gatear, así que no son 'código sin contrato'."""
+    try:
+        tree = ast.parse(Path(pyfile).read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) for n in ast.walk(tree)):
+        return False
+    return all(_is_declarative(s) for s in tree.body)
+
+
 def audit(root):
     """Devuelve {py_files, contracts, orphans, ok}. orphans: .py de implementación sin contrato,
     relativos a root."""
@@ -37,7 +60,8 @@ def audit(root):
     targets = {(p.parent / fm["target"]).resolve()
                for p, fm in _contracts(root) if fm.get("kind") != "group" and "target" in fm}
     pys = [f for f in Path(root).rglob("*.py") if not _is_excluded(f.resolve().relative_to(rootp))]
-    orphans = sorted(_rel(f.resolve(), rootp) for f in pys if f.resolve() not in targets)
+    orphans = sorted(_rel(f.resolve(), rootp) for f in pys
+                     if f.resolve() not in targets and not _is_pure_data(f))
     return {"py_files": len(pys), "contracts": len(targets), "orphans": orphans, "ok": not orphans}
 
 
