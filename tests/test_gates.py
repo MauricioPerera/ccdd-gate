@@ -385,5 +385,35 @@ class TestGroupLint(unittest.TestCase):
         self.assertTrue({"tc-schema", "tc-group-children"} & rules, msg=str(rules))
 
 
+class TestTestsAssert(unittest.TestCase):
+    """tc-tests-assert: un test congelado (Python) sin ninguna aserción es un oráculo vacío."""
+
+    def _rules(self, test_body, lang=None):
+        d = Path(tempfile.mkdtemp())
+        try:
+            (d / "t.py").write_text(test_body, encoding="utf-8")
+            fm = '---\ntask: f\nsignature: "def f(x)"\ntests: t.py\n'
+            fm += f"language: {lang}\n" if lang else ""
+            fm += "---\n## Intent\nx\n"
+            (d / "c.md").write_text(fm, encoding="utf-8")
+            return {x["rule"] for x in tc_lint.lint(d / "c.md")}
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_no_assert_flagged(self):
+        self.assertIn("tc-tests-assert", self._rules("def test_f():\n    f(1)\n"))
+
+    def test_plain_assert_ok(self):
+        self.assertNotIn("tc-tests-assert", self._rules("def test_f():\n    assert f(1) == 1\n"))
+
+    def test_unittest_assert_ok(self):
+        body = "import unittest\nclass T(unittest.TestCase):\n    def t(self):\n        self.assertEqual(f(1), 1)\n"
+        self.assertNotIn("tc-tests-assert", self._rules(body))
+
+    def test_non_python_skipped(self):
+        # JS: las aserciones tienen otra forma; la regla se omite (no falso positivo).
+        self.assertNotIn("tc-tests-assert", self._rules("f(1)\n", lang="javascript"))
+
+
 if __name__ == "__main__":
     unittest.main()
