@@ -66,27 +66,39 @@ def _kth_mutant(src, k):
     return ast.unparse(tree), f"{kind}@L{line}"
 
 
+def _mutant_survives(cmd, cwd, target, mutant):
+    """True si el test PASA contra el mutante (no lo cazó). Un timeout (bucle infinito introducido
+    por la mutación) NO es sobreviviente: el mutante no hizo pasar el test."""
+    target.write_text(mutant, encoding="utf-8", newline="")
+    try:
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=30,
+                           env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
+        return r.returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+
+
 def audit(contract_path):
-    """Devuelve {mutants, killed, survived, mutation_score, ok}. Restaura el target siempre."""
+    """Devuelve {mutants, killed, survived, mutation_score, ok}. Restaura el target byte-exacto."""
     p = Path(contract_path)
     fm, _ = tc_lint.split_front_matter(p.read_text(encoding="utf-8"))
+    if not fm or not all(k in fm for k in ("target", "tests", "test_command")):
+        return {"ok": False, "error": "contrato sin target/tests/test_command", "mutants": 0}
     target, tests = p.parent / fm["target"], p.parent / fm["tests"]
-    if not target.exists() or not tests.exists() or not fm.get("test_command"):
-        return {"ok": False, "error": "faltan target, tests o test_command", "mutants": 0}
-    src = target.read_text(encoding="utf-8")
+    if not target.exists() or not tests.exists():
+        return {"ok": False, "error": "target o tests no existen", "mutants": 0}
+    orig = target.read_bytes()
+    src = orig.decode("utf-8")
     n = len(_points(ast.parse(src)))
     cmd, cwd = shlex.split(fm["test_command"]), task_gate._resolve_test_cwd(fm, target, p.parent)
     survived = []
     try:
         for k in range(n):
             mutant, desc = _kth_mutant(src, k)
-            target.write_text(mutant, encoding="utf-8", newline="")
-            r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
-                               env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
-            if r.returncode == 0:  # el test pasó contra el mutante: no lo cazó
+            if _mutant_survives(cmd, cwd, target, mutant):
                 survived.append(desc)
     finally:
-        target.write_text(src, encoding="utf-8", newline="")
+        target.write_bytes(orig)  # restauración byte-exacta (line endings intactos)
     killed = n - len(survived)
     return {"mutants": n, "killed": killed, "survived": survived,
             "mutation_score": round(killed / n, 3) if n else 1.0, "ok": not survived}
