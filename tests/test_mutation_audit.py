@@ -53,5 +53,21 @@ class MutationAuditTest(unittest.TestCase):
         self.assertTrue(res["survived"])  # el mutante >= -> > sobrevive
 
 
+    def test_non_python_contract_skipped_not_crash(self):
+        # contrato javascript: ast.parse del target .js crashearía -> debe skippear con ok=True
+        d = Path(tempfile.mkdtemp())
+        try:
+            (d / "impl.js").write_text("function f(x){ return x; }\n", encoding="utf-8")
+            (d / "t.js").write_text("// test\n", encoding="utf-8")
+            (d / "c.md").write_text(
+                '---\ntask: f\ntarget: impl.js\nsignature: "function f(x)"\ntests: t.js\n'
+                'test_command: "node t.js"\nlanguage: javascript\n---\n', encoding="utf-8")
+            res = mutation_audit.audit(d / "c.md")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["mutants"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
