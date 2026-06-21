@@ -193,25 +193,33 @@ def integration_gate(group_path, fm, depth=0):
 # nombre usado en una anotación sin importarlo/definirlo (p.ej. `x: Node` sin `import Node`). En
 # Python 3.14 las lazy annotations lo dejan pasar en runtime, pero rompe en <3.14 y es incorrecto.
 # Determinista, zero-dep (AST puro), independiente de la versión de Python. Solo aplica a Python.
+def _names_from_node(node):
+    """Nombres que un nodo define (import/def/clase/asignación). Lista (posible vacía), o None si
+    es un `from x import *` (no analizable de forma segura)."""
+    if isinstance(node, ast.Import):
+        return [(a.asname or a.name).split(".")[0] for a in node.names]
+    if isinstance(node, ast.ImportFrom):
+        if any(a.name == "*" for a in node.names):
+            return None
+        return [a.asname or a.name for a in node.names]
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [node.name]
+    if isinstance(node, ast.Assign):
+        return [t.id for t in node.targets if isinstance(t, ast.Name)]
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        return [node.target.id]
+    return []
+
+
 def _defined_names(tree):
-    """Nombres definidos en cualquier scope del módulo (imports, defs/clases, asignaciones). Si hay
-    `from x import *` devuelve None (no analizable de forma segura -> no se reporta nada)."""
+    """Nombres definidos en cualquier scope del módulo. None si hay `from x import *` (no se
+    reporta nada en ese caso)."""
     names = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for a in node.names:
-                names.add((a.asname or a.name).split(".")[0])
-        elif isinstance(node, ast.ImportFrom):
-            for a in node.names:
-                if a.name == "*":
-                    return None
-                names.add(a.asname or a.name)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.add(node.name)
-        elif isinstance(node, ast.Assign):
-            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            names.add(node.target.id)
+        got = _names_from_node(node)
+        if got is None:
+            return None
+        names.update(got)
     return names
 
 
