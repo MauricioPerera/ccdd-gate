@@ -21,12 +21,13 @@ from audit_composition import _contracts, _rel  # noqa: E402
 _SKIP = {".git", ".pytest_cache", "__pycache__", "node_modules", "tests"}
 
 
-def _is_excluded(path):
-    """True si el .py NO es código de implementación a verificar (test/glue/cache)."""
-    if any(part in _SKIP for part in path.parts):
+def _is_excluded(rel):
+    """True si el .py (ruta RELATIVA a la raíz) NO es código de implementación (test/glue/cache).
+    Se evalúa sobre la ruta relativa: si la raíz del proyecto está bajo un dir 'tests'/'.git'/etc.,
+    NO debe excluir todo."""
+    if any(part in _SKIP for part in rel.parts):
         return True
-    name = path.name
-    return name in ("__init__.py", "conftest.py") or name.startswith("test_")
+    return rel.name in ("__init__.py", "conftest.py") or rel.name.startswith("test_")
 
 
 def audit(root):
@@ -35,7 +36,7 @@ def audit(root):
     rootp = Path(root).resolve()
     targets = {(p.parent / fm["target"]).resolve()
                for p, fm in _contracts(root) if fm.get("kind") != "group" and "target" in fm}
-    pys = [f for f in Path(root).rglob("*.py") if not _is_excluded(f)]
+    pys = [f for f in Path(root).rglob("*.py") if not _is_excluded(f.resolve().relative_to(rootp))]
     orphans = sorted(_rel(f.resolve(), rootp) for f in pys if f.resolve() not in targets)
     return {"py_files": len(pys), "contracts": len(targets), "orphans": orphans, "ok": not orphans}
 
