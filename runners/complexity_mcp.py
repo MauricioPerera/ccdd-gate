@@ -219,6 +219,16 @@ TOOLS = [
             "root": {"type": "string", "description": "Raíz del proyecto a auditar (default: directorio actual)."}}},
     },
     {
+        "name": "mutation_audit",
+        "description": "Mide la FUERZA del oráculo de un contrato (sin LLM, determinista): aplica un set "
+                       "fijo de mutaciones al target (flip de comparadores/operadores, bool, return None) y "
+                       "corre los tests congelados por cada mutante. Un mutante que PASA los tests = el "
+                       "oráculo no lo cazó (test débil). Caro (corre tests por mutante), opt-in. Devuelve "
+                       "{mutants, killed, survived, mutation_score, ok}.",
+        "inputSchema": {"type": "object", "required": ["task_path"], "properties": {
+            "task_path": {"type": "string", "description": "Ruta al contrato .md en disco."}}},
+    },
+    {
         "name": "run_integration_gate",
         "description": "Gatea un contrato que YA EXISTE EN DISCO (sin sandbox): reusa task_gate.gate sobre los "
                        "archivos REALES del proyecto. Úsalo para contratos kind:group (composición: cada hija pasa "
@@ -380,6 +390,12 @@ def audit_orphan_targets(args):
     """Surfacer determinista de código fuera del flujo de contrato (ver audit_orphan_targets.py)."""
     import audit_orphan_targets as _ao
     return _ao.audit(args.get("root") or ".")
+
+
+def mutation_audit(args):
+    """Fuerza del oráculo vía mutation testing determinista (ver runners/mutation_audit.py)."""
+    import mutation_audit as _ma
+    return _ma.audit(args.get("task_path") or "")
 
 
 def run_integration_gate(args):
@@ -741,6 +757,7 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "run_integration_gate": run_integration_gate,
             "audit_composition": audit_composition,
             "audit_orphan_targets": audit_orphan_targets,
+            "mutation_audit": mutation_audit,
             "request_human_attestation": request_human_attestation,
             "run_ephemeral_agent": run_ephemeral_agent}
 
