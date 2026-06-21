@@ -194,6 +194,36 @@ def r_tests_frozen(ctx):
         return [err("tc-tests-frozen", f"los tests no referencian la firma '{ctx['fn_name']}'")]
     return []
 
+
+def _is_assert_call(call):
+    f = call.func
+    name = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
+    return name.startswith("assert") or name in ("fail", "raises")
+
+
+def r_tests_assert(ctx):
+    """El test congelado (Python) DEBE tener al menos una aserción: un oráculo sin assert hace que
+    el gate pase sin verificar nada (test vacuo). Zero-dep, determinista. Solo Python; otros
+    lenguajes se omiten (sus aserciones tienen otra forma)."""
+    if (ctx["language"] or DEFAULT_LANGUAGE).lower() != "python":
+        return []
+    tests = ctx["fm"].get("tests")
+    if not tests:
+        return []
+    tp = ctx["path"].parent / tests
+    if not tp.exists():
+        return []  # la ausencia ya la reporta r_tests_frozen
+    try:
+        tree = ast.parse(tp.read_text(encoding="utf-8"))
+    except Exception:
+        return []  # sintaxis no analizable como Python
+    has = any(isinstance(n, ast.Assert) for n in ast.walk(tree)) or \
+        any(isinstance(n, ast.Call) and _is_assert_call(n) for n in ast.walk(tree))
+    if not has:
+        return [err("tc-tests-assert", "el test congelado no tiene ninguna aserción (oráculo vacío): "
+                    "un test sin assert hace que el gate pase sin verificar nada")]
+    return []
+
 def _count_examples(body):
     """(texto de ## Examples, nº de líneas-ejemplo)."""
     ex = section_body(body, "## Examples")
@@ -305,7 +335,7 @@ def r_schema(ctx):
 
 
 RULES = [r_schema, r_required, r_test_command, r_language, r_intent_atomic, r_target_atomic, r_signature, r_budget_sane, r_tests_frozen,
-         r_sections, r_stop_rule, r_no_algorithm, r_deps, r_issue_ref]
+         r_tests_assert, r_sections, r_stop_rule, r_no_algorithm, r_deps, r_issue_ref]
 
 
 # ---- reglas de un contrato de GRUPO (kind: group): compone funciones u otros grupos ----
