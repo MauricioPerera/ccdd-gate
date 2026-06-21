@@ -106,7 +106,7 @@ class CompositionNoteTest(unittest.TestCase):
         audit = {"ok": False, "ungated_composition": [
             {"contract": "a.md", "composes": ["b", "c"]}]}
         note = ci_gate.composition_note(audit)
-        self.assertIn("composición sin gatear (1)", note)
+        self.assertIn("composición sin verificar (1)", note)
         self.assertIn("a.md", note)
         self.assertIn("b, c", note)
 

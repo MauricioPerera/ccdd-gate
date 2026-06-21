@@ -83,13 +83,14 @@ def overall_pass(results):
 
 
 def composition_note(audit):
-    """Markdown de la deuda de composición (ensamblaje sin gatear). '' si ok. Pura."""
+    """Markdown de la deuda de COMPOSICIÓN sin verificar (el test del composer mockea o falta). '' si
+    ok (las composiciones cuyo test ejercita los hijos reales son deuda de forma, no se reportan)."""
     if audit.get("ok", True):
         return ""
-    items = audit.get("ungated_composition", [])
-    lines = [f"### ❌ ccdd-gate: composición sin gatear ({len(items)})",
-             "_Funciones que importan a otras sin un contrato `kind:group` que gatee el ensamble. "
-             "El gate por-función no verifica la composición:_", ""]
+    items = audit.get("behavior_unverified", audit.get("ungated_composition", []))
+    lines = [f"### ❌ ccdd-gate: composición sin verificar ({len(items)})",
+             "_Funciones que componen a otras pero cuyo test NO ejercita los hijos reales "
+             "(mockea o falta) y no hay un `kind:group` que gatee el ensamble:_", ""]
     lines += [f"- `{u['contract']}` compone: {', '.join(u['composes'])}" for u in items]
     return "\n".join(lines) + "\n"
 

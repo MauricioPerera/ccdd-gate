@@ -47,5 +47,23 @@ class AuditOrphanTest(unittest.TestCase):
         self.assertNotIn("test_f.py", res["orphans"])     # excluido
 
 
+class PureDataExemptionTest(unittest.TestCase):
+    """Refinamiento: un .py de datos puros (dataclass sin funciones) NO es 'código sin contrato' —
+    no tiene lógica que gatear, así que no se reporta como huérfano."""
+
+    def test_pure_dataclass_not_flagged(self):
+        d = Path(tempfile.mkdtemp())
+        try:
+            (d / "model.py").write_text(
+                "from dataclasses import dataclass\n\n\n@dataclass\nclass N:\n    x: int = 0\n",
+                encoding="utf-8")           # sin contrato, pero data pura
+            (d / "logic.py").write_text("def f():\n    return 1\n", encoding="utf-8")  # sin contrato, con lógica
+            res = audit_orphan_targets.audit(d)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertNotIn("model.py", res["orphans"])  # data pura: exenta
+        self.assertIn("logic.py", res["orphans"])      # lógica sin contrato: huérfano
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -49,5 +49,40 @@ class AuditCompositionTest(unittest.TestCase):
         self.assertEqual(res["groups"], 1)
 
 
+class CompositionBehaviorTest(unittest.TestCase):
+    """Refinamiento: una composición cuyo test del composer EJERCITA los hijos reales (sin mock) es
+    deuda de FORMA (ok=True). Si el test MOCKEA, es deuda de COMPORTAMIENTO (ok=False)."""
+
+    def _proj(self, test_body):
+        d = Path(tempfile.mkdtemp())
+        (d / "b.py").write_text("def b():\n    return 1\n", encoding="utf-8")
+        (d / "a.py").write_text("from b import b\n\n\ndef a():\n    return b()\n", encoding="utf-8")
+        (d / "test_b.py").write_text("from b import b\nassert b() == 1\n", encoding="utf-8")
+        (d / "test_a.py").write_text(test_body, encoding="utf-8")
+        (d / "b.md").write_text("---\ntask: b\ntarget: b.py\ntests: test_b.py\n---\n", encoding="utf-8")
+        (d / "a.md").write_text("---\ntask: a\ntarget: a.py\ntests: test_a.py\n---\n", encoding="utf-8")
+        return d
+
+    def test_exercised_composition_is_form_debt(self):
+        # test_a ejercita la composición real (sin mock) -> deuda de forma, ok=True
+        d = self._proj("from a import a\nassert a() == 1\n")
+        try:
+            res = audit_composition.audit(d)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertTrue(res["ok"], msg=str(res["behavior_unverified"]))
+        self.assertEqual(len(res["ungated_composition"]), 1)   # sigue siendo deuda de forma
+        self.assertEqual(res["behavior_unverified"], [])
+
+    def test_mocked_composition_is_behavior_debt(self):
+        d = self._proj("from unittest.mock import patch\nfrom a import a\nassert a() == 1\n")
+        try:
+            res = audit_composition.audit(d)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertFalse(res["ok"])
+        self.assertEqual(len(res["behavior_unverified"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
