@@ -98,5 +98,18 @@ class TestVerdictAndReport(unittest.TestCase):
         self.assertTrue(ci_gate.overall_pass([]))  # nada que fallar
 
 
+class CompositionNoteTest(unittest.TestCase):
+    def test_ok_no_note(self):
+        self.assertEqual(ci_gate.composition_note({"ok": True}), "")
+
+    def test_debt_renders_and_lists(self):
+        audit = {"ok": False, "ungated_composition": [
+            {"contract": "a.md", "composes": ["b", "c"]}]}
+        note = ci_gate.composition_note(audit)
+        self.assertIn("composición sin gatear (1)", note)
+        self.assertIn("a.md", note)
+        self.assertIn("b, c", note)
+
+
 if __name__ == "__main__":
     unittest.main()
