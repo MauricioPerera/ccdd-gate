@@ -87,9 +87,14 @@ def audit(contract_path):
     target, tests = p.parent / fm["target"], p.parent / fm["tests"]
     if not target.exists() or not tests.exists():
         return {"ok": False, "error": "target o tests no existen", "mutants": 0}
+    if (fm.get("language") or "python").lower() != "python":
+        return {"ok": True, "mutants": 0, "skipped": "no-python"}  # mutaciones solo para Python
     orig = target.read_bytes()
-    src = orig.decode("utf-8")
-    n = len(_points(ast.parse(src)))
+    try:
+        src = orig.decode("utf-8")
+        n = len(_points(ast.parse(src)))
+    except (SyntaxError, UnicodeDecodeError):
+        return {"ok": True, "mutants": 0, "skipped": "no-parsea"}  # target no parsea: nada que mutar
     cmd, cwd = shlex.split(fm["test_command"]), task_gate._resolve_test_cwd(fm, target, p.parent)
     survived = []
     try:
