@@ -210,6 +210,15 @@ TOOLS = [
             "root": {"type": "string", "description": "Raíz del proyecto a auditar (default: directorio actual)."}}},
     },
     {
+        "name": "audit_orphan_targets",
+        "description": "Audita un proyecto (sin LLM, determinista): destaca los .py de implementación "
+                       "(excluye tests, __init__, conftest) que NO son el target de ningún contrato — código "
+                       "que entró FUERA del flujo gate (orquestador implementando directo, glue sin verificar, "
+                       "cruft). Para proyectos 100% CCDD. Devuelve {py_files, contracts, orphans, ok}.",
+        "inputSchema": {"type": "object", "properties": {
+            "root": {"type": "string", "description": "Raíz del proyecto a auditar (default: directorio actual)."}}},
+    },
+    {
         "name": "run_integration_gate",
         "description": "Gatea un contrato que YA EXISTE EN DISCO (sin sandbox): reusa task_gate.gate sobre los "
                        "archivos REALES del proyecto. Úsalo para contratos kind:group (composición: cada hija pasa "
@@ -365,6 +374,12 @@ def audit_composition(args):
     """Surfacer determinista de composición sin gatear (ver runners/audit_composition.py)."""
     import audit_composition as _ac
     return _ac.audit(args.get("root") or ".")
+
+
+def audit_orphan_targets(args):
+    """Surfacer determinista de código fuera del flujo de contrato (ver audit_orphan_targets.py)."""
+    import audit_orphan_targets as _ao
+    return _ao.audit(args.get("root") or ".")
 
 
 def run_integration_gate(args):
@@ -725,6 +740,7 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "lint_task_contract": lint_task_contract,
             "run_integration_gate": run_integration_gate,
             "audit_composition": audit_composition,
+            "audit_orphan_targets": audit_orphan_targets,
             "request_human_attestation": request_human_attestation,
             "run_ephemeral_agent": run_ephemeral_agent}
 
