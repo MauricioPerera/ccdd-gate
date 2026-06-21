@@ -142,9 +142,19 @@ chicas y reintenta con el implementador.
 Para sistemas multi-componente, declara specs compartidas con `conforms_to` (las que el componente
 consume) / `produces` (las que produce): backend y front no se comunican; ambos se verifican contra
 el MISMO archivo de spec, que el gate exige que exista y esté bien formado.
-Antes de dar una tarea por terminada, corré **audit_composition**: si devuelve ungated_composition
-(funciones que importan a otras sin un kind:group que las gatee), falta agrupar+gatear ese ensamble.
-El gate de función NO cubre la composición; lo que no agrupás, no se verifica.
+CHECKLIST DE CIERRE (antes de dar una tarea por terminada corré las CUATRO; no te quedes solo con
+la que da verde —el gate de función NO cubre nada de esto):
+  - **audit_composition(root)**: ungated_composition = funciones que importan a otras sin un
+    kind:group que las gatee. Lo que no agrupás, no se verifica.
+  - **audit_orphan_targets(root)**: .py de implementación que no son target de ningún contrato
+    (código que entró fuera del flujo gate). Para proyectos 100% CCDD.
+  - **audit_annotations(root)**: nombres usados en anotaciones sin importar/definir, project-wide.
+    Caza bugs de portabilidad que Python 3.14 (lazy annotations) enmascara en runtime. El fix es
+    AGREGAR el import que la firma necesita, NO borrar la anotación.
+  - **mutation_audit(task_path)**: fuerza del oráculo. Un mutante sobreviviente = ningún test lo
+    cazó (oráculo débil). El fix es AGREGAR un test que mate al mutante, NO tocar el target.
+La tarea está terminada cuando las cuatro devuelven ok:true. Que el autor corra solo las que pasan
+y declare "todo en verde" es el modo de falla que esta checklist existe para cerrar.
 
 EJEMPLO MÍNIMO que lintea verde (úsalo de plantilla):
 """ + _MINIMAL_CONTRACT
