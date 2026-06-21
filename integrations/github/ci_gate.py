@@ -27,6 +27,7 @@ sys.path.insert(0, str(HERE))
 import tc_lint  # noqa: E402
 import task_gate  # noqa: E402
 import reporter  # noqa: E402
+import audit_composition  # noqa: E402
 
 
 def is_contract(path):
@@ -81,6 +82,18 @@ def overall_pass(results):
     return all(r["verdict"].get("verdict") == "PASS" for r in results)
 
 
+def composition_note(audit):
+    """Markdown de la deuda de composición (ensamblaje sin gatear). '' si ok. Pura."""
+    if audit.get("ok", True):
+        return ""
+    items = audit.get("ungated_composition", [])
+    lines = [f"### ❌ ccdd-gate: composición sin gatear ({len(items)})",
+             "_Funciones que importan a otras sin un contrato `kind:group` que gatee el ensamble. "
+             "El gate por-función no verifica la composición:_", ""]
+    lines += [f"- `{u['contract']}` compone: {', '.join(u['composes'])}" for u in items]
+    return "\n".join(lines) + "\n"
+
+
 def combined_report(results):
     """Markdown combinado con un único MARKER (idempotente). Pura."""
     if not results:
@@ -112,10 +125,14 @@ def main(argv=None):
 
     paths = _select_contracts(a)
     results = run(paths)
+    audit = audit_composition.audit(ROOT)
     body = combined_report(results)
+    note = composition_note(audit)
+    if note:
+        body = body.rstrip() + "\n\n" + note
     print(body)
     _maybe_post(a, body)
-    return 0 if overall_pass(results) else 1
+    return 0 if (overall_pass(results) and audit.get("ok", True)) else 1
 
 
 def _select_contracts(a):

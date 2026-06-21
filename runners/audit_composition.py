@@ -53,9 +53,19 @@ def _imported_stems(pyfile):
     return stems
 
 
+def _rel(path, rootp):
+    """Ruta relativa a la raíz (no expone la estructura del runner). Absoluta si no es relativa."""
+    try:
+        return str(path.relative_to(rootp))
+    except ValueError:
+        return str(path)
+
+
 def audit(root):
     """Devuelve {functions, groups, ungated_composition, ok}. ungated_composition lista las
-    funciones que importan a otro target sin estar en ningún grupo (ensamblaje sin gate)."""
+    funciones que importan a otro target sin estar en ningún grupo (ensamblaje sin gate).
+    Las rutas de contrato se reportan RELATIVAS a `root`."""
+    rootp = Path(root).resolve()
     contracts = _contracts(root)
     funcs = {}        # stem del target -> ruta del contrato de función
     grouped = set()   # rutas (resueltas) de contratos hijos de algún grupo
@@ -74,7 +84,7 @@ def audit(root):
         imps = _imported_stems(tgt)
         composes = sorted(s for s in funcs if s != stem and s in imps)
         if composes and cpath not in grouped:
-            uncovered.append({"contract": str(cpath), "composes": composes})
+            uncovered.append({"contract": _rel(cpath, rootp), "composes": composes})
     return {"functions": len(funcs), "groups": groups,
             "ungated_composition": uncovered, "ok": not uncovered}
 
