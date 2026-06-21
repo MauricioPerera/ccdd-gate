@@ -250,6 +250,77 @@ class TestIntegrationGate(unittest.TestCase):
         self.assertEqual(v["stage"], "integration-spec")
 
 
+class TestGateAnnotations(unittest.TestCase):
+    """gate3-annotations: nombres en anotaciones sin importar/definir (el bug que el runtime 3.14
+    enmascara). Determinista, zero-dep, solo Python."""
+
+    def _target(self, src):
+        d = Path(tempfile.mkdtemp())
+        (d / "t.py").write_text(src, encoding="utf-8")
+        return d, d / "t.py"
+
+    def test_flags_undefined_annotation_name(self):
+        d, p = self._target("def f(x: Node):\n    return x\n")
+        try:
+            r = task_gate._gate_annotations({}, p)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["stage"], "gate3-annotations")
+        self.assertIn("Node", r["detail"])
+
+    def test_imported_name_ok(self):
+        d, p = self._target("from m import Node\n\n\ndef f(x: Node):\n    return x\n")
+        try:
+            r = task_gate._gate_annotations({}, p)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertIsNone(r)
+
+    def test_builtins_ok(self):
+        d, p = self._target("def f(x: dict, y: int) -> tuple:\n    return (y,)\n")
+        try:
+            r = task_gate._gate_annotations({}, p)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertIsNone(r)
+
+    def test_non_python_skipped(self):
+        d, p = self._target("function f(x: Node) {}")
+        try:
+            r = task_gate._gate_annotations({"language": "javascript"}, p)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertIsNone(r)
+
+    def test_star_import_not_flagged(self):
+        d, p = self._target("from m import *\n\n\ndef f(x: Node):\n    return x\n")
+        try:
+            r = task_gate._gate_annotations({}, p)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertIsNone(r)
+
+    def test_tuple_unpacking_defines_names(self):
+        # A, B = ... define A y B: usarlos en anotación NO debe marcar falso positivo.
+        d, p = self._target("A, B = object(), object()\n\n\ndef f(x: A) -> B:\n    return x\n")
+        try:
+            r = task_gate._gate_annotations({}, p)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertIsNone(r)
+
+    @unittest.skipIf(sys.version_info < (3, 12), "PEP 695 requiere Python 3.12+")
+    def test_pep695_type_alias_and_generics(self):
+        src = "type Point = tuple\n\n\ndef f[T](x: T) -> Point:\n    return x\n"
+        d, p = self._target(src)
+        try:
+            r = task_gate._gate_annotations({}, p)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertIsNone(r)
+
+
 class TestRunIntegrationGate(unittest.TestCase):
     """La tool MCP run_integration_gate gatea un grupo sobre disco REAL (sin sandbox), que es lo
     que la composición necesita (el test de integración importa los módulos hijos ensamblados)."""

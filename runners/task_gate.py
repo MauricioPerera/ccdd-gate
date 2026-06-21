@@ -7,6 +7,8 @@ PASS solo si las tres. Idéntico corrida a corrida.
 
 Uso:  python task_gate.py task.md
 Exit: 0 PASS · 1 FAIL · 2 contrato inválido."""
+import ast
+import builtins
 import hashlib
 import json
 import os
@@ -187,6 +189,84 @@ def integration_gate(group_path, fm, depth=0):
             or {"verdict": "PASS", "stage": "integration-all", "children": fm["children"]})
 
 
+# gate 3 — nombres de anotaciones resueltos (Python). Caza el bug que el runtime ENMASCARA: un
+# nombre usado en una anotación sin importarlo/definirlo (p.ej. `x: Node` sin `import Node`). En
+# Python 3.14 las lazy annotations lo dejan pasar en runtime, pero rompe en <3.14 y es incorrecto.
+# Determinista, zero-dep (AST puro), independiente de la versión de Python. Solo aplica a Python.
+def _type_param_names(node):
+    """Nombres de los type_params PEP 695 (def f[T], class C[T], type X[T]). [] si no hay."""
+    return [tp.name for tp in getattr(node, "type_params", [])]
+
+
+def _names_from_node(node):
+    """Nombres que un nodo define (import/def/clase/asignación/type-alias). Lista (posible vacía),
+    o None si es un `from x import *` (no analizable de forma segura). Permisivo a propósito: ante
+    la duda incluye de más (evita falsos positivos en un gate default-on)."""
+    if isinstance(node, ast.Import):
+        return [(a.asname or a.name).split(".")[0] for a in node.names]
+    if isinstance(node, ast.ImportFrom):
+        if any(a.name == "*" for a in node.names):
+            return None
+        return [a.asname or a.name for a in node.names]
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [node.name, *_type_param_names(node)]
+    if isinstance(node, ast.Assign):  # incluye desempaquetado: A, B = ... ; (a[0], obj.x) = ...
+        return [n.id for t in node.targets for n in ast.walk(t) if isinstance(n, ast.Name)]
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        return [node.target.id]
+    if hasattr(ast, "TypeAlias") and isinstance(node, ast.TypeAlias):  # PEP 695: type X = ...
+        return [node.name.id, *_type_param_names(node)]
+    return []
+
+
+def _defined_names(tree):
+    """Nombres definidos en cualquier scope del módulo. None si hay `from x import *` (no se
+    reporta nada en ese caso)."""
+    names = set()
+    for node in ast.walk(tree):
+        got = _names_from_node(node)
+        if got is None:
+            return None
+        names.update(got)
+    return names
+
+
+def _annotation_name_refs(tree):
+    """Nombres (ast.Name) referenciados en cualquier anotación: args, return, AnnAssign. Las
+    forward-refs en string NO se incluyen (son Constant, no Name)."""
+    refs = set()
+    for node in ast.walk(tree):
+        anns = []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            a = node.args
+            anns = [ar.annotation for ar in (a.posonlyargs + a.args + a.kwonlyargs)]
+            anns += [a.vararg.annotation if a.vararg else None, a.kwarg.annotation if a.kwarg else None, node.returns]
+        elif isinstance(node, ast.AnnAssign):
+            anns = [node.annotation]
+        for ann in anns:
+            if ann is not None:
+                refs.update(n.id for n in ast.walk(ann) if isinstance(n, ast.Name))
+    return refs
+
+
+def _gate_annotations(fm, target):
+    if (fm.get("language") or "python").lower() != "python":
+        return None
+    try:
+        tree = ast.parse(target.read_text(encoding="utf-8"))
+    except Exception:
+        return None  # la sintaxis ya la pesca el gate de tests
+    defined = _defined_names(tree)
+    if defined is None:
+        return None  # star import: no analizable
+    known = defined | set(dir(builtins))
+    undefined = sorted(r for r in _annotation_name_refs(tree) if r not in known)
+    if undefined:
+        return {"verdict": "FAIL", "stage": "gate3-annotations",
+                "detail": f"nombres usados en anotaciones sin importar/definir: {undefined}"}
+    return None
+
+
 def gate(task_path, _depth=0):
     p = Path(task_path)
     fm, _ = tc_lint.split_front_matter(p.read_text(encoding="utf-8"))
@@ -201,6 +281,7 @@ def gate(task_path, _depth=0):
 
     return (_gate_test_approval(fm, tests)
             or _gate_run_tests(fm, target, tests, p.parent)
+            or _gate_annotations(fm, target)
             or _gate_complexity(fm, target, fn_name, fm["budget"]))
 
 
