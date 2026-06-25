@@ -380,6 +380,17 @@ TOOLS = [
             "fn_name": {"type": "string", "description": "Nombre de la función a verificar."},
             "target_line": {"type": "integer", "description": "Línea de la def a verificar (opcional, desambigua funciones homónimas)."}}},
     },
+    {
+        "name": "check_none_cmp",
+        "description": "Líneas donde una función compara con None usando ==/!= (runners/nonecmp_check.py), "
+                       "incluye anidados. Antipatrón (PEP 8 recomienda `is`/`is not`); además `==` puede "
+                       "invocar __eq__ de subtipos. Solo stdlib (ast), sin ejecutar el código. [] si no hay "
+                       "o no se encuentra. Determinista, sin LLM. Devuelve {none_eq_lines: [...]}.",
+        "inputSchema": {"type": "object", "required": ["source", "fn_name"], "properties": {
+            "source": {"type": "string", "description": "Código fuente donde buscar la función."},
+            "fn_name": {"type": "string", "description": "Nombre de la función a verificar."},
+            "target_line": {"type": "integer", "description": "Línea de la def a verificar (opcional, desambigua funciones homónimas)."}}},
+    },
 ]
 
 
@@ -937,6 +948,12 @@ def check_asserts(args):
     return {"assert_lines": assert_check.assert_lines(args["source"], args["fn_name"], args.get("target_line"))}
 
 
+def check_none_cmp(args):
+    """Líneas donde una función compara con None por ==/!= (runners/nonecmp_check.py). Sin LLM."""
+    import nonecmp_check
+    return {"none_eq_lines": nonecmp_check.none_eq_lines(args["source"], args["fn_name"], args.get("target_line"))}
+
+
 DISPATCH = {"measure_complexity": measure_complexity,
             "complexity_rubric": complexity_rubric,
             "scan_guardrails": scan_guardrails,
@@ -956,7 +973,8 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "check_purity": check_purity,
             "check_mutable_defaults": check_mutable_defaults,
             "check_bare_except": check_bare_except,
-            "check_asserts": check_asserts}
+            "check_asserts": check_asserts,
+            "check_none_cmp": check_none_cmp}
 
 
 def send(mid, result=None, error=None):
