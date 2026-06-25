@@ -285,6 +285,32 @@ TOOLS = [
             "task_path": {"type": "string", "description": "Ruta relativa o absoluta al archivo del Task Contract (.md). ÚNICO parámetro: el modelo lo fija el servidor."}
         }},
     },
+    {
+        "name": "run_eval_gate",
+        "description": "Veredicto DETERMINISTA (Tier 1, sin LLM) de un EVAL-CONTRACT sobre output NO determinista de un "
+                       "agente: corre el agente sobre el dataset CONGELADO (firmado con cases_sha256) y aplica checks "
+                       "deterministas (schema, contención de términos, citas/groundedness anti-alucinación, PII, "
+                       "trayectoria). El complemento del gate de código: aquél verifica CÓDIGO, éste verifica "
+                       "COMPORTAMIENTO. PASS si casos intactos + pass_rate ≥ budget + violaciones duras ≤ budget. "
+                       "Devuelve {verdict, cases, passed, pass_rate, hard_violations, failing}.",
+        "inputSchema": {"type": "object", "required": ["eval_path"], "properties": {
+            "eval_path": {"type": "string", "description": "Ruta (absoluta o relativa) al eval-contract .md en disco."}}},
+    },
+    {
+        "name": "eval_rubric",
+        "description": "Devuelve el criterio GOBERNADO (system + policies + thresholds + env) del contrato eval-agent "
+                       "firmado: la rúbrica con la que el juez Tier 2 (LLM-as-judge, opt-in) evalúa coherencia/utilidad.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "judge_audit",
+        "description": "Calibra el JUEZ Tier 2 contra el golden set (análogo a mutation_audit para el oráculo): corre el "
+                       "juez sobre los casos con golden_judgment y mide el ACUERDO con el criterio humano. Si el acuerdo "
+                       "< judge.agreement_min, falla el JUEZ (no el agente): sus veredictos no son de fiar. Por defecto usa "
+                       "el provider 'stub' (determinista, offline). Devuelve {golden_cases, agreement, ok, details}.",
+        "inputSchema": {"type": "object", "required": ["eval_path"], "properties": {
+            "eval_path": {"type": "string", "description": "Ruta al eval-contract .md en disco."}}},
+    },
 ]
 
 
@@ -780,6 +806,32 @@ def run_ephemeral_agent(args):
             "last_gate": (proc.stdout or proc.stderr) if proc else ""}
 
 
+def run_eval_gate(args):
+    """Veredicto Tier 1 de un eval-contract YA EN DISCO (ver runners/eval_gate.py). Sin LLM."""
+    import eval_gate as _eg
+    path = args.get("eval_path")
+    if not isinstance(path, str) or not path or not Path(path).exists():
+        return {"verdict": "INVALID", "stage": "contract", "detail": f"eval-contract no encontrado en disco: {path}"}
+    return _eg.gate(path)
+
+
+def eval_rubric(args):
+    """system/policies/thresholds/env del contrato eval-agent firmado (rúbrica del juez Tier 2)."""
+    d = CONTRACTS / "eval-agent"
+    read = lambda f: (d / f).read_text(encoding="utf-8") if (d / f).exists() else ""
+    return {"agent": "eval-agent", "system": read("system.txt"), "policies": read("policies.txt"),
+            "thresholds": read("thresholds.txt"), "environment": read("env.txt")}
+
+
+def judge_audit(args):
+    """Calibra el juez Tier 2 contra el golden set (ver runners/judge_audit.py). Provider stub por defecto."""
+    import judge_audit as _ja
+    path = args.get("eval_path")
+    if not isinstance(path, str) or not path or not Path(path).exists():
+        return {"ok": False, "detail": f"eval-contract no encontrado en disco: {path}"}
+    return _ja.audit(path, provider=args.get("provider", "stub"), api_url=args.get("api_url", ""))
+
+
 DISPATCH = {"measure_complexity": measure_complexity,
             "complexity_rubric": complexity_rubric,
             "scan_guardrails": scan_guardrails,
@@ -790,7 +842,10 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "audit_annotations": audit_annotations,
             "mutation_audit": mutation_audit,
             "request_human_attestation": request_human_attestation,
-            "run_ephemeral_agent": run_ephemeral_agent}
+            "run_ephemeral_agent": run_ephemeral_agent,
+            "run_eval_gate": run_eval_gate,
+            "eval_rubric": eval_rubric,
+            "judge_audit": judge_audit}
 
 
 def send(mid, result=None, error=None):
