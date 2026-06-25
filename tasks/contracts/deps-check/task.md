@@ -1,14 +1,14 @@
 ---
 task: unauthorized-imports
 intent: "Listar los módulos importados por un código fuente que no están permitidos."
-target: deps_check.py
+target: ../../../runners/deps_check.py
 signature: "def unauthorized_imports(source: str, deps_allowed: list) -> list"
-test_command: "python -m unittest test_deps_check"
-test_cwd: "."
+test_command: "python -m unittest tests.test_deps_check"
+test_cwd: "../../.."
 budget: { cyclomatic_max: 8, nesting_max: 3, params_max: 2, lines_max: 25 }
 deps_allowed: []
 forbids: ["__import__", "estado global", "print", "abrir archivos", "import del código analizado"]
-tests: test_deps_check.py
+tests: ../../../tests/test_deps_check.py
 spec_version: "0.1"
 ---
 
