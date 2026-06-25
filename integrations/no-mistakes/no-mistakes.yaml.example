@@ -1,0 +1,19 @@
+# .no-mistakes.yaml — ejemplo de integración ccdd-gate ↔ no-mistakes (camino 1: config, sin tocar
+# el código de no-mistakes). Copialo como `.no-mistakes.yaml` en la RAÍZ del repo.
+#
+# IMPORTANTE (modelo de confianza de no-mistakes): `commands` y `allow_repo_commands` solo se honran
+# desde la copia de `.no-mistakes.yaml` de la RAMA DEFAULT/confiable — un branch de PR no puede
+# inyectar comandos. Mergeá este archivo a la rama default para que tome efecto.
+
+allow_repo_commands: true
+
+commands:
+  # ccdd-gate como check DETERMINISTA del pipeline de no-mistakes (corre en el worktree desechable
+  # antes del push). Ajustá la ruta si vendorizás/instalás ccdd-gate en otro lugar.
+  test: "python integrations/no-mistakes/nm_gate.py"
+
+auto_fix:
+  # 0 = el agente de no-mistakes NO autofixea este check. Un fallo del gate determinista ESCALA al
+  # humano (o a tu flujo de delegación a glm), en vez de que una IA "arregle" el veredicto.
+  # Esto preserva la razón de ser de ccdd-gate: árbitro insobornable, no un juez difuso.
+  test: 0
