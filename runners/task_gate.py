@@ -25,6 +25,7 @@ import sig_check  # noqa: E402  (conformidad de firma implementada vs contrato)
 import purity_check  # noqa: E402  (gate de pureza OPT-IN: impurezas del cuerpo)
 import mutdef_check  # noqa: E402  (gate de defaults mutables OPT-IN: forbid_mutable_defaults)
 import bareexcept_check  # noqa: E402  (gate de except desnudo OPT-IN: forbid_bare_except)
+import assert_check  # noqa: E402  (gate de asserts en producción OPT-IN: forbid_assert)
 
 BUDGET_KEY = {"cyclomatic": "cyclomatic_max", "nesting_depth": "nesting_max",
               "parameter_count": "params_max", "function_length": "lines_max"}
@@ -368,6 +369,22 @@ def _gate_bareexcept(fm, target, fn_name):
     return None
 
 
+# gate 3.9 — asserts en producción OPT-IN. Solo corre si el contrato declara
+# `forbid_assert: true`: los `assert` en código de producción se eliminan con -O y dejan de
+# verificar invariantes; son herramientas de test, no de runtime. Lee el source del target y
+# calcula las líneas con assert_check.assert_lines. Determinista, sin LLM. Si el target no
+# existe, deja que lo reporte _gate_complexity (back-compat: no duplica el error).
+def _gate_assert(fm, target, fn_name):
+    if not fm.get("forbid_assert"):
+        return None
+    if not target.exists():
+        return None
+    al = assert_check.assert_lines(target.read_text(encoding="utf-8"), fn_name, fm.get("target_line"))
+    if al:
+        return {"verdict": "FAIL", "stage": "gate-assert", "assert_lines": al}
+    return None
+
+
 # gate 4 — enforcement OPT-IN de deps_allowed (anti-slopsquatting). Solo corre si el contrato
 # declara `enforce_deps: true`. Lee el source del target y flaggea imports top-level que no estén
 # en deps_allowed (ni en stdlib). Determinista, sin LLM. Si el target no existe, deja que lo
@@ -403,6 +420,7 @@ def gate(task_path, _depth=0):
             or _gate_purity(fm, target, fn_name)
             or _gate_mutdef(fm, target, fn_name)
             or _gate_bareexcept(fm, target, fn_name)
+            or _gate_assert(fm, target, fn_name)
             or _gate_deps(fm, target)
             or _gate_complexity(fm, target, fn_name, fm["budget"]))
 
