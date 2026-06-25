@@ -45,8 +45,9 @@ veredicto van en código que no se puede engañar.
 | `runners/complexity_runner.py` | Orquestador L3 para el contrato `complexity-agent` | no |
 | `runners/complexity_gate.py` | Gate determinista; CLI o hook PostToolUse de Claude Code | no |
 | `runners/tc_lint.py` | Linter del **task-contract** (anti-desvarío del autor) | no |
-| `runners/task_gate.py` | Veredicto unificado: tc_lint + tests congelados (Gate 1) + complejidad≤budget (Gate 2) + anotaciones (Gate 3) + deps opt-in (Gate 4) + firma; `kind:group` compone hijas + test de integración | no |
+| `runners/task_gate.py` | Veredicto unificado: tc_lint + tests congelados + complejidad≤budget + anotaciones + firma implementada (gate-signature) + deps opt-in (gate-deps) + aprobación; `kind:group` compone hijas + test de integración | no |
 | `runners/deps_check.py` | `unauthorized_imports`: imports top-level de terceros NO permitidos (núcleo del enforcement de `deps_allowed` / anti-slopsquatting). AST puro | no |
+| `runners/sig_check.py` | `signature_mismatch`: la firma IMPLEMENTADA vs la del contrato (nombre + nombres de params en orden); caza el drift de firma. AST puro | no |
 | `runners/audit_composition.py` | Auditor project-wide: composición sin gatear (función importa a otra sin `kind:group`); distingue deuda de FORMA vs de COMPORTAMIENTO | no |
 | `runners/audit_orphan_targets.py` | Auditor project-wide: `.py` de implementación que no son target de ningún contrato (código fuera del flujo gate); exime datos puros | no |
 | `runners/audit_annotations.py` | Auditor project-wide: nombres en anotaciones sin importar/definir; caza bugs de portabilidad que lazy annotations (PEP 649) enmascara | no |
@@ -124,6 +125,7 @@ Desde el repo, copiá `.mcp.json.example` a `.mcp.json`. Tools (sin LLM):
   lenguaje opt-in (`runners/guardrails_lang.yaml`, p. ej. `no-eval`). `agent` evalúa contra ese contrato. Sin `language`, Python.
 - `lint_task_contract(contract_text, test_code?)` - valida un task-contract (anti-desvarío del modelo grande).
 - `scan_dependencies(code, deps_allowed?)` - imports top-level de terceros NO permitidos (enforcement de `deps_allowed` / anti-slopsquatting). Determinista, sin LLM.
+- `check_signature(source, fn_name, expected_signature)` - "" si la firma implementada coincide con la esperada (nombre + nombres de params en orden), o el desajuste. Determinista, sin LLM.
 - `run_integration_gate(task_path)` - **veredicto PASS/FAIL unificado** de un contrato YA EN DISCO (lint + aprobación de tests + tests congelados + complejidad ≤ budget), idéntico a la CLI `task_gate.py`. Para `kind:group` compone las hijas + el test de integración sobre los archivos reales (sin sandbox). El agente NO implementa: delega a `run_ephemeral_agent`.
 - `run_ephemeral_agent(task_path)` - delega la **implementación** al modelo pequeño local y la valida contra el gate. El **servidor** fija modelo y endpoint; el LLM anfitrión solo pasa `task_path` (no elige el modelo). El **operador** puede elegir el modelo por entorno (`CCDD_EXECUTOR_MODEL`, `CCDD_EXECUTOR_API`) sin tocar la fuente; el LLM no. Default: `qwen3-coder:480b-cloud` vía Ollama (`http://localhost:11434/v1`).
 - `audit_composition(root?)` - composición sin gatear project-wide; separa deuda de FORMA (composición ejercitada por el test del composer) de deuda de COMPORTAMIENTO (mock o test ausente). `ok` = sin deuda de comportamiento.
@@ -219,6 +221,11 @@ la stdlib) y falla con `stage: gate-deps`. **Opt-in** (default off): los contrat
 no cambian. Limitación actual: trata como "tercero" cualquier import no-stdlib que no esté en
 `deps_allowed`, así que con `enforce_deps` los módulos locales del propio proyecto deben listarse en
 `deps_allowed` (la exención automática de módulos locales queda como mejora futura). Solo Python por ahora.
+
+**Conformidad de firma (etapa gate-signature, default-on).** El gate compara la firma IMPLEMENTADA
+con la `signature` del contrato (nombre + nombres de parámetros en orden; ignora anotaciones,
+defaults y retorno) y falla con `stage: gate-signature` si difieren — caza el drift de firma que
+rompe a los callers. Es **default-on**: no requiere campo. Solo Python (compara vía AST).
 
 **Campo `language` (opcional, multi-lenguaje).** Por defecto `python`. Con `language: python`
 la firma se valida con el AST nativo (preciso). Para otros lenguajes (`typescript`, `javascript`,

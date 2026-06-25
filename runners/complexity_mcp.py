@@ -324,6 +324,17 @@ TOOLS = [
             "deps_allowed": {"type": "array", "description": "Dependencias permitidas (top-level); opcional.",
                              "items": {"type": "string"}}}},
     },
+    {
+        "name": "check_signature",
+        "description": "Conformidad de la firma IMPLEMENTADA vs la esperada (runners/sig_check.py). Compara "
+                       "nombre + nombres de parámetros en orden (ignora anotaciones y defaults). Determinista, "
+                       "sin LLM, AST puro. Devuelve {mismatch}: '' (vacío) si la firma implementada coincide, "
+                       "una cadena no vacía con el desajuste en caso contrario.",
+        "inputSchema": {"type": "object", "required": ["source", "fn_name", "expected_signature"], "properties": {
+            "source": {"type": "string", "description": "Código fuente donde buscar la función."},
+            "fn_name": {"type": "string", "description": "Nombre de la función a verificar."},
+            "expected_signature": {"type": "string", "description": "Firma esperada (def parseable, ej: \"def f(x: int) -> str\")."}}},
+    },
 ]
 
 
@@ -851,6 +862,12 @@ def scan_dependencies(args):
     return {"unauthorized": deps_check.unauthorized_imports(args["code"], args.get("deps_allowed") or [])}
 
 
+def check_signature(args):
+    """Conformidad de firma implementada vs esperada (runners/sig_check.py). Sin LLM."""
+    import sig_check
+    return {"mismatch": sig_check.signature_mismatch(args["source"], args["fn_name"], args["expected_signature"])}
+
+
 DISPATCH = {"measure_complexity": measure_complexity,
             "complexity_rubric": complexity_rubric,
             "scan_guardrails": scan_guardrails,
@@ -865,7 +882,8 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "run_eval_gate": run_eval_gate,
             "eval_rubric": eval_rubric,
             "judge_audit": judge_audit,
-            "scan_dependencies": scan_dependencies}
+            "scan_dependencies": scan_dependencies,
+            "check_signature": check_signature}
 
 
 def send(mid, result=None, error=None):

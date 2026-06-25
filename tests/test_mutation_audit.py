@@ -53,6 +53,15 @@ class MutationAuditTest(unittest.TestCase):
         self.assertTrue(res["survived"])  # el mutante >= -> > sobrevive
 
 
+    def test_return_none_literal_is_not_a_mutation_point(self):
+        # `return None` mutado a `return None` es un no-op: NO debe generar un punto de mutación
+        # (si no, sería un superviviente espurio imposible de matar). `return x` sí lo genera.
+        import ast
+        none_ret = ast.parse("def f():\n    return None\n").body[0].body[0]
+        expr_ret = ast.parse("def f():\n    return x\n").body[0].body[0]
+        self.assertEqual(mutation_audit._node_points(none_ret), [])
+        self.assertEqual(len(mutation_audit._node_points(expr_ret)), 1)
+
     def test_non_python_contract_skipped_not_crash(self):
         # contrato javascript: ast.parse del target .js crashearía -> debe skippear con ok=True
         d = Path(tempfile.mkdtemp())
