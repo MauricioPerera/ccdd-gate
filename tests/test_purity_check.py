@@ -32,6 +32,10 @@ class TestImpureOperations(unittest.TestCase):
         src = "def f(x):\n    print(x)\n    open('a')\n    print(x)\n    return x\n"
         self.assertEqual(impure_operations(src, "f"), ["open", "print"])
 
+    def test_nonlocal(self):
+        src = "def outer():\n    y = 1\n    def f(x):\n        nonlocal y\n        return x\n    return f\n"
+        self.assertEqual(impure_operations(src, "f"), ["nonlocal"])
+
     def test_non_denylist_call_is_pure(self):
         # len() es una llamada pero NO está en el denylist -> pura. Mata el mutante and->or de L33.
         self.assertEqual(impure_operations("def f(x):\n    return len(x)\n", "f"), [])

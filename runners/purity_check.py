@@ -22,22 +22,32 @@ def _find_function(tree, fn_name, target_line=None):
     return first
 
 
+def _node_mark(node):
+    """Marca de impureza de UN nodo, o None si no es impuro: Call al denylist, Global, Nonlocal,
+    Import/ImportFrom. Solo stdlib (ast). Sin ejecutar el código."""
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in _DENYLIST:
+            return func.id
+        return None
+    if isinstance(node, ast.Global):
+        return "global"
+    if isinstance(node, ast.Nonlocal):
+        return "nonlocal"
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return "import"
+    return None
+
+
 def _collect_marks(body):
     """Marcas de impureza del CUERPO (lista de sentencias): Calls al denylist, Global, Nonlocal,
     Import/ImportFrom. Solo stdlib (ast). Sin ejecutar el código."""
     marks = set()
     for stmt in body:
         for node in ast.walk(stmt):
-            if isinstance(node, ast.Call):
-                func = node.func
-                if isinstance(func, ast.Name) and func.id in _DENYLIST:
-                    marks.add(func.id)
-            elif isinstance(node, ast.Global):
-                marks.add("global")
-            elif isinstance(node, ast.Nonlocal):
-                marks.add("nonlocal")
-            elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                marks.add("import")
+            mark = _node_mark(node)
+            if mark is not None:
+                marks.add(mark)
     return marks
 
 
