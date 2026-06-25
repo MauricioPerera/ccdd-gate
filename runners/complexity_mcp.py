@@ -358,6 +358,17 @@ TOOLS = [
             "fn_name": {"type": "string", "description": "Nombre de la función a verificar."},
             "target_line": {"type": "integer", "description": "Línea de la def a verificar (opcional, desambigua funciones homónimas)."}}},
     },
+    {
+        "name": "check_bare_except",
+        "description": "Líneas de los manejadores `except:` desnudos (sin tipo) dentro de una función "
+                       "(runners/bareexcept_check.py). Bare except traga KeyboardInterrupt/SystemExit y "
+                       "enmascara bugs. Solo stdlib (ast), sin ejecutar el código. [] si no hay o no se "
+                       "encuentra. Determinista, sin LLM. Devuelve {bare_except_lines: [...]}.",
+        "inputSchema": {"type": "object", "required": ["source", "fn_name"], "properties": {
+            "source": {"type": "string", "description": "Código fuente donde buscar la función."},
+            "fn_name": {"type": "string", "description": "Nombre de la función a verificar."},
+            "target_line": {"type": "integer", "description": "Línea de la def a verificar (opcional, desambigua funciones homónimas)."}}},
+    },
 ]
 
 
@@ -903,6 +914,12 @@ def check_mutable_defaults(args):
     return {"mutable_defaults": mutdef_check.mutable_defaults(args["source"], args["fn_name"], args.get("target_line"))}
 
 
+def check_bare_except(args):
+    """Líneas de manejadores `except:` desnudos en una función (runners/bareexcept_check.py). Sin LLM."""
+    import bareexcept_check
+    return {"bare_except_lines": bareexcept_check.bare_except_lines(args["source"], args["fn_name"], args.get("target_line"))}
+
+
 DISPATCH = {"measure_complexity": measure_complexity,
             "complexity_rubric": complexity_rubric,
             "scan_guardrails": scan_guardrails,
@@ -920,7 +937,8 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "scan_dependencies": scan_dependencies,
             "check_signature": check_signature,
             "check_purity": check_purity,
-            "check_mutable_defaults": check_mutable_defaults}
+            "check_mutable_defaults": check_mutable_defaults,
+            "check_bare_except": check_bare_except}
 
 
 def send(mid, result=None, error=None):
