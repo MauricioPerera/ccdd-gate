@@ -302,7 +302,17 @@ def _gate_annotations(fm, target):
 def _gate_signature(fm, target, fn_name):
     if not target.exists():
         return None
-    m = sig_check.signature_mismatch(target.read_text(encoding="utf-8"), fn_name, fm["signature"])
+    source = target.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None  # la sintaxis la pesca gate1-tests
+    # Si la función (en target_line, si se da) no es resoluble, CEDE: que _gate_complexity emita el
+    # diagnóstico preciso (FAIL "no está" / INVALID "ambiguo" con candidate_lines). gate-signature
+    # solo juzga el desajuste de una firma RESOLUBLE, no la validez del target_line.
+    if sig_check._find_function(tree, fn_name, fm.get("target_line")) is None:
+        return None
+    m = sig_check.signature_mismatch(source, fn_name, fm["signature"], target_line=fm.get("target_line"))
     if m:
         return {"verdict": "FAIL", "stage": "gate-signature", "mismatch": m}
     return None

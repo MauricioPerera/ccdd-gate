@@ -52,6 +52,19 @@ class TestSignatureMismatch(unittest.TestCase):
         self.assertTrue(signature_mismatch("def (bad", "f", "def f(x)"))
         self.assertTrue(signature_mismatch("def f(x): pass", "f", "not a signature"))
 
+    def test_function_name_differs(self):
+        # impl 'f' encontrada, pero la firma esperada nombra 'g' -> desajuste de nombre.
+        self.assertTrue(signature_mismatch("def f(x): return x", "f", "def g(x)"))
+
+    # --- desambiguación por target_line (funciones homónimas) ---
+    _HOMONYMS = "def f(a):\n    return a\n\ndef f(x):\n    return x\n"  # f@L1 (a), f@L4 (x)
+
+    def test_target_line_selects_matching_def(self):
+        self.assertEqual(signature_mismatch(self._HOMONYMS, "f", "def f(x)", target_line=4), "")
+
+    def test_target_line_selects_mismatching_def(self):
+        self.assertTrue(signature_mismatch(self._HOMONYMS, "f", "def f(x)", target_line=1))
+
 
 if __name__ == "__main__":
     unittest.main()
