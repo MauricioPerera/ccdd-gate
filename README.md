@@ -11,6 +11,15 @@ parada no es el juicio del modelo —es un veredicto determinista: **complejidad
 firmado + property-tests congelados que el implementador no puede ablandar**. Mismo input,
 mismo veredicto, corrida a corrida.
 
+El mismo principio cubre **dos pilares**:
+
+- **Código** (gate de complejidad/tests): verifica que la función implementada respeta el budget
+  y pasa los property-tests congelados. 100% determinista.
+- **Comportamiento de agentes** (pilar de evals): para la salida NO determinista de un agente
+  (texto/JSON), un dataset congelado + checks deterministas (schema, contención, citas/groundedness
+  anti-alucinación, PII, trayectoria) deciden PASS/FAIL sin LLM (**Tier 1**); un juez LLM acotado y
+  auditado contra un golden set es **Tier 2 opt-in**. Ver [Pilar de evals](#pilar-de-evals-gatear-output-no-determinista-tier-1--tier-2-opt-in).
+
 > Construido sobre [CCDD](https://github.com/MauricioPerera/ccdd) (incluido aquí como
 > `ccdd.py`, MIT). El sustrato determinista no llama a ningún LLM: el cerebro es el agente
 > anfitrión (Claude Code, Cursor, etc.) que invoca estas herramientas.
