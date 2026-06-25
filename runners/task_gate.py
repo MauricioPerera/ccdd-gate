@@ -22,6 +22,7 @@ import tc_lint  # noqa: E402
 import metrics_backends  # noqa: E402
 import deps_check  # noqa: E402  (enforcement OPT-IN de deps_allowed)
 import sig_check  # noqa: E402  (conformidad de firma implementada vs contrato)
+import purity_check  # noqa: E402  (gate de pureza OPT-IN: impurezas del cuerpo)
 
 BUDGET_KEY = {"cyclomatic": "cyclomatic_max", "nesting_depth": "nesting_max",
               "parameter_count": "params_max", "function_length": "lines_max"}
@@ -318,6 +319,21 @@ def _gate_signature(fm, target, fn_name):
     return None
 
 
+# gate 3.6 — pureza OPT-IN. Solo corre si el contrato declara `pure: true`: el cuerpo de la
+# función NO debe tener operaciones impuras (print/open/eval/global/import/...). Lee el source del
+# target y calcula las marcas con purity_check.impure_operations. Determinista, sin LLM. Si el
+# target no existe, deja que lo reporte _gate_complexity (back-compat: no duplica el error).
+def _gate_purity(fm, target, fn_name):
+    if not fm.get("pure"):
+        return None
+    if not target.exists():
+        return None
+    imp = purity_check.impure_operations(target.read_text(encoding="utf-8"), fn_name, fm.get("target_line"))
+    if imp:
+        return {"verdict": "FAIL", "stage": "gate-purity", "impurities": imp}
+    return None
+
+
 # gate 4 — enforcement OPT-IN de deps_allowed (anti-slopsquatting). Solo corre si el contrato
 # declara `enforce_deps: true`. Lee el source del target y flaggea imports top-level que no estén
 # en deps_allowed (ni en stdlib). Determinista, sin LLM. Si el target no existe, deja que lo
@@ -350,6 +366,7 @@ def gate(task_path, _depth=0):
             or _gate_run_tests(fm, target, tests, p.parent)
             or _gate_annotations(fm, target)
             or _gate_signature(fm, target, fn_name)
+            or _gate_purity(fm, target, fn_name)
             or _gate_deps(fm, target)
             or _gate_complexity(fm, target, fn_name, fm["budget"]))
 

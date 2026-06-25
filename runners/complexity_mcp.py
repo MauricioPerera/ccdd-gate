@@ -336,6 +336,17 @@ TOOLS = [
             "expected_signature": {"type": "string", "description": "Firma esperada (def parseable, ej: \"def f(x: int) -> str\")."},
             "target_line": {"type": "integer", "description": "Línea de la def a verificar (opcional, desambigua funciones homónimas)."}}},
     },
+    {
+        "name": "check_purity",
+        "description": "Marcas de impureza del cuerpo de una función (runners/purity_check.py): Calls al "
+                       "denylist (print/open/input/eval/exec/__import__), Global, Nonlocal, Import/ImportFrom. "
+                       "Solo stdlib (ast), sin ejecutar el código. [] si la función es pura o no se encuentra. "
+                       "Determinista, sin LLM. Devuelve {impurities: [...]}.",
+        "inputSchema": {"type": "object", "required": ["source", "fn_name"], "properties": {
+            "source": {"type": "string", "description": "Código fuente donde buscar la función."},
+            "fn_name": {"type": "string", "description": "Nombre de la función a verificar."},
+            "target_line": {"type": "integer", "description": "Línea de la def a verificar (opcional, desambigua funciones homónimas)."}}},
+    },
 ]
 
 
@@ -869,6 +880,12 @@ def check_signature(args):
     return {"mismatch": sig_check.signature_mismatch(args["source"], args["fn_name"], args["expected_signature"], target_line=args.get("target_line"))}
 
 
+def check_purity(args):
+    """Marcas de impureza del cuerpo de una función (runners/purity_check.py). Sin LLM."""
+    import purity_check
+    return {"impurities": purity_check.impure_operations(args["source"], args["fn_name"], args.get("target_line"))}
+
+
 DISPATCH = {"measure_complexity": measure_complexity,
             "complexity_rubric": complexity_rubric,
             "scan_guardrails": scan_guardrails,
@@ -884,7 +901,8 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "eval_rubric": eval_rubric,
             "judge_audit": judge_audit,
             "scan_dependencies": scan_dependencies,
-            "check_signature": check_signature}
+            "check_signature": check_signature,
+            "check_purity": check_purity}
 
 
 def send(mid, result=None, error=None):
