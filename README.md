@@ -196,6 +196,12 @@ Front-matter YAML (machine-checkable) + cuerpo Markdown (prescriptivo). Ver
 Regla central: **especifica el contrato y los property-tests con oráculo independiente,
 NO el algoritmo**. Los tests se congelan y firman *antes* de que el implementador toque la tarea.
 
+**Campo `target_line` (opcional, desambiguación).** El gate de complejidad resuelve la función
+objetivo por nombre. Si el target tiene **varias funciones/métodos homónimos** (p. ej. `set` en
+varias clases), declara `target_line: N` (la línea de la def correcta) para que mida esa y no otra.
+Sin desambiguador y con >1 def del nombre, el gate devuelve **INVALID** (ambiguo) en vez de medir la
+última en silencio (issue #41). Con un solo match el campo es innecesario (comportamiento idéntico).
+
 **Campo `language` (opcional, multi-lenguaje).** Por defecto `python`. Con `language: python`
 la firma se valida con el AST nativo (preciso). Para otros lenguajes (`typescript`, `javascript`,
 `go`, …) `tc_lint` valida la firma por **aridad genérica** (cuenta de parámetros top-level y

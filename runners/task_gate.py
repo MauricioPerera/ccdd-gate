@@ -78,14 +78,39 @@ def _gate_run_tests(fm, target, tests, contract_dir):
     return None
 
 
+# Selección de la función objetivo entre las que comparten nombre. Resolver por nombre con un dict
+# es last-wins: con métodos homónimos en varias clases (set/get/search/__init__…) mide el equivocado
+# y da un PASS/FAIL engañoso (issue #41). Por eso: si hay >1 def del nombre se exige `target_line`
+# (la línea es única por def y la exponen todos los backends); sin desambiguador, INVALID, nunca medir
+# la última en silencio. Con un solo match el comportamiento es idéntico al histórico (back-compat).
+def _select_target_fn(fm, fn_name, matches, target_name):
+    if not matches:
+        return {"verdict": "FAIL", "stage": "gate2-complexity",
+                "detail": f"la función '{fn_name}' no está en {target_name}"}
+    line = fm.get("target_line")
+    if line is not None:
+        hit = [m for m in matches if m["line"] == line]
+        if not hit:
+            return {"verdict": "INVALID", "stage": "gate2-complexity",
+                    "detail": f"target_line={line} no coincide con ninguna def de '{fn_name}' en {target_name}",
+                    "candidate_lines": sorted(m["line"] for m in matches)}
+        return hit[0]
+    if len(matches) > 1:
+        return {"verdict": "INVALID", "stage": "gate2-complexity",
+                "detail": f"la firma '{fn_name}' es ambigua: {len(matches)} definiciones en {target_name}; "
+                          f"añade target_line para desambiguar",
+                "candidate_lines": sorted(m["line"] for m in matches)}
+    return matches[0]
+
+
 # gate 2 — complejidad ≤ budget de la task
 def _gate_complexity(fm, target, fn_name, budget):
     if not target.exists():
         return {"verdict": "FAIL", "stage": "gate2-complexity", "detail": f"target no existe: {fm['target']}"}
-    fns = {f["function"]: f for f in metrics_backends.functions_metrics(target.read_text(encoding="utf-8"), language=fm.get("language"), filename=str(target))}
-    if fn_name not in fns:
-        return {"verdict": "FAIL", "stage": "gate2-complexity", "detail": f"la función '{fn_name}' no está en {fm['target']}"}
-    m = fns[fn_name]
+    all_fns = metrics_backends.functions_metrics(target.read_text(encoding="utf-8"), language=fm.get("language"), filename=str(target))
+    m = _select_target_fn(fm, fn_name, [f for f in all_fns if f["function"] == fn_name], fm["target"])
+    if "verdict" in m:  # dict de error (FAIL/INVALID), no una fila de métricas
+        return m
     over = [f"{metric}={m[metric]} > {key}={budget[key]}"
             for metric, key in BUDGET_KEY.items()
             if isinstance(budget.get(key), int) and m[metric] > budget[key]]

@@ -114,6 +114,9 @@ FORMATO DEL CONTRATO (causas típicas de lint en rojo entre corchetes):
     intent: UNA sola frase, un verbo ("y además ..." la rompe)            [tc-intent-atomic]
     target: ruta relativa al .md del contrato (ej: aacs/schema.py)
     signature: ENTRE COMILLAS, un def parseable (ej: "def f(x: dict) -> str")  [tc-signature-valid]
+    target_line: (OPCIONAL) línea de la def objetivo. OBLIGATORIO si el target tiene >1 función/método
+                 homónimo (p.ej. `set` en varias clases): sin él el gate devuelve INVALID (ambiguo) en
+                 vez de medir la def equivocada. Con un solo match, omitir (back-compat).
     budget: { cyclomatic_max, nesting_max, params_max, lines_max }
     deps_allowed: []        (decláralo aunque sea vacío)
     forbids: [...]          (prohibiciones duras: eval, exec, estado global, ...)
