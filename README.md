@@ -48,7 +48,12 @@ veredicto van en código que no se puede engañar.
 | `runners/complexity_mcp.py` | Servidor MCP (stdio JSON-RPC) que expone el sustrato | no |
 | `runners/mcp_smoke.py` | Smoke test del MCP | no |
 | `runners/guardrails_lang.yaml` | Guardrails específicos por lenguaje | no |
-| `contracts/` | Rubrics firmados: `pre-complexity-agent`, `complexity-agent`, `task-author-agent` | — |
+| `runners/eval_gate.py` | **Pilar de evals — Tier 1**: veredicto determinista sobre output NO determinista (agentes). Dataset congelado + checks (schema, contención, citas/groundedness, PII, trayectoria) | no |
+| `runners/eval_checks.py` | Checkers deterministas Tier 1 (una función por check; anti-alucinación de fuentes y evaluación de trayectoria) | no |
+| `runners/approve_eval_cases.py` | Firma humana del dataset de evals (`cases_sha256`), a prueba de manipulación | no |
+| `runners/eval_judge.py` | **Tier 2 (opt-in)**: juez LLM acotado (modelo pinneado, temp 0) — el único módulo del pilar que llama a un LLM | sí (opt-in) |
+| `runners/judge_audit.py` | Fuerza/deriva del juez: acuerdo vs golden set humano (análogo a `mutation_audit`); si baja del umbral, falla el JUEZ | sí (opt-in) |
+| `contracts/` | Rubrics firmados: `pre-complexity-agent`, `complexity-agent`, `task-author-agent`, `eval-agent` (juez Tier 2) | — |
 
 ## Quickstart
 
@@ -115,8 +120,50 @@ Desde el repo, copiá `.mcp.json.example` a `.mcp.json`. Tools (sin LLM):
 - `audit_annotations(root?)` - nombres usados en anotaciones sin importar/definir, sobre todos los targets; caza bugs de portabilidad que Python 3.14 (lazy annotations) enmascara en runtime.
 - `mutation_audit(task_path)` - fuerza del oráculo vía mutation testing determinista; un mutante sobreviviente delata un test débil. Opt-in (corre los tests por mutante).
 - `request_human_attestation(code, reason)` - permite al agente pedir una excepción firmada cuando no puede reducir la complejidad por reglas de negocio.
+- `run_eval_gate(eval_path)` - **pilar de evals (Tier 1)**: veredicto determinista sobre el output NO determinista de un agente (dataset congelado + checks). Sin LLM.
+- `eval_rubric()` - rúbrica firmada del juez Tier 2 (contrato `eval-agent`).
+- `judge_audit(eval_path, provider?)` - acuerdo del juez Tier 2 vs golden set humano; si baja del umbral, el juez no es de fiar. Provider `stub` (determinista) por defecto.
 
 **Checklist de cierre** (antes de dar una tarea por terminada): corré las cuatro auditorías —`audit_composition`, `audit_orphan_targets`, `audit_annotations` y `mutation_audit`— hasta `ok:true`. El gate de función no cubre composición, código huérfano, anotaciones ni la fuerza del oráculo; quedarse con la auditoría que da verde y declarar "todo en verde" es el modo de falla que la checklist existe para cerrar (y que el CI hace no-opcional).
+
+## Pilar de evals: gatear output NO determinista (Tier 1 + Tier 2 opt-in)
+
+El gate de complejidad/tests verifica **código** (funciones con oráculo independiente). Pero un
+agente de producción (un bot de soporte, un asistente de research) produce **texto/JSON no
+determinista** que ese gate no cubre. El pilar de evals lo cierra **sin renunciar al determinismo
+donde se puede**, en dos niveles:
+
+- **Tier 1 — checks deterministas, sin LLM** (`eval_gate.py` + `eval_checks.py`). Sobre cada caso
+  de un dataset CONGELADO y firmado (`cases_sha256`, igual que `tests_sha256`): schema del output,
+  contención/ausencia de términos, `must_cite` + **groundedness** (toda cita apunta a una fuente
+  existente → anti-alucinación), PII, y **evaluación de trayectoria** (tools requeridas/prohibidas,
+  `max_steps`). Veredicto = función del budget: `pass_rate ≥ pass_rate_min` y violaciones duras
+  ≤ `forbidden_violations_max`. **Mismo input → mismo veredicto.** Muchos agentes (extracción,
+  clasificación, routing) se gatean 100% aquí.
+
+- **Tier 2 — juez LLM ACOTADO, opt-in** (`eval_judge.py` + `judge_audit.py`). Solo para lo
+  genuinamente subjetivo (coherencia, utilidad). El modelo se pinnea (`temperature 0`) y su
+  veredicto **no cuenta hasta pasar `judge_audit`**: el juez se calibra contra un golden set
+  atestado por humano y debe alcanzar `agreement ≥ agreement_min`. Es a la calidad lo que
+  `mutation_audit` es al oráculo: no confía en el juez, lo mide. La única relajación de
+  determinismo (el score por-corrida del LLM) queda acotada y auditada; cualquier deriva del modelo
+  pinneado la caza `judge_audit` en CI.
+
+```bash
+# Firmar el dataset (OK humano, congela los casos)
+python runners/approve_eval_cases.py examples/eval/support-bot-refunds/eval.md
+
+# Veredicto Tier 1 (sin LLM, reproducible)
+python runners/eval_gate.py examples/eval/support-bot-refunds/eval.md
+
+# Calibrar el juez Tier 2 contra el golden set (offline con provider stub)
+python runners/judge_audit.py examples/eval/support-bot-refunds/eval.md
+```
+
+El **eval-contract** (front-matter YAML + cuerpo, espeja al task-contract) declara `target`,
+`agent_entry`, `dataset`, `budget`, `deterministic_checks` y el bloque `judge` (opt-in). Ver
+`examples/eval/support-bot-refunds/` para el ejemplo end-to-end (agente determinista de juguete,
+dataset firmado, schema y rúbrica).
 
 ## El loop grande/pequeño (Stateless Feedback y Evolución CEFL)
 
