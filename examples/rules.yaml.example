@@ -1,0 +1,17 @@
+# rules.yaml — ejemplo para rules_gate (checks deterministas de ccdd-gate, project-wide por glob).
+# Idea declarativa estilo autorules, pero el árbitro es AST determinista (sin LLM).
+# Uso: python runners/rules_gate.py rules.yaml [root]   (exit 0 ok · 1 violaciones · 2 config inválida)
+#
+# checks válidos: bare_except, assert, none_eq, mutable_defaults, purity
+
+- check: bare_except          # prohíbe `except:` desnudo
+  files: "src/**/*.py"
+
+- check: mutable_defaults     # prohíbe defaults mutables ([]/{}/set()/...)
+  files: "**/*.py"
+
+- check: none_eq              # prohíbe comparar con None por ==/!= (usar is/is not)
+  files: "src/**/*.py"
+
+- check: assert               # prohíbe `assert` en producción (desaparece con python -O)
+  files: "src/**/*.py"
