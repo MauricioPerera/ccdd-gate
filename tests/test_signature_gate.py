@@ -89,5 +89,38 @@ class SignatureGate(unittest.TestCase):
             shutil.rmtree(t.parent)
 
 
+# Target con dos `f` homónimas: f@L1 (a) y f@L4 (x). Ambas devuelven su arg -> f(1)==1 sea cual sea
+# la última en el módulo, así el gate de tests pasa y lo que decide es target_line.
+HOMONYMS = "def f(a):\n    return a\n\ndef f(x):\n    return x\n"  # f(a)@L1, f(x)@L4
+
+
+def _make_homonyms(target_line):
+    d = Path(tempfile.mkdtemp())
+    (d / "impl.py").write_text(HOMONYMS, encoding="utf-8")
+    (d / "test_x.py").write_text(TEST_X, encoding="utf-8")
+    contract = CONTRACT.replace('signature: "def f(x)"\n',
+                                f'signature: "def f(x)"\ntarget_line: {target_line}\n')
+    (d / "task.md").write_text(contract, encoding="utf-8")
+    return d / "task.md"
+
+
+class SignatureGateTargetLine(unittest.TestCase):
+    def test_target_line_match_passes(self):
+        t = _make_homonyms(target_line=4)  # apunta a f(x): coincide con la firma
+        try:
+            self.assertEqual(task_gate.gate(str(t))["verdict"], "PASS")
+        finally:
+            shutil.rmtree(t.parent)
+
+    def test_target_line_mismatch_blocks(self):
+        t = _make_homonyms(target_line=1)  # apunta a f(a): difiere de la firma (x)
+        try:
+            v = task_gate.gate(str(t))
+            self.assertEqual(v["verdict"], "FAIL", v)
+            self.assertEqual(v["stage"], "gate-signature")
+        finally:
+            shutil.rmtree(t.parent)
+
+
 if __name__ == "__main__":
     unittest.main()

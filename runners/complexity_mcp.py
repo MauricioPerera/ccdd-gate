@@ -333,7 +333,8 @@ TOOLS = [
         "inputSchema": {"type": "object", "required": ["source", "fn_name", "expected_signature"], "properties": {
             "source": {"type": "string", "description": "Código fuente donde buscar la función."},
             "fn_name": {"type": "string", "description": "Nombre de la función a verificar."},
-            "expected_signature": {"type": "string", "description": "Firma esperada (def parseable, ej: \"def f(x: int) -> str\")."}}},
+            "expected_signature": {"type": "string", "description": "Firma esperada (def parseable, ej: \"def f(x: int) -> str\")."},
+            "target_line": {"type": "integer", "description": "Línea de la def a verificar (opcional, desambigua funciones homónimas)."}}},
     },
 ]
 
@@ -865,7 +866,7 @@ def scan_dependencies(args):
 def check_signature(args):
     """Conformidad de firma implementada vs esperada (runners/sig_check.py). Sin LLM."""
     import sig_check
-    return {"mismatch": sig_check.signature_mismatch(args["source"], args["fn_name"], args["expected_signature"])}
+    return {"mismatch": sig_check.signature_mismatch(args["source"], args["fn_name"], args["expected_signature"], target_line=args.get("target_line"))}
 
 
 DISPATCH = {"measure_complexity": measure_complexity,
