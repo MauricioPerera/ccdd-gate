@@ -36,16 +36,21 @@ def _parse_verdict(content):
 
 
 def judge_openai(output, case, rubric, model, api_url):
-    """Endpoint compatible con OpenAI (LM Studio/vLLM/Ollama), temperature 0. urllib stdlib."""
+    """Endpoint compatible con OpenAI (LM Studio/vLLM/Ollama), temperature 0. urllib stdlib.
+    Un fallo de red/timeout/respuesta inesperada no debe tumbar la auditoría: se reporta como
+    veredicto fail con el error, y judge_audit lo cuenta como desacuerdo."""
     import urllib.request
-    body = json.dumps({"model": model, "temperature": 0,
-                       "messages": [{"role": "system", "content": rubric},
-                                    {"role": "user", "content": _judge_prompt(output, case, rubric)}]}).encode("utf-8")
-    req = urllib.request.Request(f"{api_url}/chat/completions", data=body,
-                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=120) as r:
-        content = json.loads(r.read().decode("utf-8"))["choices"][0]["message"]["content"]
-    return _parse_verdict(content)
+    try:
+        body = json.dumps({"model": model, "temperature": 0,
+                           "messages": [{"role": "system", "content": rubric},
+                                        {"role": "user", "content": _judge_prompt(output, case, rubric)}]}).encode("utf-8")
+        req = urllib.request.Request(f"{api_url}/chat/completions", data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            content = json.loads(r.read().decode("utf-8"))["choices"][0]["message"]["content"]
+        return _parse_verdict(content)
+    except Exception as e:
+        return {"verdict": "fail", "score": 0, "error": f"error en la llamada al juez: {e}"}
 
 
 PROVIDERS = {"stub": judge_stub, "openai": judge_openai}

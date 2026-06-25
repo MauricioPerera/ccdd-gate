@@ -104,7 +104,10 @@ CHECKS = {"schema": check_schema, "must_contain": check_must_contain,
 
 def run_checks(output, case, enabled, schema=None):
     """Aplica los checks habilitados; devuelve la lista plana de violaciones. Todos reciben la
-    misma firma (output, case, schema): los que no usan schema lo ignoran."""
+    misma firma (output, case, schema): los que no usan schema lo ignoran. Si el agente devolvió
+    algo que no es un objeto, se corta acá como fallo de schema (los checks usan output.get)."""
+    if not isinstance(output, dict):
+        return [_v("schema", "el output del agente no es un objeto", hard=True)]
     violations = []
     for name in enabled:
         fn = CHECKS.get(name)

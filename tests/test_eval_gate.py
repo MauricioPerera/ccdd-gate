@@ -70,6 +70,27 @@ class EvalGateTier1(unittest.TestCase):
         finally:
             shutil.rmtree(d)
 
+    def test_non_dict_output_fails_gracefully(self):
+        # El agente devuelve un str (no un objeto): debe ser FAIL controlado, no crash (AttributeError).
+        d = _variant(agent_text='def answer(case_input):\n    return "no soy un dict"\n')
+        try:
+            v = eval_gate.gate(str(d / "eval.md"))
+            self.assertEqual(v["verdict"], "FAIL", v)
+            self.assertGreater(v["hard_violations"], 0)
+        finally:
+            shutil.rmtree(d)
+
+    def test_invalid_missing_schema_file(self):
+        # schema declarado pero ausente = typo en el contrato: INVALID explícito, no degradación silenciosa.
+        d = _variant()
+        try:
+            (d / "response.schema.json").unlink()
+            v = eval_gate.gate(str(d / "eval.md"))
+            self.assertEqual(v["verdict"], "INVALID", v)
+            self.assertEqual(v["stage"], "contract")
+        finally:
+            shutil.rmtree(d)
+
     def test_invalid_tampered_dataset(self):
         # Añadir un caso cambia los bytes del dataset -> el hash firmado no coincide -> INVALID.
         d = _variant(append_case='{"id": "injected", "input": {}}')

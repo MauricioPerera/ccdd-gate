@@ -36,6 +36,11 @@ def _load_rubric(p, fm):
 def audit(eval_path, provider="stub", api_url=""):
     p = Path(eval_path)
     fm, _ = tc_lint.split_front_matter(p.read_text(encoding="utf-8"))
+    if fm is None:
+        return {"ok": False, "detail": "sin front-matter YAML (--- ... ---)"}
+    missing = [k for k in ("dataset", "target", "agent_entry") if not fm.get(k)]
+    if missing:
+        return {"ok": False, "detail": f"eval-contract incompleto, faltan: {missing}"}
     cases = eval_gate._load_jsonl(p.parent / fm["dataset"])
     agent_fn = eval_gate._load_agent(p.parent / fm["target"], fm["agent_entry"])
     judge_cfg = fm.get("judge") or {}

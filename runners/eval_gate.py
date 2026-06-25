@@ -82,7 +82,9 @@ def _load_schema(p, fm):
     if not s:
         return None
     sp = p.parent / s
-    return json.loads(sp.read_text(encoding="utf-8")) if sp.exists() else None
+    if not sp.exists():  # ruta declarada pero ausente = typo en el contrato; no degradar en silencio
+        raise FileNotFoundError(f"archivo de schema no encontrado: {s}")
+    return json.loads(sp.read_text(encoding="utf-8"))
 
 
 def _eval_case(agent_fn, case, enabled, schema):
@@ -129,7 +131,10 @@ def gate(eval_path):
     except Exception as e:
         return {"verdict": "FAIL", "stage": "agent", "detail": f"no se pudo cargar el agente: {e}"}
     enabled = fm.get("deterministic_checks") or DEFAULT_CHECKS
-    schema = _load_schema(p, fm)
+    try:
+        schema = _load_schema(p, fm)
+    except Exception as e:
+        return _invalid("contract", f"error al cargar el schema: {e}")
     results = [_eval_case(agent_fn, c, enabled, schema) for c in _load_jsonl(cases_path)]
     return _verdict(fm, results)
 

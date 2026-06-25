@@ -32,6 +32,9 @@ def main(argv=None):
     p = Path(a.eval)
     raw = p.read_text(encoding="utf-8")
     fm, _ = tc_lint.split_front_matter(raw)
+    if fm is None or "dataset" not in fm:
+        print("eval-contract sin front-matter válido o sin campo 'dataset'", file=sys.stderr)
+        return 2
     dataset = p.parent / fm["dataset"]
     if not dataset.exists():
         print(f"dataset no existe: {fm['dataset']}", file=sys.stderr)
