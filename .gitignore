@@ -21,3 +21,6 @@ reviewers.json
 Thumbs.db
 .idea/
 .vscode/
+
+# Artefactos de runtime de request_human_attestation
+contracts/*/pending_attestations/

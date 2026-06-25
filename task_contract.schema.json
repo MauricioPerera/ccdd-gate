@@ -10,6 +10,7 @@
     "intent": { "type": "string", "minLength": 1, "description": "Qué hace, atómico (sin conectores 'y'/'and')." },
     "target": { "type": "string", "minLength": 1, "description": "(función) UN solo archivo objetivo (refactors multi-archivo = varios contratos)." },
     "signature": { "type": "string", "minLength": 1, "description": "(función) Firma de la función implementada." },
+    "target_line": { "type": "integer", "minimum": 1, "description": "(función) Línea de la def objetivo en el target. Desambigua cuando varias funciones/métodos comparten el nombre (issue #41): el gate exige este campo si hay >1 def del nombre." },
     "budget": {
       "type": "object",
       "description": "(función) Topes de complejidad de la función implementada.",
