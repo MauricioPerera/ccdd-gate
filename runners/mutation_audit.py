@@ -33,7 +33,10 @@ def _node_points(n):
         return [("cmp", (n, i)) for i, o in enumerate(n.ops) if type(o) in _SWAP]
     if isinstance(n, ast.Constant) and isinstance(n.value, bool):
         return [("bool", n)]
-    if isinstance(n, ast.Return) and n.value is not None:
+    # `return <expr>` se muta a `return None`. Excluimos el `return None` LITERAL: mutarlo da código
+    # byte-idéntico (no-op) y aparecería como "superviviente" espurio imposible de matar.
+    if isinstance(n, ast.Return) and n.value is not None \
+            and not (isinstance(n.value, ast.Constant) and n.value.value is None):
         return [("ret", n)]
     return []
 

@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tc_lint  # noqa: E402
 import metrics_backends  # noqa: E402
 import deps_check  # noqa: E402  (enforcement OPT-IN de deps_allowed)
+import sig_check  # noqa: E402  (conformidad de firma implementada vs contrato)
 
 BUDGET_KEY = {"cyclomatic": "cyclomatic_max", "nesting_depth": "nesting_max",
               "parameter_count": "params_max", "function_length": "lines_max"}
@@ -293,6 +294,20 @@ def _gate_annotations(fm, target):
     return None
 
 
+# gate 3.5 — conformidad de firma IMPLEMENTADA vs la `signature` del contrato (DEFAULT-ON para toda
+# función con signature). Compara nombre + nombres de parámetros en orden (ignora anotaciones y
+# defaults). Un desajuste -> FAIL antes de medir complejidad: mide la firma equivocada da PASS/FAIL
+# engañoso. Determinista, zero-dep (AST puro). Si el target no existe, deja que lo reporte
+# _gate_complexity (back-compat: no duplica el error).
+def _gate_signature(fm, target, fn_name):
+    if not target.exists():
+        return None
+    m = sig_check.signature_mismatch(target.read_text(encoding="utf-8"), fn_name, fm["signature"])
+    if m:
+        return {"verdict": "FAIL", "stage": "gate-signature", "mismatch": m}
+    return None
+
+
 # gate 4 — enforcement OPT-IN de deps_allowed (anti-slopsquatting). Solo corre si el contrato
 # declara `enforce_deps: true`. Lee el source del target y flaggea imports top-level que no estén
 # en deps_allowed (ni en stdlib). Determinista, sin LLM. Si el target no existe, deja que lo
@@ -324,6 +339,7 @@ def gate(task_path, _depth=0):
     return (_gate_test_approval(fm, tests)
             or _gate_run_tests(fm, target, tests, p.parent)
             or _gate_annotations(fm, target)
+            or _gate_signature(fm, target, fn_name)
             or _gate_deps(fm, target)
             or _gate_complexity(fm, target, fn_name, fm["budget"]))
 
