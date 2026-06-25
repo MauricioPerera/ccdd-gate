@@ -20,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tc_lint  # noqa: E402
 import metrics_backends  # noqa: E402
+import deps_check  # noqa: E402  (enforcement OPT-IN de deps_allowed)
 
 BUDGET_KEY = {"cyclomatic": "cyclomatic_max", "nesting_depth": "nesting_max",
               "parameter_count": "params_max", "function_length": "lines_max"}
@@ -292,6 +293,22 @@ def _gate_annotations(fm, target):
     return None
 
 
+# gate 4 — enforcement OPT-IN de deps_allowed (anti-slopsquatting). Solo corre si el contrato
+# declara `enforce_deps: true`. Lee el source del target y flaggea imports top-level que no estén
+# en deps_allowed (ni en stdlib). Determinista, sin LLM. Si el target no existe, deja que lo
+# reporte _gate_complexity (back-compat: no duplica el error).
+def _gate_deps(fm, target):
+    if not fm.get("enforce_deps"):
+        return None
+    if not target.exists():
+        return None
+    unauthorized = deps_check.unauthorized_imports(
+        target.read_text(encoding="utf-8"), fm.get("deps_allowed") or [])
+    if unauthorized:
+        return {"verdict": "FAIL", "stage": "gate-deps", "unauthorized": unauthorized}
+    return None
+
+
 def gate(task_path, _depth=0):
     p = Path(task_path)
     fm, _ = tc_lint.split_front_matter(p.read_text(encoding="utf-8"))
@@ -307,6 +324,7 @@ def gate(task_path, _depth=0):
     return (_gate_test_approval(fm, tests)
             or _gate_run_tests(fm, target, tests, p.parent)
             or _gate_annotations(fm, target)
+            or _gate_deps(fm, target)
             or _gate_complexity(fm, target, fn_name, fm["budget"]))
 
 

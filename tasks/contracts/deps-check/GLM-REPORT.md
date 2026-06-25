@@ -32,3 +32,5 @@ Resultado: **PASS** en el **intento 1** (sin correcciones intermedias).
 | function_length| 8     | ≤ 25    |
 
 Todas las métricas dentro del budget con margen amplio.
+## Promoción
+Módulo promovido a `runners/deps_check.py`; tests a `tests/test_deps_check.py`. Esta carpeta queda como registro del task gateado.

@@ -314,6 +314,16 @@ TOOLS = [
         "inputSchema": {"type": "object", "required": ["eval_path"], "properties": {
             "eval_path": {"type": "string", "description": "Ruta al eval-contract .md en disco."}}},
     },
+    {
+        "name": "scan_dependencies",
+        "description": "Lista los imports top-level del código que NO están en deps_allowed (ni en la stdlib): "
+                       "dependencias de tercero no autorizadas (anti-slopsquatting). Determinista, sin LLM, vía "
+                       "deps_check.unauthorized_imports. Devuelve {unauthorized: [...]}.",
+        "inputSchema": {"type": "object", "required": ["code"], "properties": {
+            "code": {"type": "string", "description": "Código a escanear."},
+            "deps_allowed": {"type": "array", "description": "Dependencias permitidas (top-level); opcional.",
+                             "items": {"type": "string"}}}},
+    },
 ]
 
 
@@ -835,6 +845,12 @@ def judge_audit(args):
     return _ja.audit(path, provider=args.get("provider", "stub"), api_url=args.get("api_url", ""))
 
 
+def scan_dependencies(args):
+    """Imports top-level no autorizados (anti-slopsquatting) vía deps_check.unauthorized_imports."""
+    import deps_check
+    return {"unauthorized": deps_check.unauthorized_imports(args["code"], args.get("deps_allowed") or [])}
+
+
 DISPATCH = {"measure_complexity": measure_complexity,
             "complexity_rubric": complexity_rubric,
             "scan_guardrails": scan_guardrails,
@@ -848,7 +864,8 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "run_ephemeral_agent": run_ephemeral_agent,
             "run_eval_gate": run_eval_gate,
             "eval_rubric": eval_rubric,
-            "judge_audit": judge_audit}
+            "judge_audit": judge_audit,
+            "scan_dependencies": scan_dependencies}
 
 
 def send(mid, result=None, error=None):

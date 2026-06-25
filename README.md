@@ -45,7 +45,8 @@ veredicto van en código que no se puede engañar.
 | `runners/complexity_runner.py` | Orquestador L3 para el contrato `complexity-agent` | no |
 | `runners/complexity_gate.py` | Gate determinista; CLI o hook PostToolUse de Claude Code | no |
 | `runners/tc_lint.py` | Linter del **task-contract** (anti-desvarío del autor) | no |
-| `runners/task_gate.py` | Veredicto unificado: tc_lint + tests congelados (Gate 1) + complejidad≤budget (Gate 2) + anotaciones (Gate 3) + firma; `kind:group` compone hijas + test de integración | no |
+| `runners/task_gate.py` | Veredicto unificado: tc_lint + tests congelados (Gate 1) + complejidad≤budget (Gate 2) + anotaciones (Gate 3) + deps opt-in (Gate 4) + firma; `kind:group` compone hijas + test de integración | no |
+| `runners/deps_check.py` | `unauthorized_imports`: imports top-level de terceros NO permitidos (núcleo del enforcement de `deps_allowed` / anti-slopsquatting). AST puro | no |
 | `runners/audit_composition.py` | Auditor project-wide: composición sin gatear (función importa a otra sin `kind:group`); distingue deuda de FORMA vs de COMPORTAMIENTO | no |
 | `runners/audit_orphan_targets.py` | Auditor project-wide: `.py` de implementación que no son target de ningún contrato (código fuera del flujo gate); exime datos puros | no |
 | `runners/audit_annotations.py` | Auditor project-wide: nombres en anotaciones sin importar/definir; caza bugs de portabilidad que lazy annotations (PEP 649) enmascara | no |
@@ -122,6 +123,7 @@ Desde el repo, copiá `.mcp.json.example` a `.mcp.json`. Tools (sin LLM):
   igual en todo lenguaje), anidamiento (estructural, vía el backend del lenguaje), `dsv_check` (anti-alucinación por "drift", exige coincidencia exacta con HEAD local) y específicos por
   lenguaje opt-in (`runners/guardrails_lang.yaml`, p. ej. `no-eval`). `agent` evalúa contra ese contrato. Sin `language`, Python.
 - `lint_task_contract(contract_text, test_code?)` - valida un task-contract (anti-desvarío del modelo grande).
+- `scan_dependencies(code, deps_allowed?)` - imports top-level de terceros NO permitidos (enforcement de `deps_allowed` / anti-slopsquatting). Determinista, sin LLM.
 - `run_integration_gate(task_path)` - **veredicto PASS/FAIL unificado** de un contrato YA EN DISCO (lint + aprobación de tests + tests congelados + complejidad ≤ budget), idéntico a la CLI `task_gate.py`. Para `kind:group` compone las hijas + el test de integración sobre los archivos reales (sin sandbox). El agente NO implementa: delega a `run_ephemeral_agent`.
 - `run_ephemeral_agent(task_path)` - delega la **implementación** al modelo pequeño local y la valida contra el gate. El **servidor** fija modelo y endpoint; el LLM anfitrión solo pasa `task_path` (no elige el modelo). El **operador** puede elegir el modelo por entorno (`CCDD_EXECUTOR_MODEL`, `CCDD_EXECUTOR_API`) sin tocar la fuente; el LLM no. Default: `qwen3-coder:480b-cloud` vía Ollama (`http://localhost:11434/v1`).
 - `audit_composition(root?)` - composición sin gatear project-wide; separa deuda de FORMA (composición ejercitada por el test del composer) de deuda de COMPORTAMIENTO (mock o test ausente). `ok` = sin deuda de comportamiento.
@@ -210,6 +212,13 @@ objetivo por nombre. Si el target tiene **varias funciones/métodos homónimos**
 varias clases), declara `target_line: N` (la línea de la def correcta) para que mida esa y no otra.
 Sin desambiguador y con >1 def del nombre, el gate devuelve **INVALID** (ambiguo) en vez de medir la
 última en silencio (issue #41). Con un solo match el campo es innecesario (comportamiento idéntico).
+
+**Campo `enforce_deps` (opcional, anti-slopsquatting).** Si `enforce_deps: true`, el gate corre la
+etapa **gate-deps**: flaggea los imports top-level del target que no estén en `deps_allowed` (ni en
+la stdlib) y falla con `stage: gate-deps`. **Opt-in** (default off): los contratos que no lo declaran
+no cambian. Limitación actual: trata como "tercero" cualquier import no-stdlib que no esté en
+`deps_allowed`, así que con `enforce_deps` los módulos locales del propio proyecto deben listarse en
+`deps_allowed` (la exención automática de módulos locales queda como mejora futura). Solo Python por ahora.
 
 **Campo `language` (opcional, multi-lenguaje).** Por defecto `python`. Con `language: python`
 la firma se valida con el AST nativo (preciso). Para otros lenguajes (`typescript`, `javascript`,

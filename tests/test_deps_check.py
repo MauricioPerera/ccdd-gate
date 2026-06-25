@@ -1,9 +1,11 @@
-"""test_deps_check.py — property-tests CONGELADOS de unauthorized_imports. Oráculo independiente:
-casos fijos con la salida esperada calculada a mano; no importa nada del target salvo la función
-bajo prueba. Existe antes de implementar; el implementador NO puede modificarlo."""
+"""test_deps_check.py — tests unitarios de unauthorized_imports (runners/deps_check.py). Oráculo
+independiente: casos fijos con salida esperada calculada a mano. Sin LLM, deterministas."""
+import sys
 import unittest
+from pathlib import Path
 
-from deps_check import unauthorized_imports
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runners"))
+from deps_check import unauthorized_imports  # noqa: E402
 
 
 class TestUnauthorizedImports(unittest.TestCase):
