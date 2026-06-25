@@ -23,6 +23,7 @@ import metrics_backends  # noqa: E402
 import deps_check  # noqa: E402  (enforcement OPT-IN de deps_allowed)
 import sig_check  # noqa: E402  (conformidad de firma implementada vs contrato)
 import purity_check  # noqa: E402  (gate de pureza OPT-IN: impurezas del cuerpo)
+import mutdef_check  # noqa: E402  (gate de defaults mutables OPT-IN: forbid_mutable_defaults)
 
 BUDGET_KEY = {"cyclomatic": "cyclomatic_max", "nesting_depth": "nesting_max",
               "parameter_count": "params_max", "function_length": "lines_max"}
@@ -334,6 +335,22 @@ def _gate_purity(fm, target, fn_name):
     return None
 
 
+# gate 3.7 — defaults mutables OPT-IN. Solo corre si el contrato declara
+# `forbid_mutable_defaults: true`: los parámetros con default mutable (list/dict/set literal o
+# Call a list/dict/set) son un bug clásico (comparten estado entre llamadas). Lee el source del
+# target y calcula los nombres con mutdef_check.mutable_defaults. Determinista, sin LLM. Si el
+# target no existe, deja que lo reporte _gate_complexity (back-compat: no duplica el error).
+def _gate_mutdef(fm, target, fn_name):
+    if not fm.get("forbid_mutable_defaults"):
+        return None
+    if not target.exists():
+        return None
+    md = mutdef_check.mutable_defaults(target.read_text(encoding="utf-8"), fn_name, fm.get("target_line"))
+    if md:
+        return {"verdict": "FAIL", "stage": "gate-mutdef", "mutable_defaults": md}
+    return None
+
+
 # gate 4 — enforcement OPT-IN de deps_allowed (anti-slopsquatting). Solo corre si el contrato
 # declara `enforce_deps: true`. Lee el source del target y flaggea imports top-level que no estén
 # en deps_allowed (ni en stdlib). Determinista, sin LLM. Si el target no existe, deja que lo
@@ -367,6 +384,7 @@ def gate(task_path, _depth=0):
             or _gate_annotations(fm, target)
             or _gate_signature(fm, target, fn_name)
             or _gate_purity(fm, target, fn_name)
+            or _gate_mutdef(fm, target, fn_name)
             or _gate_deps(fm, target)
             or _gate_complexity(fm, target, fn_name, fm["budget"]))
 

@@ -347,6 +347,17 @@ TOOLS = [
             "fn_name": {"type": "string", "description": "Nombre de la función a verificar."},
             "target_line": {"type": "integer", "description": "Línea de la def a verificar (opcional, desambigua funciones homónimas)."}}},
     },
+    {
+        "name": "check_mutable_defaults",
+        "description": "Nombres de parámetros con default mutable (runners/mutdef_check.py): literal "
+                       "List/Dict/Set o Call a list/dict/set. Bug clásico de estado compartido entre "
+                       "llamadas. Solo stdlib (ast), sin ejecutar el código. [] si no hay o no se encuentra. "
+                       "Determinista, sin LLM. Devuelve {mutable_defaults: [...]}.",
+        "inputSchema": {"type": "object", "required": ["source", "fn_name"], "properties": {
+            "source": {"type": "string", "description": "Código fuente donde buscar la función."},
+            "fn_name": {"type": "string", "description": "Nombre de la función a verificar."},
+            "target_line": {"type": "integer", "description": "Línea de la def a verificar (opcional, desambigua funciones homónimas)."}}},
+    },
 ]
 
 
@@ -886,6 +897,12 @@ def check_purity(args):
     return {"impurities": purity_check.impure_operations(args["source"], args["fn_name"], args.get("target_line"))}
 
 
+def check_mutable_defaults(args):
+    """Nombres de params con default mutable (runners/mutdef_check.py). Sin LLM."""
+    import mutdef_check
+    return {"mutable_defaults": mutdef_check.mutable_defaults(args["source"], args["fn_name"], args.get("target_line"))}
+
+
 DISPATCH = {"measure_complexity": measure_complexity,
             "complexity_rubric": complexity_rubric,
             "scan_guardrails": scan_guardrails,
@@ -902,7 +919,8 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "judge_audit": judge_audit,
             "scan_dependencies": scan_dependencies,
             "check_signature": check_signature,
-            "check_purity": check_purity}
+            "check_purity": check_purity,
+            "check_mutable_defaults": check_mutable_defaults}
 
 
 def send(mid, result=None, error=None):
