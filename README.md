@@ -260,7 +260,8 @@ Cada uno honra `target_line` para funciones homónimas y tiene su tool MCP (`che
 de los archivos que matchean el glob — política de repo, no solo por función gateada. La idea del
 formato declarativo + glob está tomada de [autorules](https://github.com/markwylde/autorules), pero
 el **árbitro es AST determinista, no un LLM** (autorules usa un juez LLM; ccdd-gate no). Ver
-`examples/rules.yaml.example`.
+`examples/rules.yaml.example` y la evaluación completa en
+[`docs/evaluations/autorules.md`](docs/evaluations/autorules.md).
 
 ```bash
 python runners/rules_gate.py rules.yaml [root]   # exit 0 ok · 1 violaciones · 2 config inválida
