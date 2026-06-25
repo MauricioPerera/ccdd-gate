@@ -77,7 +77,7 @@ def main():
 
     proc.stdin.close()
     proc.wait(timeout=5)
-    print("\nOK — el servidor MCP responde el protocolo y las 4 tools funcionan.")
+    print("\nOK — el servidor MCP responde el protocolo y las 4 tools del smoke funcionan.")
 
 
 if __name__ == "__main__":
