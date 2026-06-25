@@ -391,6 +391,16 @@ TOOLS = [
             "fn_name": {"type": "string", "description": "Nombre de la función a verificar."},
             "target_line": {"type": "integer", "description": "Línea de la def a verificar (opcional, desambigua funciones homónimas)."}}},
     },
+    {
+        "name": "run_rules_gate",
+        "description": "Aplica los checks DETERMINISTAS de ccdd-gate PROJECT-WIDE por glob desde un rules.yaml "
+                       "(lista de {check, files}; checks: bare_except/assert/none_eq/mutable_defaults/purity). "
+                       "Idea declarativa estilo autorules pero con árbitro AST insobornable (sin LLM). Vuelve los "
+                       "gates de antipatrón política de repo, no solo por contrato. Devuelve {verdict, violations}.",
+        "inputSchema": {"type": "object", "properties": {
+            "rules_path": {"type": "string", "description": "Ruta al rules.yaml (default: rules.yaml)."},
+            "root": {"type": "string", "description": "Raíz del repo a escanear (default: directorio actual)."}}},
+    },
 ]
 
 
@@ -954,6 +964,15 @@ def check_none_cmp(args):
     return {"none_eq_lines": nonecmp_check.none_eq_lines(args["source"], args["fn_name"], args.get("target_line"))}
 
 
+def run_rules_gate(args):
+    """Aplica checks deterministas project-wide por glob desde un rules.yaml (ver runners/rules_gate.py)."""
+    import rules_gate
+    rules_path = args.get("rules_path", "rules.yaml")
+    if not Path(rules_path).exists():
+        return {"verdict": "INVALID", "detail": f"rules.yaml no encontrado: {rules_path}"}
+    return rules_gate.gate(rules_path, args.get("root", "."))
+
+
 DISPATCH = {"measure_complexity": measure_complexity,
             "complexity_rubric": complexity_rubric,
             "scan_guardrails": scan_guardrails,
@@ -974,7 +993,8 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "check_mutable_defaults": check_mutable_defaults,
             "check_bare_except": check_bare_except,
             "check_asserts": check_asserts,
-            "check_none_cmp": check_none_cmp}
+            "check_none_cmp": check_none_cmp,
+            "run_rules_gate": run_rules_gate}
 
 
 def send(mid, result=None, error=None):
