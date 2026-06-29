@@ -1,5 +1,6 @@
 # ccdd-gate
 
+[![PyPI](https://img.shields.io/pypi/v/ccdd-gate)](https://pypi.org/project/ccdd-gate/)
 [![tests](https://github.com/MauricioPerera/ccdd-gate/actions/workflows/test.yml/badge.svg)](https://github.com/MauricioPerera/ccdd-gate/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -23,6 +24,29 @@ El mismo principio cubre **dos pilares**:
 > Construido sobre [CCDD](https://github.com/MauricioPerera/ccdd) (incluido aquí como
 > `ccdd.py`, MIT). El sustrato determinista no llama a ningún LLM: el cerebro es el agente
 > anfitrión (Claude Code, Cursor, etc.) que invoca estas herramientas.
+
+## Instalación (PyPI)
+
+`ccdd-gate` está publicado en [PyPI](https://pypi.org/project/ccdd-gate/) — esta es la vía
+recomendada para usuarios (sin clonar, sin rutas absolutas):
+
+```bash
+pip install ccdd-gate
+# o: pipx install ccdd-gate · uvx ccdd-gate
+```
+
+Quedan disponibles los CLIs `ccdd-lint`, `ccdd-gate`, `ccdd-measure` y el servidor MCP
+`ccdd-mcp` (todos en el PATH).
+
+### Registrar el MCP en un cliente (Claude Code / Desktop)
+
+```json
+{ "mcpServers": { "ccdd": { "command": "ccdd-mcp" } } }
+```
+
+> El **modo desde el repo** (`python runners/<x>.py`, `pip install -e .`) sigue funcionando
+> para desarrollo — ver [Quickstart](#quickstart) e
+> [Instalación como paquete](#instalación-como-paquete-console-scripts).
 
 ---
 
