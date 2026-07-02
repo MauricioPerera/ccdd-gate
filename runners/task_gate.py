@@ -145,6 +145,99 @@ def _gate_rebind(fm, target, fn_name):
     return None
 
 
+def _over_budget(m, budget):
+    """Lista de 'metric=value > key=budget' para cada métrica sobre el budget. [] si ninguna.
+    Fuente única del criterio sobre-budget: la usan _gate_complexity y _gate_wrapper (sin divergencia)."""
+    return [f"{metric}={m[metric]} > {key}={budget[key]}"
+            for metric, key in BUDGET_KEY.items()
+            if isinstance(budget.get(key), int) and m[metric] > budget[key]]
+
+
+# gate 1.7 — anti-bypass "gate-wrapper" (default-ON, detección ESTRECHA). El gate mide SOLO la
+# función target; un implementador puede dejar el target como un pass-through trivial y esconder
+# toda la complejidad en un sibling de módulo del MISMO archivo que no es target de ningún contrato
+# (`def f(n): return g(n)` con `g` complejo). `f` pasa el budget midiendo la cáscara; `g` (la lógica
+# real) es invisible al gate. Detectamos SOLO delegadores de 1 sentencia `return <Call>` (o `return
+# await <Call>`) a un sibling de módulo, y medimos al sibling con el mismo backend que
+# _gate_complexity. Si el sibling excede el budget -> INVALID: el gate no puede medir la lógica
+# real. Detección depth-1: NO persigue cadenas delegador->delegador (limitación intencional para
+# minimizar falsos positivos). Determinista, zero-dep (AST puro).
+def _is_docstring(stmt):
+    """True si stmt es un Expr con un string literal (docstring inicial de un cuerpo)."""
+    return (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant)
+            and isinstance(stmt.value.value, str))
+
+
+def _callee_name(call):
+    """id del ast.Name llamado si call es `Name(...)` (llamada directa); None si es atributo/otro."""
+    return call.func.id if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) else None
+
+
+def _is_trivial_delegator(fn_node):
+    """Devuelve el id del callee (ast.Name) si fn_node es un pass-through trivial: cuerpo de
+    EXACTAMENTE una sentencia `return <Call>` o `return await <Call>` (ignorando un docstring
+    inicial). None si hace trabajo real (más sentencias, lógica, o return que no es un Call a un
+    Name directo). Detección depth-1: no inspecciona qué hay detrás del callee."""
+    body = fn_node.body
+    if body and _is_docstring(body[0]):
+        body = body[1:]
+    if len(body) != 1 or not isinstance(body[0], ast.Return):
+        return None
+    call = body[0].value
+    if isinstance(call, ast.Await):
+        call = call.value
+    return _callee_name(call)
+
+
+def _module_level_funcs(tree):
+    """Nombres de las def/async def a NIVEL DE MÓDULO del mismo archivo (siblings del target).
+    Excluye importadas (no son definiciones) y anidadas dentro de otras funciones/clases: esas no
+    son siblings contratibles aquí. Determinista, AST puro."""
+    return {n.name for n in tree.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+def _sibling_metric_row(fm, target, name):
+    """Fila de métricas del sibling 'name' medida con el MISMO backend que _gate_complexity.
+    None si el target no parsea o no hay fila para 'name' (p.ej. el nombre es un builtin/import)."""
+    try:
+        funcs = metrics_backends.functions_metrics(
+            target.read_text(encoding="utf-8"), language=fm.get("language"), filename=str(target))
+    except SyntaxError:
+        return None
+    rows = [f for f in funcs if f["function"] == name]
+    return rows[0] if rows else None
+
+
+def _gate_wrapper(fm, target, fn_name, budget):
+    """gate-wrapper (default-ON, detección estrecha). INVALID si el target es un pass-through
+    trivial que delega en un sibling de módulo (no contratado) que excede el budget. Si el target
+    hace trabajo real, o el callee no es un sibling de módulo (atributo/builtin/importado/externo),
+    o el sibling está dentro del budget -> None (no aplica; deja seguir la cadena). Si el target no
+    existe o no parsea, cede al gate correspondiente (back-compat, no duplica diagnósticos)."""
+    if not target.exists():
+        return None
+    try:
+        tree = ast.parse(target.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return None  # la sintaxis la pesca gate1-tests
+    fn = sig_check._find_function(tree, fn_name, fm.get("target_line"))
+    if fn is None:
+        return None  # cede a _gate_complexity para el diagnóstico preciso
+    callee = _is_trivial_delegator(fn)
+    if callee is None or callee not in _module_level_funcs(tree):
+        return None
+    row = _sibling_metric_row(fm, target, callee)
+    if row is None or not _over_budget(row, budget):
+        return None
+    return {"verdict": "INVALID", "stage": "gate-wrapper",
+            "detail": f"el target delega en el sibling de módulo '{callee}' (no contratado) que "
+                      f"excede el budget; el gate no puede medir la lógica real",
+            "sibling": callee,
+            "sibling_metrics": {k: row[k] for k in BUDGET_KEY},
+            "budget": budget}
+
+
 # gate 2 — complejidad ≤ budget de la task
 def _target_metrics(fm, target):
     """Lee y mide el target. Devuelve (lista_de_funcs, None) o (None, error-dict) si no existe
@@ -167,9 +260,7 @@ def _gate_complexity(fm, target, fn_name, budget):
     m = _select_target_fn(fm, fn_name, [f for f in all_fns if f["function"] == fn_name], fm["target"])
     if "verdict" in m:  # dict de error (FAIL/INVALID), no una fila de métricas
         return m
-    over = [f"{metric}={m[metric]} > {key}={budget[key]}"
-            for metric, key in BUDGET_KEY.items()
-            if isinstance(budget.get(key), int) and m[metric] > budget[key]]
+    over = _over_budget(m, budget)
     if over:
         return {"verdict": "FAIL", "stage": "gate2-complexity", "function": fn_name, "over_budget": over}
     return {"verdict": "PASS", "stage": "all", "function": fn_name,
@@ -478,19 +569,31 @@ def gate(task_path, _depth=0):
     target = p.parent / fm["target"]
     tests = p.parent / fm["tests"]
     fn_name, _n = tc_lint.parse_sig(fm["signature"], fm.get("language"))
-
-    return (_gate_test_approval(fm, tests)
-            or _gate_run_tests(fm, target, tests, p.parent)
-            or _gate_annotations(fm, target)
-            or _gate_signature(fm, target, fn_name)
-            or _gate_purity(fm, target, fn_name)
-            or _gate_mutdef(fm, target, fn_name)
-            or _gate_bareexcept(fm, target, fn_name)
-            or _gate_assert(fm, target, fn_name)
-            or _gate_nonecmp(fm, target, fn_name)
-            or _gate_deps(fm, target)
-            or _gate_rebind(fm, target, fn_name)
-            or _gate_complexity(fm, target, fn_name, fm["budget"]))
+    budget = fm["budget"]
+    # Composición determinista por orden: el primer stage que devuelva un dict no-None gana (semá
+    # ntica idéntica a la cadena de `or` histórica). Un loop fijo baja la ciclomática de gate() sin
+    # cambiar el orden ni el resultado para ningún contrato existente. _gate_complexity (último)
+    # siempre devuelve un veredicto, así que el loop retorna dentro de la iteración final.
+    stages = [
+        lambda: _gate_test_approval(fm, tests),
+        lambda: _gate_run_tests(fm, target, tests, p.parent),
+        lambda: _gate_annotations(fm, target),
+        lambda: _gate_signature(fm, target, fn_name),
+        lambda: _gate_purity(fm, target, fn_name),
+        lambda: _gate_mutdef(fm, target, fn_name),
+        lambda: _gate_bareexcept(fm, target, fn_name),
+        lambda: _gate_assert(fm, target, fn_name),
+        lambda: _gate_nonecmp(fm, target, fn_name),
+        lambda: _gate_deps(fm, target),
+        lambda: _gate_rebind(fm, target, fn_name),
+        lambda: _gate_wrapper(fm, target, fn_name, budget),
+        lambda: _gate_complexity(fm, target, fn_name, budget),
+    ]
+    for st in stages:
+        v = st()
+        if v is not None:
+            return v
+    return None
 
 
 def main():
