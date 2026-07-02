@@ -857,14 +857,24 @@ def cmd_keygen(contract_dir: Path, reviewer: str, key_out: Path) -> int:
 
 
 def _attest_target_hash(contract_dir: Path, slot_id: str):
-    """Hash del contenido a atestar. Devuelve (hash, None) o (None, rc) si no aplica."""
+    """Hash del contenido a atestar. Devuelve (hash, None) o (None, rc) si no aplica.
+
+    Usa el mismo hash SEMÁNTICO que la verificación R6/R7
+    (`semantic_hash.get_semantic_hash(text, suffix)`) para que el hash que
+    `cmd_attest` guarda como `content_sha256` sea el que `valid_signers`
+    compara. Para `.txt`/`.json` el hash semántico cae al fallback SHA-256
+    crudo, por lo que el resultado es BYTE-IDENTICO al `sha256(read_text)`
+    anterior y todas las atestaciones existentes siguen validando sin
+    re-firmar; para un slot `.py` (permitido por el schema) ahora coincide con
+    el `ast.dump` que usa R6 en lugar del crudo, que R6 rechazaría."""
+    from runners import semantic_hash
     if slot_id == "__reviewers__":
         # target especial: el propio registro de revisores (gobernanza, R7)
         rp = contract_dir / "reviewers.json"
         if not rp.exists():
             print("ATTEST: no hay reviewers.json que atestar")
             return None, 1
-        return sha256(rp.read_text(encoding="utf-8")), None
+        return semantic_hash.get_semantic_hash(rp.read_text(encoding="utf-8"), ".json"), None
     contract = load_contract(contract_dir)["contract"]
     slot = next((s for s in contract["slots"] if s["id"] == slot_id), None)
     if slot is None:
@@ -873,7 +883,9 @@ def _attest_target_hash(contract_dir: Path, slot_id: str):
     if slot["source"].get("type") != "static":
         print(f"ATTEST: '{slot_id}' no es un slot estático; nada que atestar")
         return None, 1
-    return sha256((contract_dir / slot["source"]["path"]).read_text(encoding="utf-8")), None
+    slot_path = contract_dir / slot["source"]["path"]
+    return semantic_hash.get_semantic_hash(
+        slot_path.read_text(encoding="utf-8"), Path(slot["source"]["path"]).suffix), None
 
 
 def cmd_attest(contract_dir: Path, slot_id: str, reviewer: str, note: str, key_path: Path) -> int:
