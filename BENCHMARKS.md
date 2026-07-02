@@ -13,16 +13,18 @@ Dos cosas distintas y honestamente etiquetadas:
 
 | Operación | Costo | Tokens |
 |---|---|---|
-| `metrics.functions_metrics` (AST) | ~0.28 ms/op | 0 |
-| `tc_lint.lint` (valida un task-contract) | ~0.71 ms/op | 0 |
-| `task_gate.gate` (veredicto pleno: lint + complejidad + tests) | ~81 ms/op | 0 |
+| `metrics.functions_metrics` (AST) | ~0.23 ms/op | 0 |
+| `tc_lint.lint` (valida un task-contract) | ~1.8 ms/op | 0 |
+| `task_gate.gate` (veredicto pleno: lint + complejidad + tests) | ~98 ms/op | 0 |
 
 *Medido en Windows, Python 3.14, una corrida. Reproducí con el script; los números absolutos
 varían por máquina, el orden de magnitud no.*
 
-**Lectura honesta:** la **lógica del gate** (métricas + lint) es **sub-milisegundo**. Los ~81 ms
-del veredicto pleno son **ejecutar tus property-tests congelados** (aquí 500 iteraciones por test
-en un subproceso) — algo que correrías igual. El veredicto en sí no agrega costo perceptible.
+**Lectura honesta:** las **métricas de complejidad** (AST) son **sub-milisegundo**; el **lint** del
+task-contract es de **un dígito de milisegundos** (~1.8 ms). Los ~98 ms del veredicto pleno son
+**ejecutar tus property-tests congelados** (aquí 500 iteraciones por test en un subproceso) — algo
+que correrías igual. La lógica de decisión del gate (métricas + lint) es de **orden milisegundo**;
+el veredicto en sí no agrega costo perceptible.
 
 **El punto:** la verificación que en un loop agéntico sería una *review por LLM* (~1–2k tokens de
 entrada + segundos de latencia + costo de API, y **no determinista**) aquí es **0 tokens, sin red,

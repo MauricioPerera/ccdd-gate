@@ -347,7 +347,8 @@ funciona en local. Usa `gh` CLI; tokens por entorno, nunca en el repo.
 ## Benchmarks
 
 Ver [`BENCHMARKS.md`](BENCHMARKS.md). En resumen: el gate determinista cuesta **0 tokens** y
-su lógica es **sub-milisegundo** (`python benchmarks/bench_gate.py`). La economía grande/pequeño
+su lógica de decisión es de **orden milisegundo** (métricas sub-ms, lint ~1.8 ms;
+`python benchmarks/bench_gate.py`). La economía grande/pequeño
 está medida y **honestamente etiquetada como ilustrativa** — gana por reuso/volumen, no en el
 one-shot trivial (ahí es más caro).
 

@@ -75,5 +75,50 @@ class PureDataExemptionTest(unittest.TestCase):
         self.assertIn("side.py", res["orphans"])
 
 
+class SkipDirConfigTest(unittest.TestCase):
+    """Dirs exentas configurables: `--skip-dir` (kwarg `skip_dirs`) y env `CCDD_ORPHAN_SKIP_DIR`
+    eximen un dir de soporte (p.ej. examples/) sin tocar el default."""
+
+    def _proj(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "examples").mkdir()
+        (d / "examples" / "demo.py").write_text("def demo():\n    return 1\n", encoding="utf-8")
+        (d / "logic.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        return d
+
+    def test_default_flags_examples(self):
+        d = self._proj()
+        try:
+            res = audit_orphan_targets.audit(d)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertTrue(any("examples" in o for o in res["orphans"]))   # default: grita
+
+    def test_skip_dir_kwarg_exempts(self):
+        d = self._proj()
+        try:
+            res = audit_orphan_targets.audit(d, skip_dirs=["examples"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertFalse(any("examples" in o for o in res["orphans"]))  # exento
+        self.assertTrue(any("logic.py" in o for o in res["orphans"]))   # el resto sigue
+
+    def test_skip_dir_env_exempts(self):
+        import os
+        d = self._proj()
+        key = "CCDD_ORPHAN_SKIP_DIR"
+        old = os.environ.get(key)
+        os.environ[key] = "examples"
+        try:
+            res = audit_orphan_targets.audit(d)
+        finally:
+            if old is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertFalse(any("examples" in o for o in res["orphans"]))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -40,5 +40,51 @@ class AuditAnnotationsTest(unittest.TestCase):
         self.assertIn("Node", res["failures"][0]["detail"])
 
 
+class AuditStringForwardRefTest(unittest.TestCase):
+    """Forward-refs en string (`x: "UndefinedNode"`, `-> "Missing"`, `List["Node"]`) son
+    `ast.Constant[str]`; el gate las parsea y reporta nombres sin importar/definir — el bug que
+    rompe en runtime <Py3.14."""
+
+    def test_undefined_string_forward_ref_flagged(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "f.py").write_text('def f(x: "UndefinedNode") -> "Missing":\n    return x\n',
+                                encoding="utf-8")
+        (d / "f.md").write_text("---\ntask: f\ntarget: f.py\n---\n", encoding="utf-8")
+        try:
+            res = audit_annotations.audit(d)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertFalse(res["ok"], msg=str(res["failures"]))
+        detail = res["failures"][0]["detail"]
+        self.assertIn("UndefinedNode", detail)
+        self.assertIn("Missing", detail)
+
+    def test_defined_string_forward_ref_ok(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "f.py").write_text(
+            "from m import Node\n\n\ndef f(x: \"Node\") -> \"Node\":\n    return x\n",
+            encoding="utf-8")
+        (d / "f.md").write_text("---\ntask: f\ntarget: f.py\n---\n", encoding="utf-8")
+        try:
+            res = audit_annotations.audit(d)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertTrue(res["ok"], msg=str(res["failures"]))
+
+    def test_undefined_nested_string_forward_ref_flagged(self):
+        # List["UndefinedNode"]: la string vive dentro de un sub-nodo de la anotación
+        d = Path(tempfile.mkdtemp())
+        (d / "f.py").write_text(
+            "from typing import List\n\n\ndef f(x: List[\"UndefinedNode\"]):\n    return x\n",
+            encoding="utf-8")
+        (d / "f.md").write_text("---\ntask: f\ntarget: f.py\n---\n", encoding="utf-8")
+        try:
+            res = audit_annotations.audit(d)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertFalse(res["ok"], msg=str(res["failures"]))
+        self.assertIn("UndefinedNode", res["failures"][0]["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()

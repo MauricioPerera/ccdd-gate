@@ -403,9 +403,34 @@ def _defined_names(tree):
     return names
 
 
+def _ann_string_names(value):
+    """Nombres (ast.Name) dentro de una forward-ref string parseada con `ast.parse(mode='eval')`.
+    Set vacío si la string no parsea (no crashea). Determinista, zero-dep."""
+    try:
+        sub = ast.parse(value, mode="eval")
+    except Exception:
+        return set()
+    return {m.id for m in ast.walk(sub) if isinstance(m, ast.Name)}
+
+
+def _ann_names(ann):
+    """Nombres (ast.Name) dentro de una anotación, incluyendo forward-refs en string: una
+    `ast.Constant` de `str` se parsea con `ast.parse` (vía `_ann_string_names`) y los `Name` de
+    ese sub-árbol se tratan igual que los directos (mismo `defined`/builtins en _gate_annotations).
+    Una string no parseable se ignora (no crashea). Determinista, zero-dep."""
+    out = set()
+    for n in ast.walk(ann):
+        if isinstance(n, ast.Name):
+            out.add(n.id)
+        elif isinstance(n, ast.Constant) and isinstance(n.value, str):
+            out.update(_ann_string_names(n.value))
+    return out
+
+
 def _annotation_name_refs(tree):
-    """Nombres (ast.Name) referenciados en cualquier anotación: args, return, AnnAssign. Las
-    forward-refs en string NO se incluyen (son Constant, no Name)."""
+    """Nombres referenciados en cualquier anotación: args, return, AnnAssign. Las forward-refs
+    en string (`x: "Node"`, `-> "Missing"`, `List["Node"]`) SÍ se incluyen: son `ast.Constant`
+    parseadas por `_ann_names`. El bug que el runtime (<Py3.14) enmascara está justo ahí."""
     refs = set()
     for node in ast.walk(tree):
         anns = []
@@ -417,7 +442,7 @@ def _annotation_name_refs(tree):
             anns = [node.annotation]
         for ann in anns:
             if ann is not None:
-                refs.update(n.id for n in ast.walk(ann) if isinstance(n, ast.Name))
+                refs.update(_ann_names(ann))
     return refs
 
 
