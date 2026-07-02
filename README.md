@@ -364,6 +364,12 @@ one-shot trivial (ahí es más caro).
   ajeno usá un sandbox aislado (contenedor), no el host.
 - **Auditar tests requiere un modelo grande.** Un modelo de ~12B como auditor tiende a
   aprobar tests rotos. Implementar lo hace bien; auditar, no.
+- **El hash semántico (`.py`) está atado a la versión de CPython.** `semantic_hash` usa
+  `ast.dump`, cuya salida puede cambiar entre versiones mayores de Python (nuevos campos de
+  AST, PEP 695, etc.). Una firma de `expected-hashes.json` o una atestación de excepción de
+  complejidad calculada en una versión puede no validar en otra distinta. Firmá y verificá con
+  la misma versión mayor de CPython (o re-firmá tras un upgrade). Los hashes de `.txt`/`.json`
+  y los `tests_sha256`/`cases_sha256` (sha256 crudo LF-normalizado) **no** se ven afectados.
 
 ## Licencia
 
