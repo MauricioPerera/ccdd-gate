@@ -43,6 +43,38 @@ class TestUnauthorizedImports(unittest.TestCase):
         src = "import os\nimport numpy as np\nfrom flask import Flask\nfrom . import local"
         self.assertEqual(unauthorized_imports(src, ["numpy"]), ["flask"])
 
+    # --- imports dinámicos (falso negativo del recorrido estático Import/ImportFrom) ---
+    def test_importlib_import_module_literal(self):
+        src = "def f():\n    importlib.import_module('requests')\n"
+        self.assertEqual(unauthorized_imports(src, []), ["requests"])
+
+    def test_dunder_import_literal(self):
+        src = "def f():\n    return __import__('requests')\n"
+        self.assertEqual(unauthorized_imports(src, []), ["requests"])
+
+    def test_from_importlib_import_module(self):
+        src = "from importlib import import_module\ndef f():\n    import_module('requests')\n"
+        self.assertEqual(unauthorized_imports(src, []), ["requests"])
+
+    def test_importlib_import_module_alias(self):
+        src = "from importlib import import_module as im\ndef f():\n    im('requests')\n"
+        self.assertEqual(unauthorized_imports(src, []), ["requests"])
+
+    def test_dynamic_stdlib_not_flagged(self):
+        # json es stdlib: el import dinámico no se flaguea.
+        self.assertEqual(unauthorized_imports("def f():\n    importlib.import_module('json')\n", []), [])
+
+    def test_dynamic_allowed_not_flagged(self):
+        self.assertEqual(unauthorized_imports("def f():\n    importlib.import_module('requests')\n", ["requests"]), [])
+
+    def test_dynamic_nonliteral_not_flagged(self):
+        # arg no literal: no podemos resolver el módulo; importlib es stdlib -> no se flaguea (evita FP).
+        self.assertEqual(unauthorized_imports("def f(m):\n    importlib.import_module(m)\n", []), [])
+
+    def test_dotted_dynamic_toplevel(self):
+        # importlib.import_module('a.b') -> top-level 'a'.
+        self.assertEqual(unauthorized_imports("def f():\n    importlib.import_module('a.b')\n", []), ["a"])
+
 
 if __name__ == "__main__":
     unittest.main()

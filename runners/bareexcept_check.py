@@ -19,10 +19,32 @@ def _find_function(tree, fn_name, target_line=None):
     return first
 
 
+def _walk_local(root):
+    """Yield root y cada descendiente, SIN descender en FunctionDef/AsyncFunctionDef/Lambda anidados.
+    Los antipatrones de una función/lambda anidados pertenecen a esa función interna, no al target
+    exterior (falso positivo: atribuirlos al target)."""
+    yield root
+    for child in ast.iter_child_nodes(root):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        yield from _walk_local(child)
+
+
+def _is_bare(handler):
+    """True si el ExceptHandler es desnudo: type is None (`except:`) o tupla vacía (`except ():`,
+    que atrapa todo igual que un bare pero su type es ast.Tuple con elts==[])."""
+    if handler.type is None:
+        return True
+    if isinstance(handler.type, ast.Tuple) and len(handler.type.elts) == 0:
+        return True
+    return False
+
+
 def _bare_handlers(fn_node):
-    """Lineno de los ExceptHandler con type is None dentro del cuerpo de fn_node, ordenados."""
-    lines = [h.lineno for h in ast.walk(fn_node)
-             if isinstance(h, ast.ExceptHandler) and h.type is None]
+    """Lineno de los ExceptHandler desnudos (type None o tupla vacía) del cuerpo de fn_node, ordenados.
+    NO desciende en funciones/lambdas anidados."""
+    lines = [h.lineno for h in _walk_local(fn_node)
+             if isinstance(h, ast.ExceptHandler) and _is_bare(h)]
     return sorted(lines)
 
 

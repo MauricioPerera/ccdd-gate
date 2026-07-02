@@ -19,9 +19,22 @@ def _find_function(tree, fn_name, target_line=None):
     return first
 
 
+def _walk_local(root):
+    """Yield root y cada descendiente, SIN descender en FunctionDef/AsyncFunctionDef/Lambda anidados.
+    Los antipatrones de una función/lambda anidados pertenecen a esa función interna, no al target
+    exterior (falso positivo: atribuirlos al target). No rompe metrics.py (ese mide anidadas a propósito
+    y es otro archivo)."""
+    yield root
+    for child in ast.iter_child_nodes(root):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        yield from _walk_local(child)
+
+
 def _assert_lines(fn_node):
-    """Lineno de los ast.Assert dentro del cuerpo de fn_node (incluye anidados), ordenados."""
-    lines = [n.lineno for n in ast.walk(fn_node) if isinstance(n, ast.Assert)]
+    """Lineno de los ast.Assert del cuerpo de fn_node (incluye bloques anidados if/for/...), ordenados.
+    NO desciende en funciones/lambdas anidados."""
+    lines = [n.lineno for n in _walk_local(fn_node) if isinstance(n, ast.Assert)]
     return sorted(lines)
 
 
