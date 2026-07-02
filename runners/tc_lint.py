@@ -183,6 +183,40 @@ def r_budget_sane(ctx):
                         "msg": f"budget.{k}={v} excede el tope global firmado ({cap})"})
     return out
 
+def _imports_target_module(tree, target_stem):
+    """True si el test importa el módulo target (ImportFrom module==target_stem, o Import de
+    target_stem). AST puro."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == target_stem:
+            return True
+        if isinstance(node, ast.Import) and any(a.name == target_stem for a in node.names):
+            return True
+    return False
+
+
+def _calls_fn(tree, fn_name):
+    """True si el test hace una Call a fn_name (Name o Attribute.attr). AST puro."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            f = node.func
+            name = f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else None)
+            if name == fn_name:
+                return True
+    return False
+
+
+def _test_references_fn(text, fn_name, target):
+    """True si el test referencia a la función objetivo: importando el módulo target O llamando
+    a fn_name. Para Python parsea el AST (un test que solo 'menciona' fn en un comentario NO
+    cuenta); para no-Python/no-parseable degrada a substring (back-compat)."""
+    target_stem = Path(target).stem if target else None
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return fn_name in text
+    return _imports_target_module(tree, target_stem) or _calls_fn(tree, fn_name)
+
+
 def r_tests_frozen(ctx):
     tests = ctx["fm"].get("tests")
     if not tests:
@@ -190,8 +224,11 @@ def r_tests_frozen(ctx):
     tp = ctx["path"].parent / tests
     if not tp.exists() or tp.stat().st_size == 0:
         return [err("tc-tests-frozen", "los property-tests deben existir y no estar vacíos: " + str(tests))]
-    if ctx["fn_name"] and ctx["fn_name"] not in tp.read_text(encoding="utf-8"):
-        return [err("tc-tests-frozen", f"los tests no referencian la firma '{ctx['fn_name']}'")]
+    if not ctx["fn_name"]:
+        return []
+    if not _test_references_fn(tp.read_text(encoding="utf-8"), ctx["fn_name"], ctx["fm"].get("target")):
+        return [err("tc-tests-frozen", f"los tests no referencian la firma '{ctx['fn_name']}' "
+                    "(importa el módulo target o llama a la función)")]
     return []
 
 

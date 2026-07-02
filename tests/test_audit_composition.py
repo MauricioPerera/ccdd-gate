@@ -84,5 +84,56 @@ class CompositionBehaviorTest(unittest.TestCase):
         self.assertEqual(len(res["behavior_unverified"]), 1)
 
 
+class CompositionSymbolVsModuleTest(unittest.TestCase):
+    """`from pkg.helper import util` importa el SÍMBOLO util, no el módulo util.py: NO debe marcar
+    composición falsa. El stem del módulo de origen (helper) sí cuenta; el nombre del símbolo no."""
+
+    def test_symbol_import_not_flagged_as_module_composition(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "pkg").mkdir()
+        (d / "pkg" / "helper.py").write_text("def util():\n    return 1\n", encoding="utf-8")
+        (d / "main.py").write_text("from pkg.helper import util\n\n\ndef main():\n    return util()\n",
+                                   encoding="utf-8")
+        (d / "util.py").write_text("def util():\n    return 2\n", encoding="utf-8")
+        (d / "main.md").write_text("---\ntask: main\ntarget: main.py\n---\n", encoding="utf-8")
+        (d / "util.md").write_text("---\ntask: util\ntarget: util.py\n---\n", encoding="utf-8")
+        try:
+            res = audit_composition.audit(d)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        flagged = {Path(u["contract"]).name for u in res["ungated_composition"]}
+        self.assertNotIn("main.md", flagged)   # importa el símbolo util, no el módulo util.py
+
+
+class CompositionHomonymCollisionTest(unittest.TestCase):
+    """Dos targets con el mismo stem en distinto directorio (aacs/schema.py, b/schema.py) NO se
+    pierden por colisión de stem: ambos se rastrean y ambos se reportan si componen."""
+
+    def _proj(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "aacs").mkdir()
+        (d / "b").mkdir()
+        body = "from util import u\n\n\ndef schema():\n    return u()\n"
+        (d / "aacs" / "schema.py").write_text(body, encoding="utf-8")
+        (d / "b" / "schema.py").write_text(body, encoding="utf-8")
+        (d / "util.py").write_text("def u():\n    return 1\n", encoding="utf-8")
+        (d / "aacs" / "schema.md").write_text("---\ntask: schema\ntarget: schema.py\n---\n", encoding="utf-8")
+        (d / "b" / "schema2.md").write_text("---\ntask: schema2\ntarget: schema.py\n---\n", encoding="utf-8")
+        (d / "util.md").write_text("---\ntask: util\ntarget: util.py\n---\n", encoding="utf-8")
+        return d
+
+    def test_homonyms_not_lost_by_stem_collision(self):
+        d = self._proj()
+        try:
+            res = audit_composition.audit(d)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertEqual(res["functions"], 3)   # antes colisionaban a 2 (last-wins por stem)
+        self.assertEqual(len(res["ungated_composition"]), 2)  # ambos homónimos componen util
+        flagged = {Path(u["contract"]).name for u in res["ungated_composition"]}
+        self.assertIn("schema.md", flagged)      # aacs/schema compone util
+        self.assertIn("schema2.md", flagged)     # b/schema compone util (no se perdió)
+
+
 if __name__ == "__main__":
     unittest.main()

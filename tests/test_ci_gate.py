@@ -5,11 +5,13 @@ Aceptación de la issue:
   - PR limpio ⇒ PASS con resumen de métricas.
   - descubre los contratos afectados (contrato cambiado o su código objetivo cambiado).
 """
+import contextlib
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "runners"))
@@ -125,6 +127,41 @@ class AnnotationsAndMutationNotesTest(unittest.TestCase):
         note = ci_gate.mutation_note([{"contract": "a.md", "survived": ["op@L13"]}])
         self.assertIn("mutantes sobrevivientes", note)
         self.assertIn("op@L13", note)
+
+
+class PostingFailureTest(unittest.TestCase):
+    """Un fallo de posting (gh read-only en PRs de fork) NO debe pisar el veredicto del
+    gate: el exit code sigue al veredicto, no a la capacidad de comentar.
+
+    Aislado del motor del gate: se mockea ci_gate.run con un veredicto controlado para
+    NO depender de task_gate/sandbox (código en flujo paralelo). Lo que se prueba es el
+    try/except alrededor de _maybe_post en main()."""
+
+    def _ctx(self, verdict):
+        mgrs = (
+            patch.object(ci_gate, "_select_contracts", return_value=["dummy.md"]),
+            patch.object(ci_gate, "run", return_value=[{"contract": "dummy.md", "verdict": {"verdict": verdict}}]),
+            patch.object(ci_gate, "combined_report", return_value="body"),
+            patch.object(ci_gate.audit_composition, "audit", return_value={"ok": True}),
+            patch.object(ci_gate.audit_annotations, "audit", return_value={"ok": True}),
+            patch.object(ci_gate, "mutation_survivors", return_value=[]),
+            patch.object(ci_gate.reporter, "upsert_comment", side_effect=RuntimeError("gh read-only")),
+        )
+        return mgrs
+
+    def _run(self, verdict):
+        with contextlib.ExitStack() as stack:
+            for m in self._ctx(verdict):
+                stack.enter_context(m)
+            return ci_gate.main(["dummy.md", "--post", "--repo", "o/r", "--issue", "1"])
+
+    def test_posting_failure_keeps_pass_exit_zero(self):
+        rc = self._run("PASS")
+        self.assertEqual(rc, 0, "gate PASS + posting falla -> exit 0 (veredicto, no posting)")
+
+    def test_posting_failure_keeps_fail_exit_one(self):
+        rc = self._run("FAIL")
+        self.assertEqual(rc, 1, "gate FAIL + posting falla -> exit 1 (veredicto, no posting)")
 
 
 if __name__ == "__main__":

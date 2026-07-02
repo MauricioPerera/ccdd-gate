@@ -19,6 +19,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tc_lint  # noqa: E402  (split_front_matter)
 
 
+def raw_digest(text):
+    """sha256 de los bytes del texto normalizados a LF (portabilidad CRLF/LF).
+    Algoritmo ÚNICO de tests_sha256: lo usa approve_tests para firmar y task_gate
+    para verificar (ver task_gate._gate_test_approval). Mismo criterio que
+    eval_gate.dataset_digest: normalizar finales de línea antes de hashear, para
+    que la firma sea independiente del checkout CRLF vs LF del repo."""
+    norm = text.replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+
+
 def _set_line(text, key, value):
     """Inserta/reemplaza `key: value` dentro del primer bloque front-matter (--- ... ---)."""
     lines = text.splitlines(keepends=True)
@@ -51,8 +61,7 @@ def main(argv=None):
     if not tests.exists():
         print(f"tests no existe: {fm['tests']}", file=sys.stderr)
         return 2
-    import semantic_hash
-    actual = semantic_hash.get_semantic_hash(tests.read_text(encoding="utf-8"), tests.suffix)
+    actual = raw_digest(tests.read_text(encoding="utf-8"))
     approved = fm.get("tests_sha256")
     if a.check:
         state = "FIRMADO-OK" if approved == actual else ("SIN-FIRMAR" if not approved else "DESINCRONIZADO")

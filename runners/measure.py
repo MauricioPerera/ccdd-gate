@@ -38,6 +38,10 @@ def summarize_task(r):
     big = [a for a in atts if _is_big(a["by"])]
     si, so = sum(a.get("in_tok", 0) for a in small), sum(a.get("out_tok", 0) for a in small)
     bi, bo = sum(a.get("in_tok", 0) for a in big), sum(a.get("out_tok", 0) for a in big)
+    # ¿Los tokens son medidos (usage real del provider) o estimados (len//4)?
+    tok_sources = {a.get("tok_source") for a in atts if a.get("tok_source")}
+    tok_kind = "measured" if tok_sources and tok_sources <= {"measured"} else (
+        "estimated" if tok_sources <= {"estimated"} or not tok_sources else "mixed")
     # (a) nuestro flujo: implementación en el pequeño (~0) + grande solo en escalado; gate = 0 tokens.
     ours = _cost(si, so, "small") + _cost(bi, bo, "big")
     # (b) loop grande: MISMOS intentos pero todos en el grande, y como NO hay gate determinista,
@@ -45,7 +49,8 @@ def summarize_task(r):
     tot_in, tot_out, loops = si + bi, so + bo, len(atts)
     big_loop = _cost(tot_in + tot_in, tot_out + loops * REVIEW_OUT_PER_LOOP, "big")
     return {"task": r["task"], "result": r["result"], "attempts": len(atts),
-            "escalations": len(big), "ours_usd": round(ours, 5), "big_loop_usd": round(big_loop, 5)}
+            "escalations": len(big), "tokens": tok_kind,
+            "ours_usd": round(ours, 5), "big_loop_usd": round(big_loop, 5)}
 
 
 def parse_args(argv):
@@ -81,11 +86,23 @@ def main(argv=None):
 
 
 def _aggregate(rows):
-    """(ours_usd, big_loop_usd, passed, api_saving_pct) sobre las filas por tarea."""
+    """(ours_usd, big_loop_usd, passed, api_saving_pct) sobre las filas por tarea.
+
+    api_saving_pct solo es honesto con tokens MEDIDOS (usage real del provider) y
+    al menos un PASS. Con estimación len//4 (stub, o provider que no reporta usage)
+    o corrida sin PASS, devolvemos None y _totals lo reporta como N/A — en vez de
+    inflar un 100% falso apoyado en que el modelo pequeño cuesta $0 por definición.
+    Separar 'estimado' de 'medido' es el punto: sin usage real no hay ahorro real
+    que reportar, solo una proyección.
+    """
     ours = sum(x["ours_usd"] for x in rows)
     loop = sum(x["big_loop_usd"] for x in rows)
     passed = sum(1 for x in rows if x["result"] == "PASS")
-    saving = (1 - ours / loop) * 100 if loop else 0.0
+    measured = any(x["tokens"] == "measured" for x in rows)
+    if measured and passed > 0 and loop > 0:
+        saving = (1 - ours / loop) * 100
+    else:
+        saving = None
     return ours, loop, passed, saving
 
 
@@ -94,7 +111,7 @@ def _totals(rows, ours, loop, passed, saving):
             "escalations": sum(x["escalations"] for x in rows),
             "gate_runs_at_0_tokens": sum(x["attempts"] for x in rows),
             "ours_usd": round(ours, 5), "big_loop_usd": round(loop, 5),
-            "api_saving_pct": round(saving, 1)}
+            "api_saving_pct": (round(saving, 1) if saving is not None else "N/A")}
 
 
 if __name__ == "__main__":

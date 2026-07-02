@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tc_lint  # noqa: E402
+import approve_tests  # noqa: E402  (raw_digest: algoritmo único de tests_sha256)
 import metrics_backends  # noqa: E402
 import deps_check  # noqa: E402  (enforcement OPT-IN de deps_allowed)
 import sig_check  # noqa: E402  (conformidad de firma implementada vs contrato)
@@ -32,14 +33,18 @@ BUDGET_KEY = {"cyclomatic": "cyclomatic_max", "nesting_depth": "nesting_max",
               "parameter_count": "params_max", "function_length": "lines_max"}
 
 
-# gate 0.5 — OK humano (determinista, a prueba de manipulación): si el contrato exige
-# aprobación, los bytes de los tests deben coincidir con el hash que firmó el humano.
+# gate 0.5 — OK humano (determinista, a prueba de manipulación): los bytes de los tests deben
+# coincidir con el hash que firmó el humano. SECURE-BY-DEFAULT: la verificación es DEFAULT-ON;
+# un autor sale explícitamente con `require_test_approval: false`. Así un implementador no puede
+# sustituir el test por `assert True` y pasar sin firma. El hash se calcula con approve_tests.raw_digest
+# (sha256 de bytes normalizados a LF) — el MISMO algoritmo que usa approve_tests para firmar, para
+# que la firma oficial y el gate coincidan siempre (portabilidad CRLF/LF).
 def _gate_test_approval(fm, tests):
-    if not fm.get("require_test_approval"):
+    if fm.get("require_test_approval", True) is False:
         return None
     if not tests.exists():
         return {"verdict": "INVALID", "stage": "test-approval", "detail": f"tests no existe: {fm['tests']}"}
-    actual = hashlib.sha256(tests.read_bytes()).hexdigest()
+    actual = approve_tests.raw_digest(tests.read_text(encoding="utf-8"))
     approved = fm.get("tests_sha256")
     if not approved:
         return {"verdict": "INVALID", "stage": "test-approval",
@@ -110,17 +115,152 @@ def _select_target_fn(fm, fn_name, matches, target_name):
     return matches[0]
 
 
-# gate 2 — complejidad ≤ budget de la task
-def _gate_complexity(fm, target, fn_name, budget):
+# gate 1.5 — anti-rebind del nombre target. El gate mide la `def f` estática por nombre; pero si
+# el módulo hace `f = _real` (o `f = lambda ...`) a nivel de módulo, en runtime `f` es OTRA función
+# NO medida y el gate daría PASS midiendo la cáscara trivial (bypass del arbitro). Detectamos
+# reasignación a nivel de módulo (ast.Assign/ast.AnnAssign cuyo target es Name(fn_name)) aparte de
+# su `def` -> INVALID: el gate no puede medir la función real. Determinista, zero-dep (AST puro).
+def _rebind_target_name(tree, fn_name):
+    """True si fn_name se reasigna a nivel de módulo (Assign/AnnAssign con target Name(fn_name))."""
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else (
+            [node.target] if isinstance(node, ast.AnnAssign) else [])
+        for t in targets:
+            if isinstance(t, ast.Name) and t.id == fn_name:
+                return True
+    return False
+
+
+def _gate_rebind(fm, target, fn_name):
     if not target.exists():
-        return {"verdict": "FAIL", "stage": "gate2-complexity", "detail": f"target no existe: {fm['target']}"}
-    all_fns = metrics_backends.functions_metrics(target.read_text(encoding="utf-8"), language=fm.get("language"), filename=str(target))
+        return None
+    try:
+        tree = ast.parse(target.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return None  # la sintaxis la pesca gate-complexity (envuelta)
+    if _rebind_target_name(tree, fn_name):
+        return {"verdict": "INVALID", "stage": "gate-rebind",
+                "detail": "el nombre del target se reasigna a nivel de módulo; "
+                          "el gate no puede medir la función real"}
+    return None
+
+
+def _over_budget(m, budget):
+    """Lista de 'metric=value > key=budget' para cada métrica sobre el budget. [] si ninguna.
+    Fuente única del criterio sobre-budget: la usan _gate_complexity y _gate_wrapper (sin divergencia)."""
+    return [f"{metric}={m[metric]} > {key}={budget[key]}"
+            for metric, key in BUDGET_KEY.items()
+            if isinstance(budget.get(key), int) and m[metric] > budget[key]]
+
+
+# gate 1.7 — anti-bypass "gate-wrapper" (default-ON, detección ESTRECHA). El gate mide SOLO la
+# función target; un implementador puede dejar el target como un pass-through trivial y esconder
+# toda la complejidad en un sibling de módulo del MISMO archivo que no es target de ningún contrato
+# (`def f(n): return g(n)` con `g` complejo). `f` pasa el budget midiendo la cáscara; `g` (la lógica
+# real) es invisible al gate. Detectamos SOLO delegadores de 1 sentencia `return <Call>` (o `return
+# await <Call>`) a un sibling de módulo, y medimos al sibling con el mismo backend que
+# _gate_complexity. Si el sibling excede el budget -> INVALID: el gate no puede medir la lógica
+# real. Detección depth-1: NO persigue cadenas delegador->delegador (limitación intencional para
+# minimizar falsos positivos). Determinista, zero-dep (AST puro).
+def _is_docstring(stmt):
+    """True si stmt es un Expr con un string literal (docstring inicial de un cuerpo)."""
+    return (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant)
+            and isinstance(stmt.value.value, str))
+
+
+def _callee_name(call):
+    """id del ast.Name llamado si call es `Name(...)` (llamada directa); None si es atributo/otro."""
+    return call.func.id if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) else None
+
+
+def _is_trivial_delegator(fn_node):
+    """Devuelve el id del callee (ast.Name) si fn_node es un pass-through trivial: cuerpo de
+    EXACTAMENTE una sentencia `return <Call>` o `return await <Call>` (ignorando un docstring
+    inicial). None si hace trabajo real (más sentencias, lógica, o return que no es un Call a un
+    Name directo). Detección depth-1: no inspecciona qué hay detrás del callee."""
+    body = fn_node.body
+    if body and _is_docstring(body[0]):
+        body = body[1:]
+    if len(body) != 1 or not isinstance(body[0], ast.Return):
+        return None
+    call = body[0].value
+    if isinstance(call, ast.Await):
+        call = call.value
+    return _callee_name(call)
+
+
+def _module_level_funcs(tree):
+    """Nombres de las def/async def a NIVEL DE MÓDULO del mismo archivo (siblings del target).
+    Excluye importadas (no son definiciones) y anidadas dentro de otras funciones/clases: esas no
+    son siblings contratibles aquí. Determinista, AST puro."""
+    return {n.name for n in tree.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+def _sibling_metric_row(fm, target, name):
+    """Fila de métricas del sibling 'name' medida con el MISMO backend que _gate_complexity.
+    None si el target no parsea o no hay fila para 'name' (p.ej. el nombre es un builtin/import)."""
+    try:
+        funcs = metrics_backends.functions_metrics(
+            target.read_text(encoding="utf-8"), language=fm.get("language"), filename=str(target))
+    except SyntaxError:
+        return None
+    rows = [f for f in funcs if f["function"] == name]
+    return rows[0] if rows else None
+
+
+def _gate_wrapper(fm, target, fn_name, budget):
+    """gate-wrapper (default-ON, detección estrecha). INVALID si el target es un pass-through
+    trivial que delega en un sibling de módulo (no contratado) que excede el budget. Si el target
+    hace trabajo real, o el callee no es un sibling de módulo (atributo/builtin/importado/externo),
+    o el sibling está dentro del budget -> None (no aplica; deja seguir la cadena). Si el target no
+    existe o no parsea, cede al gate correspondiente (back-compat, no duplica diagnósticos)."""
+    if not target.exists():
+        return None
+    try:
+        tree = ast.parse(target.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return None  # la sintaxis la pesca gate1-tests
+    fn = sig_check._find_function(tree, fn_name, fm.get("target_line"))
+    if fn is None:
+        return None  # cede a _gate_complexity para el diagnóstico preciso
+    callee = _is_trivial_delegator(fn)
+    if callee is None or callee not in _module_level_funcs(tree):
+        return None
+    row = _sibling_metric_row(fm, target, callee)
+    if row is None or not _over_budget(row, budget):
+        return None
+    return {"verdict": "INVALID", "stage": "gate-wrapper",
+            "detail": f"el target delega en el sibling de módulo '{callee}' (no contratado) que "
+                      f"excede el budget; el gate no puede medir la lógica real",
+            "sibling": callee,
+            "sibling_metrics": {k: row[k] for k in BUDGET_KEY},
+            "budget": budget}
+
+
+# gate 2 — complejidad ≤ budget de la task
+def _target_metrics(fm, target):
+    """Lee y mide el target. Devuelve (lista_de_funcs, None) o (None, error-dict) si no existe
+    o no parsea. Aislar exists+try/except evita que _gate_complexity trepe el budget de complejidad."""
+    if not target.exists():
+        return None, {"verdict": "FAIL", "stage": "gate2-complexity", "detail": f"target no existe: {fm['target']}"}
+    src = target.read_text(encoding="utf-8")
+    try:
+        return metrics_backends.functions_metrics(src, language=fm.get("language"), filename=str(target)), None
+    except SyntaxError as e:
+        # si el target no parsea y los tests no lo importaban (gate1 calló), entregar un
+        # veredicto JSON en vez de morir con traceback. Determinista.
+        return None, {"verdict": "FAIL", "stage": "gate2-complexity", "detail": f"el target no parsea: {e}"}
+
+
+def _gate_complexity(fm, target, fn_name, budget):
+    all_fns, err = _target_metrics(fm, target)
+    if err:
+        return err
     m = _select_target_fn(fm, fn_name, [f for f in all_fns if f["function"] == fn_name], fm["target"])
     if "verdict" in m:  # dict de error (FAIL/INVALID), no una fila de métricas
         return m
-    over = [f"{metric}={m[metric]} > {key}={budget[key]}"
-            for metric, key in BUDGET_KEY.items()
-            if isinstance(budget.get(key), int) and m[metric] > budget[key]]
+    over = _over_budget(m, budget)
     if over:
         return {"verdict": "FAIL", "stage": "gate2-complexity", "function": fn_name, "over_budget": over}
     return {"verdict": "PASS", "stage": "all", "function": fn_name,
@@ -263,9 +403,34 @@ def _defined_names(tree):
     return names
 
 
+def _ann_string_names(value):
+    """Nombres (ast.Name) dentro de una forward-ref string parseada con `ast.parse(mode='eval')`.
+    Set vacío si la string no parsea (no crashea). Determinista, zero-dep."""
+    try:
+        sub = ast.parse(value, mode="eval")
+    except Exception:
+        return set()
+    return {m.id for m in ast.walk(sub) if isinstance(m, ast.Name)}
+
+
+def _ann_names(ann):
+    """Nombres (ast.Name) dentro de una anotación, incluyendo forward-refs en string: una
+    `ast.Constant` de `str` se parsea con `ast.parse` (vía `_ann_string_names`) y los `Name` de
+    ese sub-árbol se tratan igual que los directos (mismo `defined`/builtins en _gate_annotations).
+    Una string no parseable se ignora (no crashea). Determinista, zero-dep."""
+    out = set()
+    for n in ast.walk(ann):
+        if isinstance(n, ast.Name):
+            out.add(n.id)
+        elif isinstance(n, ast.Constant) and isinstance(n.value, str):
+            out.update(_ann_string_names(n.value))
+    return out
+
+
 def _annotation_name_refs(tree):
-    """Nombres (ast.Name) referenciados en cualquier anotación: args, return, AnnAssign. Las
-    forward-refs en string NO se incluyen (son Constant, no Name)."""
+    """Nombres referenciados en cualquier anotación: args, return, AnnAssign. Las forward-refs
+    en string (`x: "Node"`, `-> "Missing"`, `List["Node"]`) SÍ se incluyen: son `ast.Constant`
+    parseadas por `_ann_names`. El bug que el runtime (<Py3.14) enmascara está justo ahí."""
     refs = set()
     for node in ast.walk(tree):
         anns = []
@@ -277,7 +442,7 @@ def _annotation_name_refs(tree):
             anns = [node.annotation]
         for ann in anns:
             if ann is not None:
-                refs.update(n.id for n in ast.walk(ann) if isinstance(n, ast.Name))
+                refs.update(_ann_names(ann))
     return refs
 
 
@@ -429,18 +594,31 @@ def gate(task_path, _depth=0):
     target = p.parent / fm["target"]
     tests = p.parent / fm["tests"]
     fn_name, _n = tc_lint.parse_sig(fm["signature"], fm.get("language"))
-
-    return (_gate_test_approval(fm, tests)
-            or _gate_run_tests(fm, target, tests, p.parent)
-            or _gate_annotations(fm, target)
-            or _gate_signature(fm, target, fn_name)
-            or _gate_purity(fm, target, fn_name)
-            or _gate_mutdef(fm, target, fn_name)
-            or _gate_bareexcept(fm, target, fn_name)
-            or _gate_assert(fm, target, fn_name)
-            or _gate_nonecmp(fm, target, fn_name)
-            or _gate_deps(fm, target)
-            or _gate_complexity(fm, target, fn_name, fm["budget"]))
+    budget = fm["budget"]
+    # Composición determinista por orden: el primer stage que devuelva un dict no-None gana (semá
+    # ntica idéntica a la cadena de `or` histórica). Un loop fijo baja la ciclomática de gate() sin
+    # cambiar el orden ni el resultado para ningún contrato existente. _gate_complexity (último)
+    # siempre devuelve un veredicto, así que el loop retorna dentro de la iteración final.
+    stages = [
+        lambda: _gate_test_approval(fm, tests),
+        lambda: _gate_run_tests(fm, target, tests, p.parent),
+        lambda: _gate_annotations(fm, target),
+        lambda: _gate_signature(fm, target, fn_name),
+        lambda: _gate_purity(fm, target, fn_name),
+        lambda: _gate_mutdef(fm, target, fn_name),
+        lambda: _gate_bareexcept(fm, target, fn_name),
+        lambda: _gate_assert(fm, target, fn_name),
+        lambda: _gate_nonecmp(fm, target, fn_name),
+        lambda: _gate_deps(fm, target),
+        lambda: _gate_rebind(fm, target, fn_name),
+        lambda: _gate_wrapper(fm, target, fn_name, budget),
+        lambda: _gate_complexity(fm, target, fn_name, budget),
+    ]
+    for st in stages:
+        v = st()
+        if v is not None:
+            return v
+    return None
 
 
 def main():

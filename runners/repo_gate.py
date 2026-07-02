@@ -40,12 +40,17 @@ def _is_production(rel: Path) -> bool:
 
 
 def _scan_file(path: Path):
-    """(crit, high) findings de un archivo, o (None, None) si no hay backend."""
+    """(crit, high) findings de un archivo, o (None, None) si no hay backend.
+    Excepciones de lectura/parseo se reportan estructurado a stderr y NO crashean el gate."""
     try:
         backend = mb.get_backend(filename=path.name)
     except KeyError:
         return None, None
-    det = backend.extract_source(path.read_text(encoding="utf-8"), path.name)
+    try:
+        det = backend.extract_source(path.read_text(encoding="utf-8"), path.name)
+    except Exception as e:
+        print(f"[repo-gate] ERROR leyendo {path}: {e}", file=sys.stderr)
+        return None, None
     findings = det.get("findings", [])
     crit = [f for f in findings if f.get("severity") == "CRÍTICA"]
     high = [f for f in findings if f.get("severity") == "ALTA"]

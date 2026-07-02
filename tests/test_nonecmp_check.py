@@ -41,6 +41,20 @@ class TestNoneEqLines(unittest.TestCase):
         self.assertEqual(none_eq_lines(src, "f", target_line=4), [])
         self.assertEqual(none_eq_lines(src, "f", target_line=1), [2])
 
+    # --- falso positivo por función anidada: el == None de inner NO se atribuye a f ---
+    def test_nested_nonecmp_not_attributed(self):
+        src = (
+            "def f(x):\n"
+            "    def inner(y):\n"
+            "        return y == None\n"
+            "    return x\n"
+        )
+        self.assertEqual(none_eq_lines(src, "f"), [])
+
+    def test_nonecmp_in_nested_block_still_attributed(self):
+        # bloque anidado (if) NO es función anidada -> sigue contando.
+        self.assertEqual(none_eq_lines("def f(x):\n    if x != None:\n        return 1\n    return 0\n", "f"), [2])
+
 
 if __name__ == "__main__":
     unittest.main()

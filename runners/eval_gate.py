@@ -66,6 +66,38 @@ def _gate_cases_approval(fm, cases):
     return None
 
 
+# gate 2 — juez Tier 2 exigido. Si el contrato declara judge.required: true, NO se emite PASS sin
+# evidencia de auditoría VÁLIDA (no-stub) del juez contra el golden set. Este gate no llama al LLM;
+# verifica la POLÍTICA: exige que alguien haya corrido judge_audit con un provider real y registrado
+# el resultado (declaración firmada judge.audit_valid: true, o artefacto judge.audit con
+# audit_valid: true y provider != stub). Sin eso, INVALID: el veredicto Tier 2 no cuenta.
+def _audit_artifact_valid(p, audit_ref):
+    """True si el artefacto judge.audit existe y declara una auditoría válida (no-stub)."""
+    ap = p.parent / audit_ref
+    if not ap.exists():
+        return False
+    try:
+        data = json.loads(ap.read_text(encoding="utf-8"))
+        return data.get("audit_valid") is True and data.get("provider") != "stub"
+    except Exception:
+        return False
+
+
+def _gate_judge(fm, p):
+    judge_cfg = fm.get("judge") or {}
+    if not judge_cfg.get("required"):
+        return None
+    if judge_cfg.get("audit_valid") is True:
+        return None
+    audit_ref = judge_cfg.get("audit")
+    if audit_ref and _audit_artifact_valid(p, audit_ref):
+        return None
+    return _invalid("judge-audit",
+                    "judge.required=true pero no hay auditoría válida del juez (audit_valid=true o "
+                    "artefacto judge.audit no-stub). Corra judge_audit.py con un provider real y "
+                    "registre el resultado antes de habilitar Tier 2.")
+
+
 def _load_jsonl(path):
     return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
@@ -121,6 +153,9 @@ def gate(eval_path):
         return bad
     cases_path = p.parent / fm["dataset"]
     bad = _gate_cases_approval(fm, cases_path)
+    if bad:
+        return bad
+    bad = _gate_judge(fm, p)
     if bad:
         return bad
     target = p.parent / fm["target"]

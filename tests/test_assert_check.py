@@ -33,6 +33,20 @@ class TestAssertLines(unittest.TestCase):
         self.assertEqual(assert_lines(src, "f", target_line=5), [])
         self.assertEqual(assert_lines(src, "f", target_line=1), [2])
 
+    # --- falso positivo por función anidada: el assert de inner NO se atribuye a f ---
+    def test_nested_assert_not_attributed(self):
+        src = (
+            "def f(x):\n"
+            "    def inner(y):\n"
+            "        assert y > 0\n"
+            "    return x\n"
+        )
+        self.assertEqual(assert_lines(src, "f"), [])
+
+    def test_assert_in_nested_block_still_attributed(self):
+        # bloque anidado (if) NO es función anidada -> sigue contando.
+        self.assertEqual(assert_lines("def f(x):\n    if x:\n        assert x\n    return x\n", "f"), [3])
+
 
 if __name__ == "__main__":
     unittest.main()

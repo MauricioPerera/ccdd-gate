@@ -93,6 +93,25 @@ class RulesGate(unittest.TestCase):
         finally:
             shutil.rmtree(d)
 
+    def test_malformed_yaml_is_invalid_not_traceback(self):
+        # flujo de secuencia '[' sin cerrar -> yaml.YAMLError -> INVALID (exit 2), no traceback
+        d = self._repo("check: bare_except\n  files: [src/**/*.py\n", {})
+        try:
+            v = rules_gate.gate(str(d / "rules.yaml"), str(d))
+            self.assertEqual(v["verdict"], "INVALID", v)
+            self.assertIn("mal formado", v["detail"])
+        finally:
+            shutil.rmtree(d)
+
+    def test_missing_rules_file_is_invalid(self):
+        d = Path(tempfile.mkdtemp())
+        try:
+            v = rules_gate.gate(str(d / "nope.yaml"), str(d))
+            self.assertEqual(v["verdict"], "INVALID", v)
+            self.assertIn("no encontrado", v["detail"])
+        finally:
+            shutil.rmtree(d)
+
 
 if __name__ == "__main__":
     unittest.main()

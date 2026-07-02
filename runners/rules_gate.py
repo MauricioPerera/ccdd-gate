@@ -61,9 +61,16 @@ def scan_source(source: str, check: str) -> list:
 
 
 def _load_rules(rules_path):
-    """Lista de reglas {check, files} validadas, o (None, error)."""
+    """Lista de reglas {check, files} validadas, o (None, error). YAML mal formado o
+    archivo ausente → (None, msg) → INVALID (exit 2), SIN traceback (contrato doc)."""
     import yaml
-    data = yaml.safe_load(Path(rules_path).read_text(encoding="utf-8"))
+    p = Path(rules_path)
+    if not p.exists():
+        return None, f"rules.yaml no encontrado: {rules_path}"
+    try:
+        data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        return None, f"rules.yaml mal formado: {e}"
     if not isinstance(data, list):
         return None, "rules debe ser una lista de {check, files}"
     for r in data:

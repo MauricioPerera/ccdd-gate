@@ -20,8 +20,6 @@ import concurrent.futures
 import json
 import os
 import re
-import secrets
-import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -50,21 +48,18 @@ def extract_code(text):
     return (blocks[-1] if blocks else (text or "")).strip() + "\n"
 
 
-def build_prompt(fm, body, feedback, nonce):
+def build_prompt(fm, body, feedback):
     """Prompt prescriptivo desde el contrato + el feedback determinista del gate (si lo hubo)."""
     head = (f"# Task: {fm.get('task')}\n"
             f"Target: {fm['target']}\n"
             f"Firma: {fm['signature']}\n"
             f"Budget: {json.dumps(fm['budget'], ensure_ascii=False)}\n"
             f"deps_allowed: {fm.get('deps_allowed', [])}\n\n")
-    e3_entropy = (f"\n\n## E3 Entropy\n"
-                  f"Es OBLIGATORIO que incluyas exactamente esta línea como comentario al final de tu código:\n"
-                  f"# E3_NONCE: {nonce}\n")
     fb = ("" if not feedback else
           "\n\n## Veredicto de los intentos previos (CORREGIR ESTO)\n```json\n"
           + json.dumps(feedback, ensure_ascii=False, indent=2) + "\n```\n"
           "El gate es determinista: analiza los errores, ajusta el código para pasarlo, no discutas el veredicto.")
-    return head + body + e3_entropy + fb
+    return head + body + fb
 
 
 def run_gate(task_path):
@@ -88,36 +83,65 @@ def generate_candidate(provider, model, prompt, stub_iter, temp):
 
 
 def get_complexity_score(verdict):
-    """Calcula un score simple de complejidad si el veredicto pasó (menor es mejor)."""
+    """Score de complejidad si el veredicto pasó (menor es mejor).
+
+    Suma todas las métricas que el budget limita: cyclomatic, nesting_depth,
+    parameter_count y function_length (lines_max). Ignorar function_length hacía
+    que el torneo pudiera premiar un candidato más largo solo porque empatara en
+    las demás métricas, contradiciendo el budget completo.
+    """
     m = verdict.get("metrics", {})
-    return m.get("cyclomatic", 0) + m.get("nesting_depth", 0) + m.get("parameter_count", 0)
+    return (m.get("cyclomatic", 0) + m.get("nesting_depth", 0)
+            + m.get("parameter_count", 0) + m.get("function_length", 0))
+
+
+def _pick_best(passed_candidates):
+    """Torneo CEFL: elige el candidato de menor complejidad. Desempate determinista
+    por índice de envío (menor índice gana), NO por orden de finalización — el
+    ganador debe ser función solo del código, no del jitter de red."""
+    return min(passed_candidates,
+               key=lambda x: (get_complexity_score(x["verdict"]), x["index"]))
 
 
 def _generate_candidates(provider, model, prompt, stub_iter, temp, candidates_n):
-    """CEFL: genera N candidatos. Serial para stub/N=1; en paralelo (threads) si no."""
-    if provider == "stub" or candidates_n == 1:
-        return [generate_candidate(provider, model, prompt, stub_iter, temp)
-                for _ in range(candidates_n)]
+    """CEFL: genera N candidatos. Serial para stub/N=1; en paralelo (threads) si no.
+
+    El orden de la lista devuelta es el de ENVÍO (índice 0 = primer candidato
+    pedido), NO el de finalización. `as_completed` devuelve por orden de término
+    (jitter de red); reordenamos por índice de envío para que el torneo posterior
+    sea determinista: el ganador depende solo del código, no del tiempo de red.
+
+    Stub: un archivo pre-autorado por intento (ver `--stub`: "repetir por intento
+    en orden"). No tiene sentido la expansión paralela con stub, así que se
+    consume exactamente UN stub por intento, sin importar `--candidates`. Esto es
+    lo que hace que el demo del README produzca "intento 1 FAIL, intento 2 PASS".
+    """
+    if provider == "stub":
+        return [generate_candidate(provider, model, prompt, stub_iter, temp)]
+    if candidates_n == 1:
+        return [generate_candidate(provider, model, prompt, stub_iter, temp)]
     with concurrent.futures.ThreadPoolExecutor(max_workers=candidates_n) as executor:
         futures = [executor.submit(generate_candidate, provider, model, prompt, stub_iter, temp)
                    for _ in range(candidates_n)]
-        return [fut.result() for fut in concurrent.futures.as_completed(futures)]
+        # Conservar el índice de envío y reordenar por él tras recolectar.
+        indexed = {id(fut): i for i, fut in enumerate(futures)}
+        results = [None] * candidates_n
+        for fut in concurrent.futures.as_completed(futures):
+            results[indexed[id(fut)]] = fut.result()
+        return results
 
 
-def _e3_verdict(verdict, code, nonce):
-    """Gate 3: degrada a FAIL si un candidato PASS no incluyó el nonce E3 esperado."""
-    if verdict.get("verdict") == "PASS" and f"# E3_NONCE: {nonce}" not in code:
-        return {"verdict": "FAIL", "stage": "gate3-entropy",
-                "detail": f"El código falló la auditoría criptográfica E3. Olvidaste incluir '# E3_NONCE: {nonce}'"}
-    return verdict
+def _evaluate_candidates(p, target, candidates_code):
+    """Escribe y evalúa cada candidato aisladamente contra el gate determinista.
 
-
-def _evaluate_candidates(p, target, candidates_code, nonce):
-    """Escribe y evalúa cada candidato aisladamente (con Gate 3 E3). Devuelve la lista evaluada."""
+    Devuelve la lista evaluada con el índice de envío de cada candidato (su
+    posición en `candidates_code`), que se usa como desempate determinista en
+    el torneo.
+    """
     evaluated = []
     for idx, code in enumerate(candidates_code):
         target.write_text(code, encoding="utf-8")
-        verdict = _e3_verdict(run_gate(p), code, nonce)
+        verdict = run_gate(p)
         evaluated.append({"index": idx, "code": code, "verdict": verdict})
     return evaluated
 
@@ -133,38 +157,53 @@ def _fail_feedback(evaluated, candidates_n):
 
 def run_rounds(p, fm, body, target, provider, model, max_attempts, label, attempts, feedback, stub_iter, candidates_n, temp):
     """max_attempts intentos. En cada intento, pide `candidates_n` soluciones en paralelo.
-    Si alguna pasa, elige la de menor complejidad (CEFL). Si ninguna pasa, retroalimenta los N fallos."""
+    Si alguna pasa, elige la de menor complejidad (CEFL). Si ninguna pasa, retroalimenta los N fallos.
+
+    El torneo es determinista: ante empate de score gana el candidato de menor
+    índice de envío (no el que terminó primero). Los tokens se reportan como
+    `*_tok_est` (estimación len//4) salvo que el provider aporte uso real.
+    """
     for attempt_num in range(max_attempts):
-        nonce = secrets.token_hex(16)
-        nonce_hash = hashlib.sha256(nonce.encode()).hexdigest()
-        print(f"[E3 Entropy] Generando commit para intento {attempt_num+1}: SHA256={nonce_hash[:16]}...")
-        prompt = build_prompt(fm, body, feedback, nonce)
+        prompt = build_prompt(fm, body, feedback)
 
         candidates_code = _generate_candidates(provider, model, prompt, stub_iter, temp, candidates_n)
+        n_candidates = len(candidates_code)
         original_target_code = target.read_text(encoding="utf-8") if target.exists() else ""
-        evaluated = _evaluate_candidates(p, target, candidates_code, nonce)
+        evaluated = _evaluate_candidates(p, target, candidates_code)
 
         passed_candidates = [e for e in evaluated if e["verdict"].get("verdict") == "PASS"]
         if passed_candidates:
-            # Ordenar por el score de complejidad (CEFL freezing best) y congelar el ganador
-            passed_candidates.sort(key=lambda x: get_complexity_score(x["verdict"]))
-            best = passed_candidates[0]
+            # Torneo: menor score gana; desempate determinista por índice de envío
+            # (NO por orden de finalización, que depende del jitter de red).
+            best = _pick_best(passed_candidates)
             target.write_text(best["code"], encoding="utf-8")
+            in_tok, out_tok, tok_source = _token_usage(prompt, best["code"], best["verdict"])
             attempts.append({"n": attempt_num + 1, "by": label,
                              "verdict": "PASS", "stage": best["verdict"].get("stage"),
-                             "cefl_candidates": candidates_n,
-                             "in_tok": len(prompt) // 4, "out_tok": len(best["code"]) // 4,
-                             "e3_hash": nonce_hash})
+                             "cefl_candidates": n_candidates,
+                             "in_tok": in_tok, "out_tok": out_tok,
+                             "tok_source": tok_source,
+                             "best_candidate_index": best["index"],
+                             "best_complexity_score": get_complexity_score(best["verdict"])})
             return True, None
 
         # Ninguno pasó: restaurar código original y preparar feedback combinado
         target.write_text(original_target_code, encoding="utf-8")
         attempts.append({"n": attempt_num + 1, "by": label,
                          "verdict": "FAIL", "stage": "all_candidates_failed",
-                         "cefl_candidates": candidates_n})
-        feedback = _fail_feedback(evaluated, candidates_n)
+                         "cefl_candidates": n_candidates})
+        feedback = _fail_feedback(evaluated, n_candidates)
 
     return False, feedback
+
+
+def _token_usage(prompt, code, verdict):
+    """Tokens consumidos por el intento. Usa el usage real del provider si está en el
+    veredicto; si no, estima len//4 y lo etiqueta como 'estimado'."""
+    usage = (verdict or {}).get("usage") or {}
+    if usage.get("in_tok") is not None and usage.get("out_tok") is not None:
+        return usage["in_tok"], usage["out_tok"], "measured"
+    return len(prompt) // 4, len(code) // 4, "estimated"
 
 
 def implement(task_path, provider, model, max_attempts, escalate, esc_attempts, stub_iter,

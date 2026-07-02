@@ -42,6 +42,31 @@ class TestBareExcept(unittest.TestCase):
         self.assertEqual(bare_except_lines(src, "f", target_line=7), [])
         self.assertEqual(bare_except_lines(src, "f", target_line=1), [4])
 
+    # --- except (): tupla vacía atrapa todo igual que except: (falso negativo: type es Tuple, no None) ---
+    def test_empty_tuple_is_bare(self):
+        src = "def f():\n    try:\n        pass\n    except ():\n        pass\n"
+        self.assertEqual(bare_except_lines(src, "f"), [4])
+
+    def test_nonempty_tuple_not_bare(self):
+        src = "def f():\n    try:\n        pass\n    except (ValueError, KeyError):\n        pass\n"
+        self.assertEqual(bare_except_lines(src, "f"), [])
+
+    # --- falso positivo por función anidada: el except desnudo de inner NO se atribuye a f ---
+    def test_nested_bare_not_attributed(self):
+        src = (
+            "def f():\n"
+            "    try:\n"
+            "        pass\n"
+            "    except ValueError:\n"
+            "        def inner():\n"
+            "            try:\n"
+            "                pass\n"
+            "            except:\n"
+            "                pass\n"
+            "    return 1\n"
+        )
+        self.assertEqual(bare_except_lines(src, "f"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

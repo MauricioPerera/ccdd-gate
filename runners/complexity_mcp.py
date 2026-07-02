@@ -561,6 +561,11 @@ def request_human_attestation(args):
     fname = args.get("filename", "snippet.py")
     if not code or not reason:
         return {"error": "Falta el código o la justificación (reason)."}
+    # Path-traversal: el `agent` construye CONTRACTS/<agent>/pending_attestations. Un valor como
+    # "../../x" escapa de contracts/. Se valida contra el registro AGENTS ANTES de armar el path
+    # (mismo criterio que _agent_dir, pero aquí rechazamos en vez de caer al default silencioso).
+    if agent not in AGENTS:
+        return {"error": f"agent inválido: {agent!r} (debe ser uno de {sorted(AGENTS)})"}
 
     try:
         import semantic_hash
@@ -570,7 +575,8 @@ def request_human_attestation(args):
         import hashlib
         h = hashlib.sha256(code.encode("utf-8")).hexdigest()
 
-    out_dir = CONTRACTS / agent / "pending_attestations"
+    out_dir, _ = _agent_dir(agent)
+    out_dir = out_dir / "pending_attestations"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / f"{h}.json"
 
@@ -692,6 +698,21 @@ def extract_brace_block(source, signature):
         return None, -1, -1
     return source[idx:end], idx, end
 
+def _contained_path(base, rel):
+    """Resuelve `rel` bajo `base` y exige que caiga DENTRO de base.resolve() (no absoluto, no `..`).
+    Devuelve la ruta resuelta, o None si escapa del directorio del contrato. Patrón que ya usa
+    lint_task_contract para test_code: contención por resolve().relative_to()."""
+    if not isinstance(rel, str) or Path(rel).is_absolute():
+        return None
+    base_res = base.resolve()
+    cand = (base / rel).resolve()
+    try:
+        cand.relative_to(base_res)
+    except ValueError:
+        return None
+    return cand
+
+
 def _prepare_ephemeral_task(args):
     """Carga el task-contract y el target. Devuelve (ctx, None) o (None, error_dict)."""
     task_path = args.get("task_path")
@@ -701,7 +722,12 @@ def _prepare_ephemeral_task(args):
     try:
         task_content = tp.read_text(encoding="utf-8")
         fm, _body = tc_lint.split_front_matter(task_content)
-        target = tp.parent / fm["target"]
+        # Path-traversal: un `target` absoluto o con `..` en el front-matter escapa del directorio
+        # del contrato y luego _apply_new_code ESCRIBE ahí el código del modelo. Contención estricta.
+        target = _contained_path(tp.parent, fm["target"])
+        if target is None:
+            return None, {"status": "FAIL",
+                          "reason": "target inválido: escapa del directorio del contrato"}
         if not target.exists():
             return None, {"status": "FAIL", "reason": f"Target no encontrado: {target}"}
         original_source = target.read_text(encoding="utf-8")
@@ -914,12 +940,19 @@ def eval_rubric(args):
 
 
 def judge_audit(args):
-    """Calibra el juez Tier 2 contra el golden set (ver runners/judge_audit.py). Provider stub por defecto."""
+    """Calibra el juez Tier 2 contra el golden set (ver runners/judge_audit.py). Provider stub por defecto.
+
+    SSRF: el schema solo declara `eval_path`, pero antes el handler leía `provider`/`api_url` de args
+    y los pasaba a judge_audit.audit → un cliente podía redirigir las llamadas del juez Tier 2 a un
+    endpoint arbitrario. Ahora el SERVIDOR/operador los fija (mismo patrón que run_ephemeral_agent):
+    el LLM no puede elegir endpoint. El operador puede sobreescribir por entorno."""
     import judge_audit as _ja
     path = args.get("eval_path")
     if not isinstance(path, str) or not path or not Path(path).exists():
         return {"ok": False, "detail": f"eval-contract no encontrado en disco: {path}"}
-    return _ja.audit(path, provider=args.get("provider", "stub"), api_url=args.get("api_url", ""))
+    provider = os.environ.get("CCDD_JUDGE_PROVIDER", "stub")
+    api_url = os.environ.get("CCDD_JUDGE_API", "")
+    return _ja.audit(path, provider=provider, api_url=api_url)
 
 
 def scan_dependencies(args):
@@ -1008,14 +1041,19 @@ def send(mid, result=None, error=None):
 
 
 def handle_tools_call(mid, params):
-    name = params["name"]
+    name = params.get("name")
+    if not isinstance(name, str):
+        return send(mid, error={"code": -32602, "message": "tools/call requiere 'name' (string)"})
     fn = DISPATCH.get(name)
     if not fn:
         return send(mid, error={"code": -32601, "message": f"tool desconocida: {name}"})
     try:
         out = fn(params.get("arguments", {}))
     except Exception as e:
-        return send(mid, {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True})
+        # El detalle (posiblemente con rutas) va a stderr, no al cliente.
+        print(f"tool {name} falló: {e}", file=sys.stderr)
+        return send(mid, {"content": [{"type": "text", "text": f"error ejecutando tool {name}"}],
+                          "isError": True})
     return send(mid, {"content": [{"type": "text", "text": json.dumps(out, ensure_ascii=False)}]})
 
 
@@ -1029,17 +1067,40 @@ def handle(msg):
     if method == "tools/list":
         return send(mid, {"tools": TOOLS})
     if method == "tools/call":
-        return handle_tools_call(mid, msg["params"])
+        params = msg.get("params")
+        if not isinstance(params, dict):
+            return send(mid, error={"code": -32602, "message": "params inválidos para tools/call"})
+        return handle_tools_call(mid, params)
     if mid is None:
         return None  # notificación (p.ej. notifications/initialized): no se responde
     return send(mid, error={"code": -32601, "message": f"método no soportado: {method}"})
 
 
+def _jsonrpc_error(mid, code, message):
+    send(mid, error={"code": code, "message": message})
+
+
 def main():
+    # JSON-RPC robusto: un request malformado (no-dict, sin name, JSON roto, batch array) NO debe
+    # tirar el servidor. Parse y dispatch por línea envueltos; el detalle se loguea a stderr, el
+    # cliente recibe un error JSON-RPC bien formado (-32700/-32600/-32603) y el loop sigue vivo.
     for line in sys.stdin:
         line = line.strip()
-        if line:
-            handle(json.loads(line))
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            _jsonrpc_error(None, -32700, "parse error")
+            continue
+        if not isinstance(msg, dict):
+            _jsonrpc_error(None, -32600, "invalid request: se esperaba un objeto JSON-RPC")
+            continue
+        try:
+            handle(msg)
+        except Exception as e:
+            print(f"internal error dispatcheando: {e}", file=sys.stderr)
+            _jsonrpc_error(msg.get("id"), -32603, "internal error")
 
 
 if __name__ == "__main__":

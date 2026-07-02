@@ -8,8 +8,10 @@ deps_allowed: []
 forbids: ["bucle while", "estado global", "print"]
 depends_on: ["OPCODES: dict[int, tuple[str, int]] (ya definido en el módulo)"]
 tests: test_decode_instruction.py
+test_command: "python -m unittest test_decode_instruction.py"
 spec_version: "0.1"
 sign: true
+require_test_approval: false
 ---
 
 ## Intent

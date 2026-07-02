@@ -34,8 +34,11 @@ def _contracts(root):
 
 
 def _imported_stems(pyfile):
-    """Conjunto de nombres importados por un .py (último componente de cada módulo + nombres
-    traídos por `from x import y`). Determinista vía AST; '' si no parsea."""
+    """Stems de MÓDULOS importados por un .py (último componente de cada módulo). Para `import x`
+    cuenta el stem del módulo `x`; para `from a import b` cuenta el stem del módulo de origen `a`
+    y NO el símbolo `b` — un nombre de símbolo no es un módulo target, así que `from pkg.helper
+    import util` no hace componer a `util.py` (falso positivo previo). Determinista vía AST; set
+    vacío si no parsea."""
     try:
         tree = ast.parse(Path(pyfile).read_text(encoding="utf-8"))
     except Exception:
@@ -45,11 +48,8 @@ def _imported_stems(pyfile):
         if isinstance(n, ast.Import):
             for a in n.names:
                 stems.add(a.name.split(".")[-1])
-        elif isinstance(n, ast.ImportFrom):
-            if n.module:
-                stems.add(n.module.split(".")[-1])
-            for a in n.names:
-                stems.add(a.name)
+        elif isinstance(n, ast.ImportFrom) and n.module:
+            stems.add(n.module.split(".")[-1])
     return stems
 
 
@@ -81,9 +81,14 @@ def audit(root):
     funciones que importan a otro target sin un kind:group; `behavior_verified` por arista distingue
     deuda de FORMA (el test del composer ejercita los hijos reales) de deuda de COMPORTAMIENTO (el
     test mockea o falta -> el ensamble NO se verifica). `ok` = sin deuda de comportamiento. Rutas
-    relativas a `root`."""
+    relativas a `root`.
+
+    Los targets se indexan por ruta relativa (no por stem) para no perder homónimos por directorio
+    (`aacs/schema.py` y `b/schema.py` colisionaban por stem → last-wins perdía uno); el matching
+    sigue siendo por stem de MÓDULO importado (ver `_imported_stems`)."""
     rootp = Path(root).resolve()
-    funcs = {}        # stem -> (cpath, target, test)
+    funcs = {}        # rel_target -> (cpath, target, test)
+    by_stem = {}      # stem -> [rel_target, ...] (homónimos por dir no se pierden)
     grouped = set()
     groups = 0
     for p, fm in _contracts(root):
@@ -92,12 +97,17 @@ def audit(root):
             grouped.update((p.parent / ch).resolve() for ch in (fm.get("children") or []))
         elif "target" in fm:
             test = (p.parent / fm["tests"]) if fm.get("tests") else None
-            funcs[Path(fm["target"]).stem] = (p.resolve(), p.parent / fm["target"], test)
+            tgt = p.parent / fm["target"]
+            rel = _rel(tgt.resolve(), rootp)
+            funcs[rel] = (p.resolve(), tgt, test)
+            by_stem.setdefault(Path(tgt).stem, []).append(rel)
     uncovered = []
-    for stem, (cpath, tgt, test) in sorted(funcs.items()):
+    for rel, (cpath, tgt, test) in sorted(funcs.items()):
         if not tgt.exists():
             continue
-        composes = sorted(s for s in funcs if s != stem and s in _imported_stems(tgt))
+        own = Path(tgt).stem
+        imported = _imported_stems(tgt)
+        composes = sorted(s for s in by_stem if s != own and s in imported)
         if composes and cpath not in grouped:
             uncovered.append({"contract": _rel(cpath, rootp), "composes": composes,
                               "behavior_verified": _test_verifies(test)})

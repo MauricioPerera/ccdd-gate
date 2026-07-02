@@ -2,7 +2,13 @@
 (glm) bajo el CCDD gate. No editar a mano (el experimento mide al implementador)."""
 import ast
 
-_MUTABLE_FACTORIES = {"list", "dict", "set"}
+
+# fábricas mutables invocables como Name: list/dict/set/bytearray() y, vía `from collections import
+# X`, también defaultdict/deque/OrderedDict().
+_MUTABLE_FACTORIES = {"list", "dict", "set", "bytearray"}
+_COLLECTION_FACTORIES = {"defaultdict", "deque", "OrderedDict"}
+# dict.fromkeys(...) construye un dict mutable.
+_DICT_FACTORY_ATTRS = {"fromkeys"}
 
 
 def _find_function(tree, fn_name, target_line=None):
@@ -21,12 +27,44 @@ def _find_function(tree, fn_name, target_line=None):
     return first
 
 
-def _is_mutable_default(node):
-    """True si el default es literal List/Dict/Set o Call a Name en {list,dict,set}."""
+def _is_mutable_receiver(node):
+    """True si node es un receptor mutable: literal List/Dict/Set o un Call a fábrica mutable
+    (list()/dict()/set()/bytearray()/collections.*/dict.fromkeys()/...)."""
     if isinstance(node, (ast.List, ast.Dict, ast.Set)):
         return True
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-        return node.func.id in _MUTABLE_FACTORIES
+    if isinstance(node, ast.Call):
+        return _is_mutable_call(node)
+    return False
+
+
+def _is_mutable_call(call):
+    """True si call construye un objeto mutable: list/dict/set/bytearray(), collections.defaultdict/
+    deque/OrderedDict() (vía atributo o Name importado), dict.fromkeys(...), o <receptor mutable>.copy().
+    frozenset()/tuple() NO son mutables (no se marcan)."""
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id in _MUTABLE_FACTORIES or func.id in _COLLECTION_FACTORIES
+    if isinstance(func, ast.Attribute):
+        attr = func.attr
+        # collections.defaultdict/deque/OrderedDict()
+        if attr in _COLLECTION_FACTORIES and isinstance(func.value, ast.Name) and func.value.id == "collections":
+            return True
+        # dict.fromkeys(...)
+        if attr in _DICT_FACTORY_ATTRS and isinstance(func.value, ast.Name) and func.value.id == "dict":
+            return True
+        # <mutable>.copy()  (p.ej. [].copy(), {}.copy(), list().copy(), dict.fromkeys(k).copy())
+        if attr == "copy" and _is_mutable_receiver(func.value):
+            return True
+        return False
+    return False
+
+
+def _is_mutable_default(node):
+    """True si el default es literal List/Dict/Set o un Call que construye un mutable."""
+    if isinstance(node, (ast.List, ast.Dict, ast.Set)):
+        return True
+    if isinstance(node, ast.Call):
+        return _is_mutable_call(node)
     return False
 
 

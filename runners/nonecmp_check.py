@@ -19,6 +19,17 @@ def _find_function(tree, fn_name, target_line=None):
     return first
 
 
+def _walk_local(root):
+    """Yield root y cada descendiente, SIN descender en FunctionDef/AsyncFunctionDef/Lambda anidados.
+    Los antipatrones de una función/lambda anidados pertenecen a esa función interna, no al target
+    exterior (falso positivo: atribuirlos al target)."""
+    yield root
+    for child in ast.iter_child_nodes(root):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        yield from _walk_local(child)
+
+
 def _has_none_operand(operands):
     """True si algún operando es ast.Constant con valor None."""
     return any(isinstance(o, ast.Constant) and o.value is None for o in operands)
@@ -41,5 +52,6 @@ def none_eq_lines(source: str, fn_name: str, target_line: int = None) -> list:
     fn = _find_function(tree, fn_name, target_line)
     if fn is None:
         return []
-    lines = [n.lineno for n in ast.walk(fn) if _is_eq_none_cmp(n)]
+    # NO desciende en funciones/lambdas anidados: sus comparaciones pertenecen a la función interna.
+    lines = [n.lineno for n in _walk_local(fn) if _is_eq_none_cmp(n)]
     return sorted(set(lines))

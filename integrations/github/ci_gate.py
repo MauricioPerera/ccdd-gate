@@ -168,7 +168,13 @@ def main(argv=None):
         if extra:
             body = body.rstrip() + "\n\n" + extra
     print(body)
-    _maybe_post(a, body)
+    # El posting (comentar en el PR) es best-effort: un fallo de `gh` (p.ej. token
+    # read-only en PRs de fork) NO debe pisar el veredicto del gate. Se loguea a stderr
+    # y el exit code sigue al veredicto, no a la capacidad de comentar.
+    try:
+        _maybe_post(a, body)
+    except Exception as e:
+        print(f"[ci-gate] posting falló (no afecta el veredicto del gate): {e}", file=sys.stderr)
     ok = overall_pass(results) and audit.get("ok", True) and ann.get("ok", True) and not survivors
     return 0 if ok else 1
 
