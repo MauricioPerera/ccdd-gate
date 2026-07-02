@@ -11,7 +11,7 @@ depends_on: ["OPCODES: dict[int, tuple[str, int]] (ya definido en el módulo)"]
 tests: test_decode_instruction.py
 spec_version: "0.1"
 sign: true
-tests_sha256: "c339d9cff0ae59b4fdf37c6f36a538e1942e573b9c4040e3ac9fbfd4b855d9ce"
+tests_sha256: "cdf60f86f46822a9cd1201b7719e1e524846a18f70ad3caee8c9a4da3914f8ad"
 ---
 
 ## Intent

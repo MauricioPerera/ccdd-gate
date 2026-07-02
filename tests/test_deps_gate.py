@@ -38,6 +38,7 @@ deps_allowed: {deps_allowed}
 {enforce}tests: test_x.py
 forbids: ["estado global"]
 spec_version: "0.1"
+require_test_approval: false
 ---
 
 ## Intent

@@ -58,20 +58,44 @@ def resolve_backend(path):
         return None
 
 
-def _is_exempt(code_str, ext):
-    """(exento, hash) — exento si hay una excepción firmada para el hash semántico."""
+EXEMPTION_SLOT = "complexity_exception"
+# Target firmado por el revisor: el mensaje Ed25519 es f"{EXEMPTION_SLOT}:{hash}".
+# Debe coincidir con review_attestations.EXEMPTION_SLOT — firma y verificación usan el
+# MISMO slot, o la firma no verifica.
+
+
+def _load_json(path):
+    """JSON del path o None si no existe / no parsea (defensivo, sin traceback)."""
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _is_exempt(code_str, ext, contract_dir=None):
+    """(exento, hash) — exento SÓLO si una excepción FIRMADA (Ed25519) por un revisor
+    REGISTRADO cubre el hash semántico del código. Sin firma válida → NO exento.
+
+    Hash: semantic_hash.get_semantic_hash — el MISMO que usa request_human_attestation
+    al crear la petición. Lo firmado (msg EXEMPTION_SLOT:hash) y lo comparado
+    (content_sha256) es ese hash semántico, no el crudo: evita mismatch semántico/crudo.
+    Reusa ccdd.valid_signers (misma mecánica que R6 para slots críticos estáticos)."""
     import semantic_hash
     h = semantic_hash.get_semantic_hash(code_str, ext)
-    contract_dir = Path(__file__).resolve().parent.parent / "contracts" / "complexity-agent"
-    attest_path = contract_dir / "attestations.json"
-    if not attest_path.exists():
-        return False, h
-    attest = json.loads(attest_path.read_text(encoding="utf-8"))
+    base = contract_dir or (Path(__file__).resolve().parent.parent / "contracts" / "complexity-agent")
+    attest = _load_json(base / "attestations.json") or {}
+    registry = _load_json(base / "reviewers.json")
+    if not registry:
+        return False, h  # sin registro de revisores no hay firma verificable
     exceptions = attest.get("complexity_exception", [])
     if isinstance(exceptions, dict):
         exceptions = [exceptions]
-    exempt = any(exc.get("content_sha256") == h for exc in exceptions)
-    return exempt, h
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import ccdd  # noqa: E402  (lib upstream; reusa sign/verify Ed25519 de R6)
+    signers = ccdd.valid_signers(exceptions, registry, EXEMPTION_SLOT, h)
+    return bool(signers), h
 
 
 def _report_findings(path, det):

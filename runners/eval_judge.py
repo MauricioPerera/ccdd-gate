@@ -6,13 +6,17 @@ llamar a un LLM, y su veredicto NO cuenta hasta que el juez pase judge_audit con
 Determinismo acotado: el modelo se pinnea en el eval-contract y se llama con temperature 0. Aun
 así, la salida de un proveedor puede derivar entre versiones; por eso judge_audit es obligatorio
 y el CI re-corre la calibración. El provider 'stub' (offline, determinista) devuelve el
-golden_judgment del caso: sirve para ejercitar la mecánica sin modelo."""
+golden_judgment del caso: sirve para ejercitar la mecánica sin modelo — pero NO habilita Tier 2
+(ver judge_audit.py: una auditoría stub no cuenta)."""
 import json
 import re
 
 
 def judge_stub(output, case, rubric, model, api_url):
-    """Determinista, offline: devuelve el golden_judgment del caso (pass/5 por defecto)."""
+    """Determinista, offline: devuelve el golden_judgment del caso (pass/5 por defecto).
+
+    Tautológico por construcción: por eso una auditoría con provider stub NO habilita Tier 2
+    (judge_audit marca audit_valid=False para stub). Solo ejercita la mecánica del pipeline."""
     g = case.get("golden_judgment") or {}
     return {"verdict": g.get("verdict", "pass"), "score": g.get("score", 5), "provider": "stub"}
 
@@ -57,4 +61,12 @@ PROVIDERS = {"stub": judge_stub, "openai": judge_openai}
 
 
 def judge(output, case, rubric, provider="stub", model="", api_url=""):
-    return PROVIDERS.get(provider, judge_stub)(output, case, rubric, model, api_url)
+    """Devuelve el veredicto del juez para (output, case) según el rubric.
+
+    provider desconocido → ValueError explícito. NUNCA cae a stub en silencio: un fallback mudo
+    enmascararía un typo del contrato como 'juez calibrado' y validaría Tier 2 sin modelo."""
+    fn = PROVIDERS.get(provider)
+    if fn is None:
+        raise ValueError(
+            f"provider de juez no soportado: {provider!r} (soportados: {sorted(PROVIDERS)})")
+    return fn(output, case, rubric, model, api_url)

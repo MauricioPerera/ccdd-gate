@@ -100,8 +100,15 @@ class TestTaskGate(unittest.TestCase):
         self.assertEqual(v["stage"], "gate1-tests")
 
     def test_invalid_unapproved_tests(self):
-        p = _variant(budget_repl=("spec_version:", "require_test_approval: true\nspec_version:"))
+        # secure-by-default: con require_test_approval default-ON, un contrato sin tests_sha256
+        # válido es INVALID/test-approval. El sandbox firmado se copia y se le QUITA la firma
+        # -> genuinely unapproved. (Antes este test se apoyaba en el mismatch de hash
+        # semantic-vs-raw para pasar; unificado el algoritmo, el bug enshrinado desaparece.)
+        p = _variant()
         try:
+            text = "".join(ln for ln in p.read_text(encoding="utf-8").splitlines(keepends=True)
+                           if not ln.lstrip().startswith("tests_sha256:"))
+            p.write_text(text, encoding="utf-8")
             v = task_gate.gate(str(p))
         finally:
             shutil.rmtree(p.parent, ignore_errors=True)
@@ -413,6 +420,83 @@ class TestTestsAssert(unittest.TestCase):
     def test_non_python_skipped(self):
         # JS: las aserciones tienen otra forma; la regla se omite (no falso positivo).
         self.assertNotIn("tc-tests-assert", self._rules("f(1)\n", lang="javascript"))
+
+
+class TestApproveGateIntegration(unittest.TestCase):
+    """Integración approve_tests -> task_gate: la firma oficial (approve_tests) debe ser
+    aceptada por el gate (PASS con tests intactos), y un test tampereado sin re-firmar debe
+    dar INVALID/test-approval. Regresión del mismatch de hash: antes approve_tests firmaba con
+    semantic_hash (AST) y task_gate verificaba con sha256 crudo -> nunca coincidían sobre .py.
+    Ahora ambos usan approve_tests.raw_digest (sha256 de bytes normalizados a LF)."""
+
+    def _setup(self):
+        d = Path(tempfile.mkdtemp())
+        shutil.copy(TEST, d / "test_decode_instruction.py")
+        (d / "disassembler.py").write_text(GOOD_IMPL.read_text(encoding="utf-8"), encoding="utf-8")
+        task = "".join(ln for ln in TASK.read_text(encoding="utf-8").splitlines(keepends=True)
+                       if not ln.lstrip().startswith("tests_sha256:"))
+        (d / "task.md").write_text(task, encoding="utf-8")
+        return d, d / "task.md"
+
+    def test_signed_test_is_accepted(self):
+        d, task = self._setup()
+        try:
+            import approve_tests
+            self.assertEqual(approve_tests.main([str(task)]), 0)  # firma la versión actual
+            v = task_gate.gate(str(task))
+            self.assertEqual(v["verdict"], "PASS", v)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_tampered_test_without_resign_is_invalid(self):
+        d, task = self._setup()
+        try:
+            import approve_tests
+            approve_tests.main([str(task)])  # firma
+            tf = d / "test_decode_instruction.py"
+            tf.write_text(tf.read_text(encoding="utf-8") + "\n# tamper\n", encoding="utf-8")
+            v = task_gate.gate(str(task))
+            self.assertEqual(v["verdict"], "INVALID", v)
+            self.assertEqual(v["stage"], "test-approval")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class TestApproveGateIntegration(unittest.TestCase):
+    """Integracion approve_tests -> task_gate: la firma oficial debe ser aceptada (PASS) y un
+    test tampereado sin re-firmar -> INVALID/test-approval. Regresion del mismatch de hash."""
+
+    def _setup(self):
+        d = Path(tempfile.mkdtemp())
+        shutil.copy(TEST, d / "test_decode_instruction.py")
+        (d / "disassembler.py").write_text(GOOD_IMPL.read_text(encoding="utf-8"), encoding="utf-8")
+        task = "".join(ln for ln in TASK.read_text(encoding="utf-8").splitlines(keepends=True)
+                       if not ln.lstrip().startswith("tests_sha256:"))
+        (d / "task.md").write_text(task, encoding="utf-8")
+        return d, d / "task.md"
+
+    def test_signed_test_is_accepted(self):
+        d, task = self._setup()
+        try:
+            import approve_tests
+            self.assertEqual(approve_tests.main([str(task)]), 0)
+            v = task_gate.gate(str(task))
+            self.assertEqual(v["verdict"], "PASS", v)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_tampered_test_without_resign_is_invalid(self):
+        d, task = self._setup()
+        try:
+            import approve_tests
+            approve_tests.main([str(task)])
+            tf = d / "test_decode_instruction.py"
+            tf.write_text(tf.read_text(encoding="utf-8") + "\n# tamper\n", encoding="utf-8")
+            v = task_gate.gate(str(task))
+            self.assertEqual(v["verdict"], "INVALID", v)
+            self.assertEqual(v["stage"], "test-approval")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":

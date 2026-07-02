@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tc_lint  # noqa: E402
+import approve_tests  # noqa: E402  (raw_digest: algoritmo único de tests_sha256)
 import metrics_backends  # noqa: E402
 import deps_check  # noqa: E402  (enforcement OPT-IN de deps_allowed)
 import sig_check  # noqa: E402  (conformidad de firma implementada vs contrato)
@@ -32,14 +33,18 @@ BUDGET_KEY = {"cyclomatic": "cyclomatic_max", "nesting_depth": "nesting_max",
               "parameter_count": "params_max", "function_length": "lines_max"}
 
 
-# gate 0.5 — OK humano (determinista, a prueba de manipulación): si el contrato exige
-# aprobación, los bytes de los tests deben coincidir con el hash que firmó el humano.
+# gate 0.5 — OK humano (determinista, a prueba de manipulación): los bytes de los tests deben
+# coincidir con el hash que firmó el humano. SECURE-BY-DEFAULT: la verificación es DEFAULT-ON;
+# un autor sale explícitamente con `require_test_approval: false`. Así un implementador no puede
+# sustituir el test por `assert True` y pasar sin firma. El hash se calcula con approve_tests.raw_digest
+# (sha256 de bytes normalizados a LF) — el MISMO algoritmo que usa approve_tests para firmar, para
+# que la firma oficial y el gate coincidan siempre (portabilidad CRLF/LF).
 def _gate_test_approval(fm, tests):
-    if not fm.get("require_test_approval"):
+    if fm.get("require_test_approval", True) is False:
         return None
     if not tests.exists():
         return {"verdict": "INVALID", "stage": "test-approval", "detail": f"tests no existe: {fm['tests']}"}
-    actual = hashlib.sha256(tests.read_bytes()).hexdigest()
+    actual = approve_tests.raw_digest(tests.read_text(encoding="utf-8"))
     approved = fm.get("tests_sha256")
     if not approved:
         return {"verdict": "INVALID", "stage": "test-approval",
@@ -110,11 +115,55 @@ def _select_target_fn(fm, fn_name, matches, target_name):
     return matches[0]
 
 
-# gate 2 — complejidad ≤ budget de la task
-def _gate_complexity(fm, target, fn_name, budget):
+# gate 1.5 — anti-rebind del nombre target. El gate mide la `def f` estática por nombre; pero si
+# el módulo hace `f = _real` (o `f = lambda ...`) a nivel de módulo, en runtime `f` es OTRA función
+# NO medida y el gate daría PASS midiendo la cáscara trivial (bypass del arbitro). Detectamos
+# reasignación a nivel de módulo (ast.Assign/ast.AnnAssign cuyo target es Name(fn_name)) aparte de
+# su `def` -> INVALID: el gate no puede medir la función real. Determinista, zero-dep (AST puro).
+def _rebind_target_name(tree, fn_name):
+    """True si fn_name se reasigna a nivel de módulo (Assign/AnnAssign con target Name(fn_name))."""
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else (
+            [node.target] if isinstance(node, ast.AnnAssign) else [])
+        for t in targets:
+            if isinstance(t, ast.Name) and t.id == fn_name:
+                return True
+    return False
+
+
+def _gate_rebind(fm, target, fn_name):
     if not target.exists():
-        return {"verdict": "FAIL", "stage": "gate2-complexity", "detail": f"target no existe: {fm['target']}"}
-    all_fns = metrics_backends.functions_metrics(target.read_text(encoding="utf-8"), language=fm.get("language"), filename=str(target))
+        return None
+    try:
+        tree = ast.parse(target.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return None  # la sintaxis la pesca gate-complexity (envuelta)
+    if _rebind_target_name(tree, fn_name):
+        return {"verdict": "INVALID", "stage": "gate-rebind",
+                "detail": "el nombre del target se reasigna a nivel de módulo; "
+                          "el gate no puede medir la función real"}
+    return None
+
+
+# gate 2 — complejidad ≤ budget de la task
+def _target_metrics(fm, target):
+    """Lee y mide el target. Devuelve (lista_de_funcs, None) o (None, error-dict) si no existe
+    o no parsea. Aislar exists+try/except evita que _gate_complexity trepe el budget de complejidad."""
+    if not target.exists():
+        return None, {"verdict": "FAIL", "stage": "gate2-complexity", "detail": f"target no existe: {fm['target']}"}
+    src = target.read_text(encoding="utf-8")
+    try:
+        return metrics_backends.functions_metrics(src, language=fm.get("language"), filename=str(target)), None
+    except SyntaxError as e:
+        # si el target no parsea y los tests no lo importaban (gate1 calló), entregar un
+        # veredicto JSON en vez de morir con traceback. Determinista.
+        return None, {"verdict": "FAIL", "stage": "gate2-complexity", "detail": f"el target no parsea: {e}"}
+
+
+def _gate_complexity(fm, target, fn_name, budget):
+    all_fns, err = _target_metrics(fm, target)
+    if err:
+        return err
     m = _select_target_fn(fm, fn_name, [f for f in all_fns if f["function"] == fn_name], fm["target"])
     if "verdict" in m:  # dict de error (FAIL/INVALID), no una fila de métricas
         return m
@@ -440,6 +489,7 @@ def gate(task_path, _depth=0):
             or _gate_assert(fm, target, fn_name)
             or _gate_nonecmp(fm, target, fn_name)
             or _gate_deps(fm, target)
+            or _gate_rebind(fm, target, fn_name)
             or _gate_complexity(fm, target, fn_name, fm["budget"]))
 
 

@@ -70,6 +70,25 @@ class TestTcLintPerRule(unittest.TestCase):
     def test_tests_missing(self):
         self._case("error", "tc-tests-frozen", fm_fn=lambda fm: fm.update(tests="no_existe.py"))
 
+    def test_tests_only_mention_in_comment_flagged(self):
+        # refuerzo de r_tests_frozen: un test que solo "menciona" la función en un comentario
+        # (sin importar el módulo target ni llamar a la función) debe fallar el lint. Antes
+        # bastaba con que el substring apareciera -> un comentario lo satisfacía (oráculo vacuo).
+        d = Path(tempfile.mkdtemp())
+        try:
+            shutil.copy(SANDBOX / "task.md", d / "task.md")
+            (d / "test_decode_instruction.py").write_text(
+                "# esto menciona decode_instruction en un comentario pero no lo importa ni llama\n"
+                "import unittest\n"
+                "class T(unittest.TestCase):\n"
+                "    def test_noop(self):\n"
+                "        self.assertTrue(True)\n"
+                "if __name__ == '__main__':\n"
+                "    unittest.main()\n", encoding="utf-8")
+            self.assertIn("tc-tests-frozen", rules(d / "task.md", "error"))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
     def test_section_missing(self):
         self._case("error", "tc-sections", body_fn=lambda b: b.replace("## Invariants", "## QuitadaInvariants"))
 

@@ -8,8 +8,12 @@ veredictos sobre casos sin golden no cuentan.
 Determinista con el provider 'stub' (acuerdo 1.0 por construcción: ejercita la mecánica offline).
 Con 'openai' mide el acuerdo real del modelo pinneado contra el golden set.
 
+IMPORTANTE: una auditoría con provider 'stub' NO habilita Tier 2 — el acuerdo 1.0 es tautológico
+(stub devuelve el golden_judgment del caso). stub solo ejercita la mecánica; para habilitar Tier 2
+hace falta un provider real (openai) cuyo acuerdo contra el golden set alcance agreement_min.
+
 Uso:  python judge_audit.py eval.md [--provider openai --api-url http://localhost:11434/v1]
-Exit: 0 ok (juez de fiar) · 1 acuerdo insuficiente · 2 error."""
+Exit: 0 ok (juez de fiar, auditoría válida) · 1 acuerdo insuficiente / stub · 2 error."""
 import argparse
 import json
 import sys
@@ -33,12 +37,29 @@ def _load_rubric(p, fm):
     return "Evalúa la coherencia y la utilidad de la respuesta del agente."
 
 
-def audit(eval_path, provider="stub", api_url=""):
+def _score_case(judge, agent_fn, c):
+    """Output del agente + veredicto del juez vs golden -> (judge_verdict, golden_verdict, match).
+    Un agente que lanza no tumba la auditoría: se cuenta como output vacío (veredicto del juez sobre
+    nada, casi siempre discordante con el golden)."""
+    try:
+        output = agent_fn(c.get("input") or {})
+    except Exception:
+        output = {}
+    v = judge(output, c)
+    expected = c["golden_judgment"].get("verdict")
+    return v.get("verdict"), expected, v.get("verdict") == expected
+
+
+def _missing_keys(fm):
+    return [k for k in ("dataset", "target", "agent_entry") if not fm.get(k)]
+
+
+def audit(eval_path, provider="stub", api_url="", judge_fn=None):
     p = Path(eval_path)
     fm, _ = tc_lint.split_front_matter(p.read_text(encoding="utf-8"))
     if fm is None:
         return {"ok": False, "detail": "sin front-matter YAML (--- ... ---)"}
-    missing = [k for k in ("dataset", "target", "agent_entry") if not fm.get(k)]
+    missing = _missing_keys(fm)
     if missing:
         return {"ok": False, "detail": f"eval-contract incompleto, faltan: {missing}"}
     cases = eval_gate._load_jsonl(p.parent / fm["dataset"])
@@ -46,22 +67,28 @@ def audit(eval_path, provider="stub", api_url=""):
     judge_cfg = fm.get("judge") or {}
     rubric = _load_rubric(p, fm)
     golden = [c for c in cases if c.get("golden_judgment")]
+    # judge_fn solo es para tests que simulan un juez discrepante; en producción se usa eval_judge.judge.
+    _judge = judge_fn or (lambda o, c: eval_judge.judge(o, c, rubric, provider,
+                                                        judge_cfg.get("model", ""), api_url))
     details, agree = [], 0
     for c in golden:
-        try:
-            output = agent_fn(c.get("input") or {})
-        except Exception:
-            output = {}
-        v = eval_judge.judge(output, c, rubric, provider, judge_cfg.get("model", ""), api_url)
-        expected = c["golden_judgment"].get("verdict")
-        match = v.get("verdict") == expected
+        jv, gv, match = _score_case(_judge, agent_fn, c)
         agree += 1 if match else 0
-        details.append({"id": c.get("id"), "judge": v.get("verdict"), "golden": expected, "match": match})
-    n = len(golden)
+        details.append({"id": c.get("id"), "judge": jv, "golden": gv, "match": match})
+    return _audit_verdict(provider, len(golden), agree, judge_cfg.get("agreement_min", 0.85), details)
+
+
+def _audit_verdict(provider, n, agree, minimum, details):
+    """Compone el veredicto de auditoría. audit_valid = provider real (no stub) + acuerdo ≥ min.
+    stub → audit_valid=False (acuerdo 1.0 tautológico, no habilita Tier 2) con nota explicativa."""
     agreement = agree / n if n else 0.0
-    minimum = judge_cfg.get("agreement_min", 0.85)
+    is_stub = provider == "stub"
+    audit_valid = (not is_stub) and n > 0 and agreement >= minimum
+    note = ("provider 'stub' solo ejercita la mecánica (acuerdo 1.0 tautológico); NO habilita Tier 2. "
+            "Use un provider real (openai) y re-corra la auditoría.") if is_stub else None
     return {"golden_cases": n, "agreement": round(agreement, 4), "agreement_min": minimum,
-            "provider": provider, "ok": n > 0 and agreement >= minimum, "details": details}
+            "provider": provider, "audit_valid": audit_valid, "ok": audit_valid,
+            "note": note, "details": details}
 
 
 def main():

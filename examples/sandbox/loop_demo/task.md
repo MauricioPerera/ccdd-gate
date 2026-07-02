@@ -11,6 +11,7 @@ tests: test_decode_instruction.py
 test_command: "python -m unittest test_decode_instruction.py"
 spec_version: "0.1"
 sign: true
+require_test_approval: false
 ---
 
 ## Intent
