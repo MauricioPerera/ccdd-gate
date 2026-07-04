@@ -6,7 +6,7 @@
     "Métricas estructurales (cyclomatic, nesting_depth, parameter_count) deben coincidir entre lenguajes para la MISMA estructura lógica.",
     "function_length depende del formato del lenguaje (llaves añaden líneas): se compara por-lenguaje vía language_overrides, no entre lenguajes.",
     "Divergencias inevitables se declaran en cross_language_divergence_allowed con su razón en 'note' y se fijan por-lenguaje en language_overrides.",
-    "typescript/tsx/javascript via backend tree-sitter (dep opcional #7); 'comprehension' es sintaxis solo-Python (sin fixture TS)."
+    "typescript/tsx/javascript/rust/go via backend tree-sitter (dep opcional #7); 'comprehension' es sintaxis solo-Python (sin fixture TS/rust/go)."
   ],
   "fixtures": [
     {
@@ -21,6 +21,12 @@
       "language_overrides": {
         "typescript": {
           "function_length": 3
+        },
+        "rust": {
+          "function_length": 3
+        },
+        "go": {
+          "function_length": 3
         }
       },
       "note": "Función trivial: sin decisiones ni anidamiento.",
@@ -29,7 +35,9 @@
       ],
       "sources": {
         "python": "python/simple.py",
-        "typescript": "typescript/simple.ts"
+        "typescript": "typescript/simple.ts",
+        "rust": "rust/simple.rs",
+        "go": "go/simple.go"
       }
     },
     {
@@ -44,15 +52,23 @@
       "language_overrides": {
         "typescript": {
           "function_length": 15
+        },
+        "rust": {
+          "function_length": 14
+        },
+        "go": {
+          "function_length": 15
         }
       },
-      "note": "Anidamiento profundo (5 niveles: for>if>while>with>if).",
+      "note": "Anidamiento profundo (5 niveles: for>if>while>with>if). Rust usa unsafe_block y Go select{default:} como análogo de `with` (nido sin decisión, ver report).",
       "cross_language_divergence_allowed": [
         "function_length"
       ],
       "sources": {
         "python": "python/deep_nesting.py",
-        "typescript": "typescript/deep_nesting.ts"
+        "typescript": "typescript/deep_nesting.ts",
+        "rust": "rust/deep_nesting.rs",
+        "go": "go/deep_nesting.go"
       }
     },
     {
@@ -67,6 +83,12 @@
       "language_overrides": {
         "typescript": {
           "function_length": 3
+        },
+        "rust": {
+          "function_length": 3
+        },
+        "go": {
+          "function_length": 3
         }
       },
       "note": "Aridad alta (6 parámetros).",
@@ -75,7 +97,9 @@
       ],
       "sources": {
         "python": "python/many_params.py",
-        "typescript": "typescript/many_params.ts"
+        "typescript": "typescript/many_params.ts",
+        "rust": "rust/many_params.rs",
+        "go": "go/many_params.go"
       }
     },
     {
@@ -90,6 +114,12 @@
       "language_overrides": {
         "typescript": {
           "function_length": 93
+        },
+        "rust": {
+          "function_length": 93
+        },
+        "go": {
+          "function_length": 93
         }
       },
       "note": "Función larga (>80 líneas). function_length depende del formato del lenguaje.",
@@ -98,7 +128,9 @@
       ],
       "sources": {
         "python": "python/long_function.py",
-        "typescript": "typescript/long_function.ts"
+        "typescript": "typescript/long_function.ts",
+        "rust": "rust/long_function.rs",
+        "go": "go/long_function.go"
       }
     },
     {
@@ -113,6 +145,12 @@
       "language_overrides": {
         "typescript": {
           "function_length": 3
+        },
+        "rust": {
+          "function_length": 3
+        },
+        "go": {
+          "function_length": 3
         }
       },
       "note": "Cadena booleana a and b and c and d: +(operandos-1).",
@@ -121,7 +159,9 @@
       ],
       "sources": {
         "python": "python/boolop_chain.py",
-        "typescript": "typescript/boolop_chain.ts"
+        "typescript": "typescript/boolop_chain.ts",
+        "rust": "rust/boolop_chain.rs",
+        "go": "go/boolop_chain.go"
       }
     },
     {
@@ -154,16 +194,24 @@
       "language_overrides": {
         "typescript": {
           "function_length": 12
+        },
+        "rust": {
+          "function_length": 8
+        },
+        "go": {
+          "function_length": 12
         }
       },
-      "note": "match/switch: +1 por rama en ciclomática; en el backend Python NO suma a nesting_depth.",
+      "note": "match/switch: +1 por rama en ciclomática; en el backend Python NO suma a nesting_depth. Rust usa match con 4 brazos (0.._); Go usa switch con 4 cases explícitos (sin default: default_case es el camino base, +0).",
       "cross_language_divergence_allowed": [
         "function_length",
         "nesting_depth"
       ],
       "sources": {
         "python": "python/switch_case.py",
-        "typescript": "typescript/switch_case.ts"
+        "typescript": "typescript/switch_case.ts",
+        "rust": "rust/switch_case.rs",
+        "go": "go/switch_case.go"
       }
     }
   ]

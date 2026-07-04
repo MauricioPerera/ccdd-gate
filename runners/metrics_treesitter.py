@@ -24,9 +24,13 @@ class LangSpec:
     boolop_ops     : operadores booleanos que cuentan (&&, ||)
     params_field   : nombre del campo que contiene la lista de parámetros de la función
     name_field     : nombre del campo con el identificador de la función
+    anon_name_parents : {tipo_nodo_ancestro: campo} para nombrar funciones anónimas (closures/
+                        func literals): se sube por los ancestros y, si uno coincide, se extrae
+                        el identificador de ese campo (directo o primer identificador hijo).
     """
     def __init__(self, language, extensions, grammar_loader, function_nodes, decision_nodes,
-                 nest_nodes, boolop_node, boolop_ops, params_field="parameters", name_field="name"):
+                 nest_nodes, boolop_node, boolop_ops, params_field="parameters", name_field="name",
+                 anon_name_parents=None):
         self.language = language
         self.extensions = extensions
         self.grammar_loader = grammar_loader
@@ -37,6 +41,7 @@ class LangSpec:
         self.boolop_ops = set(boolop_ops)
         self.params_field = params_field
         self.name_field = name_field
+        self.anon_name_parents = anon_name_parents or {}
 
 
 # --- gramáticas concretas ---------------------------------------------------------------------
@@ -50,6 +55,16 @@ def _tsx_loader():
     return tsts.language_tsx()
 
 
+def _rust_loader():
+    import tree_sitter_rust as tsrust
+    return tsrust.language()
+
+
+def _go_loader():
+    import tree_sitter_go as tsgo
+    return tsgo.language()
+
+
 # Nodos comunes a TS/JS (la gramática typescript de tree-sitter cubre ambos sintácticamente).
 _JSTS_FUNCS = ("function_declaration", "function_expression", "arrow_function",
                "method_definition", "generator_function", "generator_function_declaration")
@@ -59,14 +74,53 @@ _JSTS_DECISION = ("if_statement", "for_statement", "for_in_statement", "while_st
 # try_statement anida pero NO es decisión (espejo de Python: Try anida, ExceptHandler decide).
 _JSTS_NEST = ("if_statement", "for_statement", "for_in_statement", "while_statement",
               "do_statement", "try_statement")
+# TS: las anónimas (arrow/function_expression) cuelgan de un variable_declarator / pair / campo.
+_JSTS_ANON = {"variable_declarator": "name", "pair": "key", "public_field_definition": "name"}
+
+# --- Rust ----------------------------------------------------------------------
+# function_item cubre funciones libres Y métodos (los métodos son function_item dentro de impl).
+# closure_expression es la función anónima de Rust (análogo a arrow_function de TS).
+# Decisiones: if/while/for/loop son *_expression; cada rama de match es un match_arm (NO el
+# match_expression, que por sí solo no suma — espejo de switch_case/switch_default en TS).
+# unsafe_block / async_block anidan SIN ser decisión: son el análogo de `with`/`try` de Python
+# (bloques de ámbito sin bifurcación de control).
+_RUST_FUNCS = ("function_item", "closure_expression")
+_RUST_DECISION = ("if_expression", "for_expression", "while_expression", "loop_expression",
+                  "match_arm")
+_RUST_NEST = ("if_expression", "for_expression", "while_expression", "loop_expression",
+              "unsafe_block", "async_block")
+# Cierre anónimo: `let f = |a| a;` → el closure cuelga de un let_declaration (campo "pattern").
+_RUST_ANON = {"let_declaration": "pattern"}
+
+# --- Go ------------------------------------------------------------------------
+# function_declaration (fn libre), method_declaration (método con receiver) y func_literal
+# (función anónima, análogo a arrow_function de TS).
+# Decisiones: if/for (Go usa `for` para for/while/range) y cada case explícito de switch/type
+# switch/select (expression_case, type_case, communication_case). default_case NO suma: es la
+# rama por defecto (camino base), modelo "ramas − 1" — análogo a contar solo los case explícitos.
+# select_statement anida SIN ser decisión: un `select { default: … }` tiene un único camino (sin
+# bifurcación) y es el análogo de `with`/`try` de Python (Go carece de try/with/unsafe-block).
+# switch/type_switch NO están en nest: así switch_case da nesting_depth 0 (espejo de TS).
+_GO_FUNCS = ("function_declaration", "method_declaration", "func_literal")
+_GO_DECISION = ("if_statement", "for_statement", "expression_case", "type_case",
+                "communication_case")
+_GO_NEST = ("if_statement", "for_statement", "select_statement")
+# Func literal anónima: `f := func(){}` (short_var_declaration, campo "left" → lista con `f`)
+# o `var g = func(){}` (var_spec, campo "name" → `g`).
+_GO_ANON = {"short_var_declaration": "left", "var_spec": "name"}
 
 SPECS = [
     LangSpec("typescript", (".ts",), _ts_loader, _JSTS_FUNCS, _JSTS_DECISION, _JSTS_NEST,
-             "binary_expression", ("&&", "||")),
+             "binary_expression", ("&&", "||"), anon_name_parents=_JSTS_ANON),
     LangSpec("tsx", (".tsx",), _tsx_loader, _JSTS_FUNCS, _JSTS_DECISION, _JSTS_NEST,
-             "binary_expression", ("&&", "||")),
+             "binary_expression", ("&&", "||"), anon_name_parents=_JSTS_ANON),
     LangSpec("javascript", (".js", ".jsx", ".mjs", ".cjs"), _ts_loader, _JSTS_FUNCS,
-             _JSTS_DECISION, _JSTS_NEST, "binary_expression", ("&&", "||")),
+             _JSTS_DECISION, _JSTS_NEST, "binary_expression", ("&&", "||"),
+             anon_name_parents=_JSTS_ANON),
+    LangSpec("rust", (".rs",), _rust_loader, _RUST_FUNCS, _RUST_DECISION, _RUST_NEST,
+             "binary_expression", ("&&", "||"), anon_name_parents=_RUST_ANON),
+    LangSpec("go", (".go",), _go_loader, _GO_FUNCS, _GO_DECISION, _GO_NEST,
+             "binary_expression", ("&&", "||"), anon_name_parents=_GO_ANON),
 ]
 
 
@@ -120,11 +174,25 @@ class TreeSitterBackend(_mb.Backend):
         nm = fn.child_by_field_name(self.spec.name_field)
         if nm is not None:
             return nm.text.decode("utf-8", "replace")
-        p = fn.parent  # arrow/expresión anónima: tomar el nombre del declarador contenedor
-        if p is not None and p.type in ("variable_declarator", "pair", "public_field_definition"):
-            key = p.child_by_field_name("name") or p.child_by_field_name("key")
-            if key is not None:
-                return key.text.decode("utf-8", "replace")
+        # Función anónima (arrow/closure/func literal): subir por los ancestros y, si uno
+        # coincide con una regla de `anon_name_parents`, extraer el identificador del campo.
+        # El campo puede ser el identificador directamente o un nodo-lista que lo envuelve
+        # (p. ej. el `left` de un short_var_declaration de Go es una expression_list con `f`).
+        ident_like = ("identifier", "field_identifier", "type_identifier")
+        p = fn.parent
+        for _ in range(3):
+            if p is None:
+                break
+            field = self.spec.anon_name_parents.get(p.type)
+            if field is not None:
+                val = p.child_by_field_name(field)
+                if val is not None:
+                    if val.type in ident_like:
+                        return val.text.decode("utf-8", "replace")
+                    for c in val.named_children:
+                        if c.type in ident_like:
+                            return c.text.decode("utf-8", "replace")
+            p = p.parent
         return "<anonymous>"
 
     def measure(self, src):
