@@ -75,6 +75,25 @@ def _go_loader():
     return tsgo.language()
 
 
+def _java_loader():
+    import tree_sitter_java as tsjava
+    return tsjava.language()
+
+
+def _csharp_loader():
+    import tree_sitter_c_sharp as tscs
+    return tscs.language()
+
+
+def _php_loader():
+    import tree_sitter_php as tsphp
+    # PHP puro (código fuente .php que arranca con `<?php`): `language_php_only()` expone un
+    # AST limpio (program > function_definition/method_declaration/...). `language_php()` es
+    # para PHP embebido en HTML (envuelve el source en `text/html` + `program_fragment`); sobre
+    # fuente pura produce un árbol más ruidoso y menos estable. Para medir .php usamos php_only.
+    return tsphp.language_php_only()
+
+
 # Nodos comunes a TS/JS (la gramática typescript de tree-sitter cubre ambos sintácticamente).
 _JSTS_FUNCS = ("function_declaration", "function_expression", "arrow_function",
                "method_definition", "generator_function", "generator_function_declaration")
@@ -119,6 +138,57 @@ _GO_NEST = ("if_statement", "for_statement", "select_statement")
 # o `var g = func(){}` (var_spec, campo "name" → `g`).
 _GO_ANON = {"short_var_declaration": "left", "var_spec": "name"}
 
+# --- Java ----------------------------------------------------------------------
+# method_declaration (métodos) y constructor_declaration (constructores) son las unidades
+# con cuerpo; lambda_expression es la función anónima (análogo a arrow_function de TS).
+# Decisiones: if/for/enhanced_for_statement (el `foreach` de Java)/while/do + ternary_expression
+# + catch_clause. switch_label cubre `case X:` Y `default:` (la gramática NO los distingue por
+# tipo): se cuenta cada switch_label +1 (modelo TS: default suma, ver reporte). try_statement
+# anida SIN ser decisión — espejo de Python/TS (Try anida, ExceptHandler/catch decide).
+_JAVA_FUNCS = ("method_declaration", "constructor_declaration", "lambda_expression")
+_JAVA_DECISION = ("if_statement", "for_statement", "enhanced_for_statement", "while_statement",
+                  "do_statement", "ternary_expression", "catch_clause", "switch_label")
+_JAVA_NEST = ("if_statement", "for_statement", "enhanced_for_statement", "while_statement",
+              "do_statement", "try_statement")
+# Lambda anónima: `Runnable r = () -> …;` → cuelga de un variable_declarator (campo "name").
+_JAVA_ANON = {"variable_declarator": "name"}
+
+# --- C# ------------------------------------------------------------------------
+# method_declaration, constructor_declaration y local_function_statement (funciones locales
+# anidadas) son las unidades con cuerpo; lambda_expression es la anónima.
+# Decisiones: if/for/foreach/while/do + conditional_expression (ternario `?:`) + catch_clause.
+# switch_section es la unidad de rama de switch (engloba el/los `case`/`default` y su cuerpo;
+# la gramática NO expone el label como nodo propio): se cuenta cada switch_section +1 (modelo
+# TS: default suma, ver reporte). try_statement/lock_statement/using_statement anidan SIN ser
+# decisión: análogos de `with`/unsafe_block (bloques de ámbito sin bifurcación).
+# using_DIRECTIVE (`using System;`, import) NO está: no tiene bloque ni anida.
+_CSHARP_FUNCS = ("method_declaration", "constructor_declaration", "local_function_statement",
+                 "lambda_expression")
+_CSHARP_DECISION = ("if_statement", "for_statement", "foreach_statement", "while_statement",
+                    "do_statement", "conditional_expression", "catch_clause", "switch_section")
+_CSHARP_NEST = ("if_statement", "for_statement", "foreach_statement", "while_statement",
+                "do_statement", "try_statement", "lock_statement", "using_statement")
+# Lambda anónima: `Func<int,int> lam = x => x + 1;` → variable_declarator (campo "name").
+_CSHARP_ANON = {"variable_declarator": "name"}
+
+# --- PHP (php_only) ------------------------------------------------------------
+# function_definition (función libre) y method_declaration (métodos, incluido __construct) son
+# las unidades con cuerpo; arrow_function (`fn()=>…`) y anonymous_function (`function(){…}` con
+# `use`) son las anónimas (closures).
+# Decisiones: if/for/foreach/while/do + conditional_expression (ternario `?:`) + catch_clause.
+# switch: case_statement es cada `case X:` explícito; default_statement es la rama por defecto y
+# NO suma (modelo "ramas − 1", análogo a Go/Python/Rust): la gramática SÍ distingue case/default
+# por tipo, a diferencia de Java/C#. try_statement anida SIN ser decisión (catch_clause decide).
+# PHP carece de with/unsafe/lock: try/finally es el análogo de nido-sin-decisión (ver deep_nesting).
+_PHP_FUNCS = ("function_definition", "method_declaration", "arrow_function", "anonymous_function")
+_PHP_DECISION = ("if_statement", "for_statement", "foreach_statement", "while_statement",
+                 "do_statement", "conditional_expression", "catch_clause", "case_statement")
+_PHP_NEST = ("if_statement", "for_statement", "foreach_statement", "while_statement",
+             "do_statement", "try_statement")
+# Cierre anónimo: `$f = fn()=>…;` / `$g = function(){…}` → assignment_expression (campo "left"
+# → variable_name → nodo `name`). Requiere reconocer el nodo `name` (ver ident_like en _name).
+_PHP_ANON = {"assignment_expression": "left"}
+
 
 def _go_param_count(params_node):
     """Cuenta parámetros Go por NOMBRE declarado, no por declaración.
@@ -162,6 +232,12 @@ SPECS = [
     LangSpec("go", (".go",), _go_loader, _GO_FUNCS, _GO_DECISION, _GO_NEST,
              "binary_expression", ("&&", "||"), anon_name_parents=_GO_ANON,
              params_counter=_go_param_count),
+    LangSpec("java", (".java",), _java_loader, _JAVA_FUNCS, _JAVA_DECISION, _JAVA_NEST,
+             "binary_expression", ("&&", "||"), anon_name_parents=_JAVA_ANON),
+    LangSpec("csharp", (".cs",), _csharp_loader, _CSHARP_FUNCS, _CSHARP_DECISION, _CSHARP_NEST,
+             "binary_expression", ("&&", "||"), anon_name_parents=_CSHARP_ANON),
+    LangSpec("php", (".php",), _php_loader, _PHP_FUNCS, _PHP_DECISION, _PHP_NEST,
+             "binary_expression", ("&&", "||"), anon_name_parents=_PHP_ANON),
 ]
 
 
@@ -225,7 +301,9 @@ class TreeSitterBackend(_mb.Backend):
         # coincide con una regla de `anon_name_parents`, extraer el identificador del campo.
         # El campo puede ser el identificador directamente o un nodo-lista que lo envuelve
         # (p. ej. el `left` de un short_var_declaration de Go es una expression_list con `f`).
-        ident_like = ("identifier", "field_identifier", "type_identifier")
+        # PHP: el identificador de una variable es un nodo `name` dentro de `variable_name`
+        # (p. ej. el `left` de un assignment_expression); los demás lenguajes usan `identifier`.
+        ident_like = ("identifier", "field_identifier", "type_identifier", "name")
         p = fn.parent
         for _ in range(3):
             if p is None:
