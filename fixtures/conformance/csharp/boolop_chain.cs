@@ -1,0 +1,5 @@
+public class boolop_chain {
+    public static bool boolop_chain(bool a, bool b, bool c, bool d) {
+        return a && b && c && d;
+    }
+}

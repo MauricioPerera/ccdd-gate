@@ -15,8 +15,8 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
-      - name: Install optional tree-sitter (backend TS/JS)
-        run: pip install tree_sitter tree_sitter_typescript
+      - name: Install optional tree-sitter grammars (backend multi-lenguaje)
+        run: pip install tree_sitter tree_sitter_typescript tree_sitter_rust tree_sitter_go tree_sitter_java tree_sitter_c_sharp tree_sitter_php
 
       - name: Frozen tests — gate + L2 governance + tc_lint rules (deterministic, no LLM)
         run: python -m unittest tests.test_gates tests.test_l2_governance tests.test_tc_lint_rules -v

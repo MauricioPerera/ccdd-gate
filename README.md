@@ -63,7 +63,7 @@ veredicto van en código que no se puede engañar.
 |---|---|---|
 | `runners/metrics_backends.py` | Capa neutral compartida (umbrales + `severity` + `lint_results`) y registro `get_backend(language\|extension)` para backends por lenguaje | no |
 | `runners/metrics.py` | Backend Python: métricas de complejidad por AST (ciclomática, anidamiento, params, longitud) | no |
-| `runners/metrics_treesitter.py` | Backend universal vía tree-sitter (TS/TSX/JS) — **dep opcional**; sin ella, solo Python | no |
+| `runners/metrics_treesitter.py` | Backend universal vía tree-sitter (TS/TSX/JS/Rust/Go/Java/C#/PHP) — **dep opcional**; sin ella, solo Python | no |
 | `runners/pre_complexity_runner.py` | Orquestador L3 para el contrato `pre-complexity-agent` | no |
 | `runners/pre_complexity_helpers.py` | Data-helpers para inyectar contexto de diseño y negocio | no |
 | `runners/complexity_runner.py` | Orquestador L3 para el contrato `complexity-agent` | no |
@@ -123,7 +123,8 @@ python runners/tc_lint.py examples/sandbox/task.md
 Cada archivo que el agente escribe se mide con el backend de su lenguaje (por extensión, o
 `--language` en CLI); si una métrica entra en CRÍTICA (umbral firmado), el hook bloquea y pide
 refactor. Determinista, sin tokens. Una extensión sin backend registrado es un **no-op anunciado**
-(aviso por stderr, exit 0), nunca un fallo silencioso. Hoy el único backend es Python.
+(aviso por stderr, exit 0), nunca un fallo silencioso. Python siempre; el resto de lenguajes
+requiere la dep opcional tree-sitter (ver «Conformancia multi-lenguaje»).
 
 ### Instalación como paquete (console scripts)
 
@@ -304,15 +305,19 @@ Sin el campo, el comportamiento es idéntico al actual (Python).
 ## Conformancia multi-lenguaje
 
 `fixtures/conformance/` define un **oráculo congelado** de las 4 métricas (fixtures equivalentes
-por lenguaje + valores esperados). Todo backend debe reproducirlo: Python es el baseline y el
-backend **TypeScript/JS** (tree-sitter) pasa la suite con métricas estructurales idénticas
-(`cyclomatic`/`nesting_depth`/`parameter_count`); solo `function_length` diverge por formato y se
-fija por-lenguaje. Un backend nuevo no se acepta hasta pasar `tests/test_conformance.py`. Ver
+por lenguaje + valores esperados). Todo backend debe reproducirlo: Python es el baseline y los
+backends **tree-sitter** (TS/TSX/JS/Rust/Go/Java/C#/PHP) pasan la suite con métricas estructurales
+idénticas (`cyclomatic`/`nesting_depth`/`parameter_count`); solo `function_length` diverge por
+formato y se fija por-lenguaje. Un backend nuevo no se acepta hasta pasar
+`tests/test_conformance.py`. Ver
 [`fixtures/conformance/README.md`](fixtures/conformance/README.md).
 
-**Multi-lenguaje hoy:** Python nativo (sin deps) + TS/TSX/JS vía tree-sitter (dep opcional:
-`pip install tree_sitter tree_sitter_typescript`). El gate, el hook y `measure_complexity` miden
-`.ts`/`.js` igual que `.py` cuando la dep está instalada; si no, esos archivos son no-op anunciado.
+**Multi-lenguaje hoy (métricas de complejidad):** Python nativo (sin deps) + TS/TSX/JS/Rust/Go/Java/C#/PHP
+vía tree-sitter (dep opcional: `pip install tree_sitter tree_sitter_typescript tree_sitter_rust
+tree_sitter_go tree_sitter_java tree_sitter_c_sharp tree_sitter_php`). El gate, el hook y
+`measure_complexity` miden esas extensiones igual que `.py` cuando las gramáticas están instaladas;
+si no, esos archivos son no-op anunciado. Los checks de antipatrones (`gate-mutdef`, `gate-assert`,
+`gate-signature`, `gate-deps`, etc.) siguen siendo **Python-only** (AST nativo).
 
 ## Integración GitHub (opcional, `integrations/github/`)
 

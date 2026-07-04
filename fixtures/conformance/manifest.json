@@ -6,7 +6,8 @@
     "Métricas estructurales (cyclomatic, nesting_depth, parameter_count) deben coincidir entre lenguajes para la MISMA estructura lógica.",
     "function_length depende del formato del lenguaje (llaves añaden líneas): se compara por-lenguaje vía language_overrides, no entre lenguajes.",
     "Divergencias inevitables se declaran en cross_language_divergence_allowed con su razón en 'note' y se fijan por-lenguaje en language_overrides.",
-    "typescript/tsx/javascript/rust/go via backend tree-sitter (dep opcional #7); 'comprehension' es sintaxis solo-Python (sin fixture TS/rust/go)."
+    "typescript/tsx/javascript/rust/go/java/csharp/php via backend tree-sitter (dep opcional #7); 'comprehension' es sintaxis solo-Python (sin fixture TS/rust/go/java/csharp/php).",
+    "java/csharp/php: switch se modela distinto por gramática (ver reporte TAREA-JCSPHP): Java cuenta cada switch_label (case+default, modelo TS), C# cada switch_section (case+default, modelo TS), PHP cada case_statement excluyendo default_statement (modelo 'ramas − 1', análogo a Go/Python/Rust). Los tres reproducen cyclomatic=5 sobre su fixture. PHP usa language_php_only() (PHP puro, no embebido en HTML)."
   ],
   "fixtures": [
     {
@@ -27,6 +28,15 @@
         },
         "go": {
           "function_length": 3
+        },
+        "java": {
+          "function_length": 3
+        },
+        "csharp": {
+          "function_length": 3
+        },
+        "php": {
+          "function_length": 3
         }
       },
       "note": "Función trivial: sin decisiones ni anidamiento.",
@@ -37,7 +47,10 @@
         "python": "python/simple.py",
         "typescript": "typescript/simple.ts",
         "rust": "rust/simple.rs",
-        "go": "go/simple.go"
+        "go": "go/simple.go",
+        "java": "java/simple.java",
+        "csharp": "csharp/simple.cs",
+        "php": "php/simple.php"
       }
     },
     {
@@ -58,9 +71,18 @@
         },
         "go": {
           "function_length": 15
+        },
+        "java": {
+          "function_length": 15
+        },
+        "csharp": {
+          "function_length": 15
+        },
+        "php": {
+          "function_length": 15
         }
       },
-      "note": "Anidamiento profundo (5 niveles: for>if>while>with>if). Rust usa unsafe_block y Go select{default:} como análogo de `with` (nido sin decisión, ver report).",
+      "note": "Anidamiento profundo (5 niveles: for>if>while>with>if). Rust usa unsafe_block, Go select{default:}, y Java/C#/PHP usan try/finally como análogo de `with` (nido sin decisión, ver report).",
       "cross_language_divergence_allowed": [
         "function_length"
       ],
@@ -68,7 +90,10 @@
         "python": "python/deep_nesting.py",
         "typescript": "typescript/deep_nesting.ts",
         "rust": "rust/deep_nesting.rs",
-        "go": "go/deep_nesting.go"
+        "go": "go/deep_nesting.go",
+        "java": "java/deep_nesting.java",
+        "csharp": "csharp/deep_nesting.cs",
+        "php": "php/deep_nesting.php"
       }
     },
     {
@@ -89,9 +114,18 @@
         },
         "go": {
           "function_length": 3
+        },
+        "java": {
+          "function_length": 3
+        },
+        "csharp": {
+          "function_length": 3
+        },
+        "php": {
+          "function_length": 3
         }
       },
-      "note": "Aridad alta (6 parámetros). El fixture Go usa forma agrupada (a, b, c, d, e, f int): un solo parameter_declaration con 6 identifier hijos; el backend Go cuenta por nombre (hook _go_param_count), no por declaración. Regresión: sin el hook reportaría 1.",
+      "note": "Aridad alta (6 parámetros). El fixture Go usa forma agrupada (a, b, c, d, e, f int): un solo parameter_declaration con 6 identifier hijos; el backend Go cuenta por nombre (hook _go_param_count), no por declaración. Regresión: sin el hook reportaría 1. Java/C#/PHP declaran cada parámetro por separado (un nodo formal_parameter/parameter/simple_parameter c/u).",
       "cross_language_divergence_allowed": [
         "function_length"
       ],
@@ -99,7 +133,10 @@
         "python": "python/many_params.py",
         "typescript": "typescript/many_params.ts",
         "rust": "rust/many_params.rs",
-        "go": "go/many_params.go"
+        "go": "go/many_params.go",
+        "java": "java/many_params.java",
+        "csharp": "csharp/many_params.cs",
+        "php": "php/many_params.php"
       }
     },
     {
@@ -120,6 +157,15 @@
         },
         "go": {
           "function_length": 93
+        },
+        "java": {
+          "function_length": 93
+        },
+        "csharp": {
+          "function_length": 93
+        },
+        "php": {
+          "function_length": 93
         }
       },
       "note": "Función larga (>80 líneas). function_length depende del formato del lenguaje.",
@@ -130,7 +176,10 @@
         "python": "python/long_function.py",
         "typescript": "typescript/long_function.ts",
         "rust": "rust/long_function.rs",
-        "go": "go/long_function.go"
+        "go": "go/long_function.go",
+        "java": "java/long_function.java",
+        "csharp": "csharp/long_function.cs",
+        "php": "php/long_function.php"
       }
     },
     {
@@ -151,6 +200,15 @@
         },
         "go": {
           "function_length": 3
+        },
+        "java": {
+          "function_length": 3
+        },
+        "csharp": {
+          "function_length": 3
+        },
+        "php": {
+          "function_length": 3
         }
       },
       "note": "Cadena booleana a and b and c and d: +(operandos-1).",
@@ -161,7 +219,10 @@
         "python": "python/boolop_chain.py",
         "typescript": "typescript/boolop_chain.ts",
         "rust": "rust/boolop_chain.rs",
-        "go": "go/boolop_chain.go"
+        "go": "go/boolop_chain.go",
+        "java": "java/boolop_chain.java",
+        "csharp": "csharp/boolop_chain.cs",
+        "php": "php/boolop_chain.php"
       }
     },
     {
@@ -200,9 +261,18 @@
         },
         "go": {
           "function_length": 12
+        },
+        "java": {
+          "function_length": 8
+        },
+        "csharp": {
+          "function_length": 8
+        },
+        "php": {
+          "function_length": 8
         }
       },
-      "note": "match/switch: +1 por rama en ciclomática; en el backend Python NO suma a nesting_depth. Rust usa match con 4 brazos (0.._); Go usa switch con 4 cases explícitos (sin default: default_case es el camino base, +0).",
+      "note": "match/switch: +1 por rama en ciclomática; en el backend Python NO suma a nesting_depth. Rust usa match con 4 brazos (0.._); Go usa switch con 4 cases explícitos (sin default: default_case es el camino base, +0). Java usa switch con 3 cases + default (cada switch_label cuenta, modelo TS); C# usa switch con 3 cases + default (cada switch_section cuenta, modelo TS); PHP usa switch con 4 cases explícitos sin default (case_statement cuenta, default_statement no, modelo 'ramas − 1'). Los 3 reproducen cyclomatic=5.",
       "cross_language_divergence_allowed": [
         "function_length",
         "nesting_depth"
@@ -211,7 +281,10 @@
         "python": "python/switch_case.py",
         "typescript": "typescript/switch_case.ts",
         "rust": "rust/switch_case.rs",
-        "go": "go/switch_case.go"
+        "go": "go/switch_case.go",
+        "java": "java/switch_case.java",
+        "csharp": "csharp/switch_case.cs",
+        "php": "php/switch_case.php"
       }
     }
   ]
