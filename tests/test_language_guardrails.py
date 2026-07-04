@@ -48,8 +48,9 @@ class TestStructuralViaBackend(unittest.TestCase):
 
     def test_no_backend_falls_back_to_regex(self):
         # Lenguaje sin backend de métricas: el guardrail estructural no se pierde, cae al regex.
+        # (ruby no tiene backend registrado; go/rust sí, así que no sirven como ejemplo "sin backend".)
         deep_indent = "\t\t\t\tx = 1\n"
-        r = m.scan_guardrails({"code": deep_indent, "language": "go"})
+        r = m.scan_guardrails({"code": deep_indent, "language": "ruby"})
         g = fired(r)["deep-nesting"]
         self.assertEqual(g["method"], "regex")
         self.assertTrue(g["fired"])
