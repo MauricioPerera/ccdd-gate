@@ -97,7 +97,11 @@ def audit(root):
     for stem, (cpath, tgt, test) in sorted(funcs.items()):
         if not tgt.exists():
             continue
-        composes = sorted(s for s in funcs if s != stem and s in _imported_stems(tgt))
+        # _imported_stems(tgt) re-leía y re-parseaba el target O(N) veces por stem (una por `s` en
+        # el `in` de la comprensión) -> O(N²) parses. Hoist fuera de la comprensión: se lee/parsea
+        # UNA vez por stem. Resultado idéntico (la función es pura en el contenido del target).
+        stems = _imported_stems(tgt)
+        composes = sorted(s for s in funcs if s != stem and s in stems)
         if composes and cpath not in grouped:
             uncovered.append({"contract": _rel(cpath, rootp), "composes": composes,
                               "behavior_verified": _test_verifies(test)})

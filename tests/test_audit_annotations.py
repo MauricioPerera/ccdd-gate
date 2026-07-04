@@ -39,6 +39,23 @@ class AuditAnnotationsTest(unittest.TestCase):
         self.assertEqual(len(res["failures"]), 1)
         self.assertIn("Node", res["failures"][0]["detail"])
 
+    def test_many_contracts_same_target_cache_correct(self):
+        """N contratos apuntando al MISMO target: la cache memoiza leer+parsear pero el resultado
+        observable (checked, failures, orden) debe ser idéntico al de N contratos sin cache."""
+        d = Path(tempfile.mkdtemp())
+        try:
+            (d / "f.py").write_text("def f(x: Node):\n    return x\n", encoding="utf-8")
+            for i in range(50):
+                (d / f"c{i}.md").write_text("---\ntask: f\ntarget: f.py\n---\n", encoding="utf-8")
+            res = audit_annotations.audit(d)
+            # 50 contratos -> 50 checked, 50 failures (uno por contrato, mismo target/detail)
+            self.assertEqual(res["checked"], 50)
+            self.assertEqual(len(res["failures"]), 50)
+            self.assertTrue(all(f["target"] == "f.py" for f in res["failures"]))
+            self.assertTrue(all("Node" in f["detail"] for f in res["failures"]))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()
