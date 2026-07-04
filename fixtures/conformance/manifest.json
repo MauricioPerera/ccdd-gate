@@ -91,7 +91,7 @@
           "function_length": 3
         }
       },
-      "note": "Aridad alta (6 parámetros).",
+      "note": "Aridad alta (6 parámetros). El fixture Go usa forma agrupada (a, b, c, d, e, f int): un solo parameter_declaration con 6 identifier hijos; el backend Go cuenta por nombre (hook _go_param_count), no por declaración. Regresión: sin el hook reportaría 1.",
       "cross_language_divergence_allowed": [
         "function_length"
       ],

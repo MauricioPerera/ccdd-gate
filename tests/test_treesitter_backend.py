@@ -267,6 +267,21 @@ class TestTreeSitterGo(unittest.TestCase):
         self.assertEqual(m["cyclomatic"], 5)
         self.assertEqual(m["nesting_depth"], 0)
 
+    def test_grouped_params_counted_by_name(self):
+        # Go agrupa parámetros que comparten tipo en un solo parameter_declaration con
+        # varios identifier hijos. El gate de aridad (params <= 5) exige contar por NOMBRE,
+        # no por declaración: `func f(a, b, c, d, e, f int)` son 6 parámetros, no 1.
+        src = ("package main\n"
+               "func two(a, b int) int { return a + b }\n"
+               "func six(a, b, c, d, e, f int) int { return a }\n"
+               "func mixed(a, b, c int, d string) int { return a }\n"
+               "func variadic(xs ...int) int { return xs }\n")
+        fns = {f["function"]: f for f in self.b.measure(src)}
+        self.assertEqual(fns["two"]["parameter_count"], 2)
+        self.assertEqual(fns["six"]["parameter_count"], 6)
+        self.assertEqual(fns["mixed"]["parameter_count"], 4)
+        self.assertEqual(fns["variadic"]["parameter_count"], 1)
+
 
 @skip_no_go
 class TestRoutingGo(unittest.TestCase):
