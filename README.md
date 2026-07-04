@@ -156,7 +156,7 @@ Desde el repo, copiá `.mcp.json.example` a `.mcp.json`. Tools (sin LLM):
   igual en todo lenguaje), anidamiento (estructural, vía el backend del lenguaje), `dsv_check` (anti-alucinación por "drift", exige coincidencia exacta con HEAD local) y específicos por
   lenguaje opt-in (`runners/guardrails_lang.yaml`, p. ej. `no-eval`). `agent` evalúa contra ese contrato. Sin `language`, Python.
 - `lint_task_contract(contract_text, test_code?)` - valida un task-contract (anti-desvarío del modelo grande).
-- `scan_dependencies(code, deps_allowed?)` - imports top-level de terceros NO permitidos (enforcement de `deps_allowed` / anti-slopsquatting). Determinista, sin LLM.
+- `scan_dependencies(code, deps_allowed?, local_roots?)` - imports top-level de terceros NO permitidos (enforcement de `deps_allowed` / anti-slopsquatting). Determinista, sin LLM. `local_roots` (lista de dirs, opcional) exime los imports que resuelvan a un módulo/paquete local bajo alguno de esos roots (mismo mecanismo que el gate 4); sin el campo, ningún módulo local se exime.
 - `check_signature(source, fn_name, expected_signature)` - "" si la firma implementada coincide con la esperada (nombre + nombres de params en orden), o el desajuste. Determinista, sin LLM.
 - `check_purity(source, fn_name, target_line?)` - operaciones impuras del cuerpo (`gate-purity`). Sin LLM.
 - `check_mutable_defaults(source, fn_name, target_line?)` - params con default mutable (`gate-mutdef`). Sin LLM.
