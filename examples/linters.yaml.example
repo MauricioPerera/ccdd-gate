@@ -1,0 +1,16 @@
+# linters.yaml — ejemplo para linter_gate (linters externos deterministas como checks opt-in).
+# Hermano declarativo de rules.yaml, pero el árbitro es un LINTER EXTERNO (ruff, ...), no AST.
+# Uso: python runners/linter_gate.py linters.yaml [root]
+#   exit 0 limpio · 1 findings · 2 config/entorno inválido. Sin LLM.
+#
+# Cada entrada REQUIERE `version` (pin exacto): la salida de un linter depende de su versión.
+#   version instalada != pin  -> exit 2 (entorno inválido, NO es PASS)
+#   tool no instalada + required:false -> skip anunciado por stderr + exit 0
+#   tool no instalada + required:true  -> exit 2
+# tools válidas hoy: ruff  (registro listo para clippy/eslint/golangci-lint, sin implementar).
+
+- tool: ruff
+  version: "0.15.20"        # pin exacto; si la instalada difiere -> exit 2 (entorno inválido)
+  files: "**/*.py"          # glob opcional, default **/*.py
+  args: []                  # flags extra opcionales para `ruff check`
+  required: false           # false (default): ausente -> skip (exit 0). true -> exit 2.
