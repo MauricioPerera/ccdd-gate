@@ -293,30 +293,40 @@ class TreeSitterBackend(_mb.Backend):
             return self.spec.params_counter(fp)
         return len(fp.named_children)
 
-    def _name(self, fn):
-        nm = fn.child_by_field_name(self.spec.name_field)
-        if nm is not None:
-            return nm.text.decode("utf-8", "replace")
-        # Función anónima (arrow/closure/func literal): subir por los ancestros y, si uno
-        # coincide con una regla de `anon_name_parents`, extraer el identificador del campo.
+    def _anon_ident(self, p, ident_like):
+        # Dado un ancestro `p` de una función anónima, si coincide con una regla de
+        # `anon_name_parents`, extrae y devuelve el identificador del campo (o None).
         # El campo puede ser el identificador directamente o un nodo-lista que lo envuelve
         # (p. ej. el `left` de un short_var_declaration de Go es una expression_list con `f`).
         # PHP: el identificador de una variable es un nodo `name` dentro de `variable_name`
         # (p. ej. el `left` de un assignment_expression); los demás lenguajes usan `identifier`.
+        field = self.spec.anon_name_parents.get(p.type)
+        if field is None:
+            return None
+        val = p.child_by_field_name(field)
+        if val is None:
+            return None
+        if val.type in ident_like:
+            return val.text.decode("utf-8", "replace")
+        for c in val.named_children:
+            if c.type in ident_like:
+                return c.text.decode("utf-8", "replace")
+        return None
+
+    def _name(self, fn):
+        nm = fn.child_by_field_name(self.spec.name_field)
+        if nm is not None:
+            return nm.text.decode("utf-8", "replace")
+        # Función anónima (arrow/closure/func literal): subir por los ancestros (hasta 3)
+        # y, si uno coincide con una regla de `anon_name_parents`, extraer el identificador.
         ident_like = ("identifier", "field_identifier", "type_identifier", "name")
         p = fn.parent
         for _ in range(3):
             if p is None:
                 break
-            field = self.spec.anon_name_parents.get(p.type)
-            if field is not None:
-                val = p.child_by_field_name(field)
-                if val is not None:
-                    if val.type in ident_like:
-                        return val.text.decode("utf-8", "replace")
-                    for c in val.named_children:
-                        if c.type in ident_like:
-                            return c.text.decode("utf-8", "replace")
+            txt = self._anon_ident(p, ident_like)
+            if txt is not None:
+                return txt
             p = p.parent
         return "<anonymous>"
 
