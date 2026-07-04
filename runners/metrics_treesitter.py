@@ -27,10 +27,19 @@ class LangSpec:
     anon_name_parents : {tipo_nodo_ancestro: campo} para nombrar funciones anónimas (closures/
                         func literals): se sube por los ancestros y, si uno coincide, se extrae
                         el identificador de ese campo (directo o primer identificador hijo).
+    params_counter   : hook OPCIONAL (lenguaje, nodo parameters) -> int. Si es None (default),
+                        el conteo de parámetros es len(named_children) del nodo parameters —
+                        correcto para lenguajes donde cada parámetro es su propio nodo
+                        (TS/JS/Rust: un `parameter`/`formal_parameter` por parámetro). Si se
+                        provee, se usa en su lugar: necesario cuando una gramática agrupa varios
+                        nombres que comparten tipo en un único nodo declaración (p. ej. Go:
+                        `func f(a, b int)` es UN `parameter_declaration` con dos `identifier`
+                        hijos, no dos nodos). El default intacto garantiza cero cambio para el
+                        resto de los backends.
     """
     def __init__(self, language, extensions, grammar_loader, function_nodes, decision_nodes,
                  nest_nodes, boolop_node, boolop_ops, params_field="parameters", name_field="name",
-                 anon_name_parents=None):
+                 anon_name_parents=None, params_counter=None):
         self.language = language
         self.extensions = extensions
         self.grammar_loader = grammar_loader
@@ -42,6 +51,7 @@ class LangSpec:
         self.params_field = params_field
         self.name_field = name_field
         self.anon_name_parents = anon_name_parents or {}
+        self.params_counter = params_counter
 
 
 # --- gramáticas concretas ---------------------------------------------------------------------
@@ -109,6 +119,36 @@ _GO_NEST = ("if_statement", "for_statement", "select_statement")
 # o `var g = func(){}` (var_spec, campo "name" → `g`).
 _GO_ANON = {"short_var_declaration": "left", "var_spec": "name"}
 
+
+def _go_param_count(params_node):
+    """Cuenta parámetros Go por NOMBRE declarado, no por declaración.
+
+    Go permite agrupar parámetros que comparten tipo: `func f(a, b int)` es UN solo nodo
+    `parameter_declaration` con dos hijos `identifier` (a, b) seguidos del tipo. El contador
+    genérico (len de named_children del `parameter_list`) reportaría 1, evadiendo el gate de
+    aridad (params <= 5): `func f(a, b, c, d, e, f int)` contaría 1 en vez de 6.
+
+    Aquí recorremos cada declaración dentro del `parameter_list` y sumamos:
+      - `parameter_declaration`: cuenta de sus hijos `identifier` directos (los nombres; el
+        tipo es `type_identifier`/`qualified_type`/etc., nodo distinto). `func f(a, b int)` -> 2,
+        `func f(a int)` -> 1. Defensivo: si una declaración no tuviera ningún `identifier`,
+        cuenta 1.
+      - `variadic_parameter_declaration`: siempre 1 nombre (`func f(xs ...int)` -> 1); Go no
+        permite agrupar varios nombres en un variadic.
+    El receiver de un method_declaration NO llega aquí (campo `receiver`, no `parameters`):
+    comportamiento inalterado.
+    """
+    count = 0
+    for child in params_node.named_children:
+        if child.type == "parameter_declaration":
+            names = [c for c in child.named_children if c.type == "identifier"]
+            count += len(names) if names else 1
+        elif child.type == "variadic_parameter_declaration":
+            count += 1
+        else:
+            count += 1  # defensivo: nodo declarado no reconocido
+    return count
+
 SPECS = [
     LangSpec("typescript", (".ts",), _ts_loader, _JSTS_FUNCS, _JSTS_DECISION, _JSTS_NEST,
              "binary_expression", ("&&", "||"), anon_name_parents=_JSTS_ANON),
@@ -120,7 +160,8 @@ SPECS = [
     LangSpec("rust", (".rs",), _rust_loader, _RUST_FUNCS, _RUST_DECISION, _RUST_NEST,
              "binary_expression", ("&&", "||"), anon_name_parents=_RUST_ANON),
     LangSpec("go", (".go",), _go_loader, _GO_FUNCS, _GO_DECISION, _GO_NEST,
-             "binary_expression", ("&&", "||"), anon_name_parents=_GO_ANON),
+             "binary_expression", ("&&", "||"), anon_name_parents=_GO_ANON,
+             params_counter=_go_param_count),
 ]
 
 
@@ -168,7 +209,13 @@ class TreeSitterBackend(_mb.Backend):
 
     def _params(self, fn):
         fp = fn.child_by_field_name(self.spec.params_field)
-        return len(fp.named_children) if fp is not None else 0
+        if fp is None:
+            return 0
+        # Hook opcional por lenguaje (p. ej. Go agrupa nombres que comparten tipo en un solo
+        # nodo declaración). Default: len de named_children del nodo parameters.
+        if self.spec.params_counter is not None:
+            return self.spec.params_counter(fp)
+        return len(fp.named_children)
 
     def _name(self, fn):
         nm = fn.child_by_field_name(self.spec.name_field)
