@@ -79,6 +79,7 @@ veredicto van en código que no se puede engañar.
 | `runners/nonecmp_check.py` | `none_eq_lines`: comparaciones con None por ==/!= (en vez de is/is not). AST puro | no |
 | `runners/coverage_check.py` | `function_lines`: líneas del cuerpo que la ejecución debería cubrir (primitivo, sin etapa). AST puro | no |
 | `runners/rules_gate.py` | Aplica los checks deterministas **project-wide por glob** desde un `rules.yaml` (idea declarativa estilo autorules, árbitro AST sin LLM) | no |
+| `runners/linter_gate.py` | Envuelve **linters externos deterministas** como checks opt-in desde un `linters.yaml` (hermano de `rules_gate`, pero el veredicto lo emite un lexterno pineado, no AST propio); hoy solo adaptador `ruff` (dep opcional, no del paquete) | no |
 | `runners/audit_composition.py` | Auditor project-wide: composición sin gatear (función importa a otra sin `kind:group`); distingue deuda de FORMA vs de COMPORTAMIENTO | no |
 | `runners/audit_orphan_targets.py` | Auditor project-wide: `.py` de implementación que no son target de ningún contrato (código fuera del flujo gate); exime datos puros | no |
 | `runners/audit_annotations.py` | Auditor project-wide: nombres en anotaciones sin importar/definir; caza bugs de portabilidad que lazy annotations (PEP 649) enmascara | no |
@@ -164,6 +165,7 @@ Desde el repo, copiá `.mcp.json.example` a `.mcp.json`. Tools (sin LLM):
 - `check_asserts(source, fn_name, target_line?)` - líneas de `assert` (`gate-assert`). Sin LLM.
 - `check_none_cmp(source, fn_name, target_line?)` - comparaciones con None por ==/!= (`gate-nonecmp`). Sin LLM.
 - `run_rules_gate(rules_path?, root?)` - aplica los checks deterministas **project-wide por glob** desde un `rules.yaml`. Sin LLM.
+- `run_linter_gate(linters_path?, root?)` - envuelve **linters externos deterministas** como checks opt-in desde un `linters.yaml` (lista de `{tool, version, files?, args?, required?}`); version pineada, sin LLM. Hoy solo adaptador `ruff` (dep opcional, no del paquete).
 - `run_integration_gate(task_path)` - **veredicto PASS/FAIL unificado** de un contrato YA EN DISCO (lint + aprobación de tests + tests congelados + complejidad ≤ budget), idéntico a la CLI `task_gate.py`. Para `kind:group` compone las hijas + el test de integración sobre los archivos reales (sin sandbox). El agente NO implementa: delega a `run_ephemeral_agent`.
 - `run_ephemeral_agent(task_path)` - delega la **implementación** al modelo pequeño local y la valida contra el gate. El **servidor** fija modelo y endpoint; el LLM anfitrión solo pasa `task_path` (no elige el modelo). El **operador** puede elegir el modelo por entorno (`CCDD_EXECUTOR_MODEL`, `CCDD_EXECUTOR_API`) sin tocar la fuente; el LLM no. Default: `qwen3-coder:480b-cloud` vía Ollama (`http://localhost:11434/v1`).
 - `audit_composition(root?)` - composición sin gatear project-wide; separa deuda de FORMA (composición ejercitada por el test del composer) de deuda de COMPORTAMIENTO (mock o test ausente). `ok` = sin deuda de comportamiento.
@@ -293,6 +295,21 @@ el **árbitro es AST determinista, no un LLM** (autorules usa un juez LLM; ccdd-
 
 ```bash
 python runners/rules_gate.py rules.yaml [root]   # exit 0 ok · 1 violaciones · 2 config inválida
+```
+
+**Linters externos deterministas (`linter_gate`).** Hermano de `rules_gate` pero el veredicto lo emite un
+**linter externo** invocado como subproceso con salida machine-readable, no un AST propio: el gate no
+reimplementa reglas, delega en la herramienta y solo normaliza su salida a `findings`. **Opt-in** desde un
+`linters.yaml` declarativo (lista de `{tool, version, files?, args?, required?}`). La salida de un linter
+depende de su versión, por eso `version` es **pin exacto obligatorio**: versión instalada != pin → entorno
+inválido (exit 2, **no es PASS**). Tool ausente + `required:false` → skip anunciado + exit 0 (precedente
+tree-sitter del repo); `required:true` → exit 2. Findings → exit 1; limpio → exit 0. **HOY solo hay
+adaptador `ruff`** (el registro queda listo para clippy/eslint/golangci-lint sin implementarlos); **`ruff`
+NO es dependencia del paquete** — es una dep opcional que el operador instala y pinea. Ver
+`examples/linters.yaml.example`.
+
+```bash
+python runners/linter_gate.py linters.yaml [root]   # exit 0 limpio · 1 findings · 2 config/entorno inválido
 ```
 
 **Campo `language` (opcional, multi-lenguaje).** Por defecto `python`. Con `language: python`
