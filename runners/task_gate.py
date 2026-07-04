@@ -406,13 +406,18 @@ def _gate_nonecmp(fm, target, fn_name):
 # declara `enforce_deps: true`. Lee el source del target y flaggea imports top-level que no estén
 # en deps_allowed (ni en stdlib). Determinista, sin LLM. Si el target no existe, deja que lo
 # reporte _gate_complexity (back-compat: no duplica el error).
-def _gate_deps(fm, target):
+# Exención automática de módulos locales: se pasan como `local_roots` el dir del contrato y el dir
+# del target, así los imports que resuelven a módulos/paquetes locales hermanos del target
+# (`<dir>/m.py` o `<dir>/m/__init__.py`) no se flaggean y el usuario no necesita listarlos a mano en
+# deps_allowed.
+def _gate_deps(fm, target, contract_dir):
     if not fm.get("enforce_deps"):
         return None
     if not target.exists():
         return None
     unauthorized = deps_check.unauthorized_imports(
-        target.read_text(encoding="utf-8"), fm.get("deps_allowed") or [])
+        target.read_text(encoding="utf-8"), fm.get("deps_allowed") or [],
+        local_roots=[contract_dir, target.parent])
     if unauthorized:
         return {"verdict": "FAIL", "stage": "gate-deps", "unauthorized": unauthorized}
     return None
@@ -439,7 +444,7 @@ def gate(task_path, _depth=0):
             or _gate_bareexcept(fm, target, fn_name)
             or _gate_assert(fm, target, fn_name)
             or _gate_nonecmp(fm, target, fn_name)
-            or _gate_deps(fm, target)
+            or _gate_deps(fm, target, p.parent)
             or _gate_complexity(fm, target, fn_name, fm["budget"]))
 
 
