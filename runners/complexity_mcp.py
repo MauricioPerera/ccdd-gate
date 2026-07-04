@@ -322,7 +322,11 @@ TOOLS = [
         "inputSchema": {"type": "object", "required": ["code"], "properties": {
             "code": {"type": "string", "description": "Código a escanear."},
             "deps_allowed": {"type": "array", "description": "Dependencias permitidas (top-level); opcional.",
-                             "items": {"type": "string"}}}},
+                             "items": {"type": "string"}},
+            "local_roots": {"type": "array", "description": "Directorios de búsqueda locales (opcional): "
+                            "imports que resuelvan a un módulo/paquete local bajo alguno de estos roots "
+                            "(`<root>/m.py` o `<root>/m/__init__.py`) se eximen. Sin este campo, ningún módulo "
+                            "local se exime.", "items": {"type": "string"}}}},
     },
     {
         "name": "check_signature",
@@ -923,9 +927,12 @@ def judge_audit(args):
 
 
 def scan_dependencies(args):
-    """Imports top-level no autorizados (anti-slopsquatting) vía deps_check.unauthorized_imports."""
+    """Imports top-level no autorizados (anti-slopsquatting) vía deps_check.unauthorized_imports.
+    Opcional: `local_roots` (lista de dirs) exime imports que resuelvan a módulos/paquetes locales
+    bajo esos roots (mismo mecanismo que el gate 4). Sin ese campo, comportamiento previo intacto."""
     import deps_check
-    return {"unauthorized": deps_check.unauthorized_imports(args["code"], args.get("deps_allowed") or [])}
+    return {"unauthorized": deps_check.unauthorized_imports(
+        args["code"], args.get("deps_allowed") or [], local_roots=args.get("local_roots"))}
 
 
 def check_signature(args):

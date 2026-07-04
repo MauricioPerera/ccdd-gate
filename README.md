@@ -255,9 +255,12 @@ Sin desambiguador y con >1 def del nombre, el gate devuelve **INVALID** (ambiguo
 **Campo `enforce_deps` (opcional, anti-slopsquatting).** Si `enforce_deps: true`, el gate corre la
 etapa **gate-deps**: flaggea los imports top-level del target que no estén en `deps_allowed` (ni en
 la stdlib) y falla con `stage: gate-deps`. **Opt-in** (default off): los contratos que no lo declaran
-no cambian. Limitación actual: trata como "tercero" cualquier import no-stdlib que no esté en
-`deps_allowed`, así que con `enforce_deps` los módulos locales del propio proyecto deben listarse en
-`deps_allowed` (la exención automática de módulos locales queda como mejora futura). Solo Python por ahora.
+no cambian. Los módulos **locales del propio proyecto** se eximen automáticamente: el gate pasa como
+raíces de búsqueda locales el directorio del contrato y el del target, así que un import top-level que
+resuelva a `<dir>/m.py` o `<dir>/m/__init__.py` bajo alguno de esos dirs no se flaggea (no hace falta
+listarlo en `deps_allowed`). Los imports de tercero no listados siguen flaggeándose normalmente.
+Limitación actual: la exención solo mira el top-level de esos dos dirs (no recursiva ni configurable a
+otros dirs del repo); y sigue siendo solo Python.
 
 **Conformidad de firma (etapa gate-signature, default-on).** El gate compara la firma IMPLEMENTADA
 con la `signature` del contrato (nombre + nombres de parámetros en orden; ignora anotaciones,
