@@ -17,10 +17,19 @@ from audit_composition import _contracts, _rel  # noqa: E402
 import task_gate  # noqa: E402
 
 
+# El resultado de _gate_annotations para un target depende SOLO del archivo y de `language` (el
+# único campo de `fm` que usa). En repos donde N contratos apuntan al mismo target, la versión
+# ingenua re-leía y re-parseaba (AST) el archivo una vez por contrato. Esta cache memoiza por
+# (target resuelto, language): leer+parsear+walk UNA vez por target único, sin cambiar el resultado
+# ni el orden de failures (la cache es pura memoización, no reordena la iteración de _contracts).
+_CACHE_MISS = object()
+
+
 def audit(root):
     """Devuelve {checked, failures, ok}. failures: targets con nombres de anotación sin resolver."""
     rootp = Path(root).resolve()
     checked, fails = 0, []
+    cache = {}  # (resolved_tgt, lang) -> resultado de _gate_annotations (o None)
     for p, fm in _contracts(root):
         if fm.get("kind") == "group" or "target" not in fm:
             continue
@@ -28,7 +37,11 @@ def audit(root):
         if not tgt.exists():
             continue
         checked += 1
-        r = task_gate._gate_annotations(fm, tgt)
+        key = (tgt.resolve(), (fm.get("language") or "python").lower())
+        r = cache.get(key, _CACHE_MISS)
+        if r is _CACHE_MISS:
+            r = task_gate._gate_annotations(fm, tgt)
+            cache[key] = r
         if r:
             fails.append({"target": _rel(tgt.resolve(), rootp), "detail": r["detail"]})
     return {"checked": checked, "failures": fails, "ok": not fails}
