@@ -72,3 +72,34 @@ python runners/measure.py examples/batch/*/task.md \
   --escalate-provider ollama --escalate-model <tu-modelo-grande>
 ```
 `measure.py` registra intentos, escalados y tokens por tier, y calcula el costo con tus precios.
+
+---
+
+## 3. Audits project-wide (reproducible)
+
+`audit_annotations` y `audit_composition` barren todos los contratos de un proyecto. Dos
+optimizaciones (commit `5e06e6e`) reducen el costo de los escenarios patológicos sin cambiar el
+resultado (ni el orden de `failures`):
+
+- **`audit_annotations` — memoización por target.** Si N contratos apuntan al mismo target, la
+  versión ingenua re-leía y re-parseaba (AST + walk de anotaciones) el archivo una vez por
+  contrato. La cache memoiza por `(target, language)`: leer+parsear UNA vez por target único.
+- **`audit_composition` — hoist O(N²)→O(N).** `_imported_stems(target)` se evaluaba dentro de la
+  comprensión `s for s in funcs if s in _imported_stems(target)` → O(N) parseos por stem → O(N²).
+  Hoist fuera de la comprensión: un parseo por stem.
+
+Escenario sintético (tempdir borrado al final; mediana de 3 corridas; versión actual del repo,
+Windows/Python 3.14):
+
+| Audit | Escenario | Tiempo actual |
+|---|---|---|
+| `audit_annotations` | 400 contratos → 1 mismo target (200 funciones anotadas) | ~340 ms |
+| `audit_composition` | 150 contratos con imports cruzados (cada target importa 2 otros, 8 fns) | ~210 ms |
+
+Speedup medido en el commit `5e06e6e`: **~20x** (`audit_annotations`) y **~29x**
+(`audit_composition`). La versión pre-optimización ya no está en el repo, así que esos factores
+se citan de aquel commit (no se re-midieron aquí); el tiempo absoluto de arriba es la referencia
+actual. Validación: reconstruir el loop naïve inline (sin tocar código del repo) reproduce el
+orden de magnitud — ~21x en `audit_annotations` (coherente con ~20x); en `audit_composition` el
+factor escala con el costo de parseo del target, por lo que ~29x es la cifra del commit sobre su
+escenario y targets más pesados lo amplifican.
