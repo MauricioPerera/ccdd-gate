@@ -24,7 +24,7 @@ jobs:
       - name: linter gate sobre el propio codigo (dogfooding)
         run: python runners/linter_gate.py linters.yaml .
 
-      - name: KDD: validar contratos de conocimiento
+      - name: "KDD: validar contratos de conocimiento"
         run: python scripts/validate_contracts.py knowledge/contracts
 
       - name: Frozen tests — gate + L2 governance + tc_lint rules (deterministic, no LLM)
