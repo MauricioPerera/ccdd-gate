@@ -1,0 +1,3 @@
+# Los contratos KDD (formato híbrido OKF+CCDD) viven en este directorio.
+# Validador: python scripts/validate_contracts.py knowledge/contracts
+# (Directorio vacío por ahora: el contrato de ejemplo y el CI son la tarea 2.)
