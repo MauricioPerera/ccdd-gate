@@ -9,6 +9,7 @@ intent: "Convertir un texto arbitrario en un slug ASCII seguro para URLs."
 target: ../../src/kdd_sample/slugify.py
 signature: "def slugify(text: str) -> str"
 test_command: "python -m unittest tests.test_kdd_sample"
+test_cwd: ../..
 budget: { cyclomatic_max: 5, nesting_max: 2, params_max: 1, lines_max: 20 }
 tests: ../../tests/test_kdd_sample.py
 deps_allowed: []
