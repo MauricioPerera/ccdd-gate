@@ -112,7 +112,6 @@ class EvalChecksUnit(unittest.TestCase):
     def test_trajectory_forbidden_tool_is_hard(self):
         case = {"trajectory": {"required_tools": ["a"], "forbidden_tools": ["b"], "max_steps": 2}}
         viol = eval_checks.check_trajectory({"trajectory": ["a", "b", "c"]}, case)
-        kinds = {(v["detail"][:9], v["hard"]) for v in viol}
         self.assertTrue(any(v["hard"] for v in viol))  # tool prohibida
         self.assertGreaterEqual(len(viol), 2)          # prohibida + exceso de pasos
 

@@ -54,7 +54,7 @@ def scaffold(issue, repo=None):
     """dict de issue -> texto del task-contract esqueleto (con placeholders TODO explícitos)."""
     title = issue.get("title", "TODO")
     ref = normalize_ref(issue, repo)
-    labels = [l["name"] if isinstance(l, dict) else l for l in issue.get("labels", [])]
+    labels = [label["name"] if isinstance(label, dict) else label for label in issue.get("labels", [])]
     fm = ["---",
           f"task: {kebab(title)}",
           f'intent: "{title}"',

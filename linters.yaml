@@ -1,0 +1,27 @@
+# linters.yaml — config REAL del dogfooding: el propio repo se gatea con su linter_gate.
+# Uso:  python runners/linter_gate.py linters.yaml .   (exit 0 limpio · 1 findings · 2 config/entorno)
+#
+# tool, version y required son del runner; los args son POLITICA del repo (decidida por el PM):
+#   - excludes:  fixtures/ (código malo A PROPÓSITO para tests de conformancia/métricas),
+#                examples/ (contratos de ejemplo, no producción) y ccdd.py (espejo bundled
+#                de otro proyecto, intocable).
+#   - ignores:   E731 (lambdas en dispatch tables — idioma del repo) y
+#                E402 (sys.path.insert antes de imports de runners/ — idioma del repo).
+#
+# NOTA TÉCNICA (desviación documentada del mecanismo sugerido --extend-exclude):
+# linter_gate pasa los archivos del glob como args POSICIONALES explícitos a `ruff check`,
+# y ruff NO aplica --extend-exclude a archivos pasados explícitamente (solo a discovery por
+# directorio). Por eso se usa --per-file-ignores=PATH:ALL, que sí silencia TODAS las reglas
+# en esos paths aunque vengan como args explícitos. Mismo efecto (exclusión total), mismo pin,
+# runner intocado.
+
+- tool: ruff
+  version: "0.15.20"          # pin exacto; instalada != pin -> exit 2 (entorno inválido, NO PASS)
+  required: true              # el CI del repo siempre instala ruff==0.15.20; ausencia = bug de CI
+  files: "**/*.py"
+  args:
+    - --per-file-ignores=fixtures/**:ALL   # código malo a propósito para tests de conformancia/métricas
+    - --per-file-ignores=examples/**:ALL   # contratos de ejemplo, no producción
+    - --per-file-ignores=ccdd.py:ALL        # espejo bundled de otro proyecto (intocable)
+    - --ignore=E731                         # lambdas en dispatch tables — idioma del repo
+    - --ignore=E402                          # sys.path.insert antes de imports en runners/ — idioma del repo
