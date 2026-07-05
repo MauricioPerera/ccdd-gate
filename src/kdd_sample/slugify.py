@@ -12,7 +12,8 @@ def slugify(text: str) -> str:
         if ch.isalnum() and ch.isascii():
             out.append(ch)
             prev_dash = False
-        elif not prev_dash:
+            continue
+        if not prev_dash:
             out.append("-")
             prev_dash = True
     return "".join(out).strip("-")
