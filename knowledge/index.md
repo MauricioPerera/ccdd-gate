@@ -15,3 +15,4 @@ Bienvenido a la base de conocimiento de ccdd-gate. El formato de los nodos está
 
 ## Contratos
 - [Contratos KDD](./contracts/) — task-contracts híbridos OKF+CCDD para agentes efímeros (validados por `scripts/validate_contracts.py`).
+- [kdd-sample-slugify](./contracts/kdd-sample-slugify.md) — ejemplo real y validado: `slugify(text)` pura/stdlib, target `src/kdd_sample/slugify.py`; pasa nivel 1 (`validate_contracts.py`) y nivel 2 nativo (`runners/tc_lint.py`).

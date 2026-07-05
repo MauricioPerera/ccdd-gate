@@ -315,6 +315,35 @@ python runners/linter_gate.py linters.yaml [root]   # exit 0 limpio · 1 finding
 **Dogfooding:** el propio repo se gatea con su `linters.yaml` de raíz (`ruff==0.15.20`, `required: true`,
 excluye `fixtures/`+`examples/`+`ccdd.py`, ignora `E731`/`E402`) — paso bloqueante del CI (`.github/workflows/test.yml`).
 
+## Metodología KDD
+
+El repo se desarrolla con **KDD (Knowledge-Driven Development)**: modela el contexto con
+[Open Knowledge Format](https://github.com/MauricioPerera/KDD) (OKF) y gobierna el desarrollo con
+**CCDD** (task-contracts + gates deterministas). El conocimiento vive en [`knowledge/`](knowledge/)
+(nodos OKF: `OKF-SPEC.md`, `architecture/`, `concepts/`, `contracts/`) y las reglas del ciclo de vida
+en [`.agents/AGENTS.md`](.agents/AGENTS.md) + la skill
+[`.agents/skills/kdd-okf-ccdd-hybrid/`](.agents/skills/kdd-okf-ccdd-hybrid/) (puente en
+[`AGENTS.md`](AGENTS.md)).
+
+Un **task-contract híbrido** es un nodo OKF (`type: 'Task Contract'`) con frontmatter CCDD
+(`task`, `intent`, `target`, `signature`, `budget`, `tests`, `test_command`, `deps_allowed`,
+`forbids`) + 7 secciones canónicas. Ejemplo real y validado:
+[`knowledge/contracts/kdd-sample-slugify.md`](knowledge/contracts/kdd-sample-slugify.md)
+(`slugify` pura en `src/kdd_sample/slugify.py`).
+
+Se valida en **dos niveles**, ambos deterministas (sin LLM):
+
+```bash
+# Nivel 1 — frontmatter + secciones + examples; y el test_command del contrato en verde.
+python scripts/validate_contracts.py knowledge/contracts
+
+# Nivel 2 nativo — el gate CCDD real de este repo (lint del contrato: forma + semántica).
+python runners/tc_lint.py knowledge/contracts/kdd-sample-slugify.md   # -> "ok": true
+```
+
+El paso de Nivel 1 corre en CI (`.github/workflows/test.yml`, bloqueante). Plantilla y spec del
+formato híbrido: <https://github.com/MauricioPerera/KDD>.
+
 **Campo `language` (opcional, multi-lenguaje).** Por defecto `python`. Con `language: python`
 la firma se valida con el AST nativo (preciso). Para otros lenguajes (`typescript`, `javascript`,
 `go`, …) `tc_lint` valida la firma por **aridad genérica** (cuenta de parámetros top-level y
