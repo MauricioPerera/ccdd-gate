@@ -24,3 +24,7 @@ Thumbs.db
 
 # Artefactos de runtime de request_human_attestation
 contracts/*/pending_attestations/
+
+# .agents es donde residen las reglas de los agentes, por lo tanto NO lo ignoramos.
+# Sin embargo, los logs generados por ellos sí (evidencia local, no parte del repo):
+.agents/logs/
