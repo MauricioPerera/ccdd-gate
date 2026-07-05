@@ -6,14 +6,11 @@ Convierte un str arbitrario en un slug ASCII seguro para URLs.
 
 
 def slugify(text: str) -> str:
-    out = []
-    prev_dash = False
+    out = ["-"]
     for ch in text.lower():
         if ch.isalnum() and ch.isascii():
             out.append(ch)
-            prev_dash = False
             continue
-        if not prev_dash:
+        if out[-1] != "-":
             out.append("-")
-            prev_dash = True
     return "".join(out).strip("-")
