@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import metrics  # noqa: E402  (registra el backend python al importarse)
+import metrics  # noqa: E402,F401  (registra el backend python al importarse)
 import metrics_backends as mb  # noqa: E402
 
 for _s in (sys.stdout, sys.stderr):

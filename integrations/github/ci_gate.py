@@ -73,7 +73,7 @@ def git_changed(base_ref):
                        capture_output=True, text=True, encoding="utf-8")
     if r.returncode != 0:
         raise RuntimeError(f"git diff falló: {r.stderr.strip()}")
-    return [l for l in r.stdout.splitlines() if l.strip()]
+    return [line for line in r.stdout.splitlines() if line.strip()]
 
 
 def run(contract_paths):

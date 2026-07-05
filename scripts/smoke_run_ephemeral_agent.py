@@ -11,7 +11,6 @@ args = {
 }
 
 import urllib.request
-import io
 import json
 
 mocked_code = """```python

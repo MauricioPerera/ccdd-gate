@@ -58,7 +58,7 @@ def ready_refs(issues, repo):
     """Refs owner/repo#N de los issues etiquetados ccdd:ready. Función pura (testeable sin red)."""
     out = []
     for it in issues:
-        labels = [l["name"] if isinstance(l, dict) else l for l in it.get("labels", [])]
+        labels = [label["name"] if isinstance(label, dict) else label for label in it.get("labels", [])]
         if READY in labels:
             out.append(f"{repo}#{it['number']}")
     return out
@@ -100,7 +100,7 @@ def process(result, issue_ref, contract=None, branch=None, post=False):
     current = []
     if post:
         data = _gh_json(f"repos/{repo}/issues/{n}")
-        current = [l["name"] for l in data.get("labels", [])]
+        current = [label["name"] for label in data.get("labels", [])]
     to_add, to_remove = label_transition(current, decision["label"])
     steps = {"issue": issue_ref, "decision": decision,
              "labels": apply_labels(issue_ref, to_add, to_remove, post)}

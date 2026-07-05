@@ -312,6 +312,9 @@ NO es dependencia del paquete** — es una dep opcional que el operador instala 
 python runners/linter_gate.py linters.yaml [root]   # exit 0 limpio · 1 findings · 2 config/entorno inválido
 ```
 
+**Dogfooding:** el propio repo se gatea con su `linters.yaml` de raíz (`ruff==0.15.20`, `required: true`,
+excluye `fixtures/`+`examples/`+`ccdd.py`, ignora `E731`/`E402`) — paso bloqueante del CI (`.github/workflows/test.yml`).
+
 **Campo `language` (opcional, multi-lenguaje).** Por defecto `python`. Con `language: python`
 la firma se valida con el AST nativo (preciso). Para otros lenguajes (`typescript`, `javascript`,
 `go`, …) `tc_lint` valida la firma por **aridad genérica** (cuenta de parámetros top-level y

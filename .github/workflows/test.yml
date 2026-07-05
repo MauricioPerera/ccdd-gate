@@ -21,6 +21,9 @@ jobs:
       - name: Install optional ruff (linter_gate)
         run: pip install ruff==0.15.20
 
+      - name: linter gate sobre el propio codigo (dogfooding)
+        run: python runners/linter_gate.py linters.yaml .
+
       - name: Frozen tests — gate + L2 governance + tc_lint rules (deterministic, no LLM)
         run: python -m unittest tests.test_gates tests.test_l2_governance tests.test_tc_lint_rules -v
 

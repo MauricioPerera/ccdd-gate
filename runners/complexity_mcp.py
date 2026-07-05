@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import metrics    # noqa: E402  (registra el backend python)
+import metrics    # noqa: E402,F401  (registra el backend python al importarse)
 import metrics_backends as mb  # noqa: E402
 import tc_lint    # noqa: E402
 import task_gate  # noqa: E402  (veredicto unificado determinista)
@@ -583,7 +583,7 @@ def request_human_attestation(args):
         import semantic_hash
         ext = Path(fname).suffix or ".py"
         h = semantic_hash.get_semantic_hash(code, ext)
-    except Exception as e:
+    except Exception:
         import hashlib
         h = hashlib.sha256(code.encode("utf-8")).hexdigest()
 

@@ -11,7 +11,6 @@ Uso:  python approve_tests.py task.md            # firma la versión actual de l
 Exit: 0 ok · 1 desincronizado/no firmado (en --check) · 2 error.
 """
 import argparse
-import hashlib
 import sys
 from pathlib import Path
 

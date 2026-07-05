@@ -15,14 +15,13 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pre_complexity_helpers as H  # noqa: E402  (capa de transformación compartida)
 import runner_common as RC  # noqa: E402  (capa compartida: assemble + guardrails + export)
-import metrics  # noqa: E402         (registra el backend python determinista)
+import metrics  # noqa: E402,F401        (registra el backend python determinista)
 import metrics_backends as mb  # noqa: E402  (registro de backends por lenguaje)
 
 HERE = Path(__file__).resolve().parent
@@ -184,7 +183,7 @@ def run(argv=None):
     # ── GATE DETERMINISTA: el veredicto/exit sale de las métricas AST sobre umbrales firmados,
     #    NO del LLM. Idéntico corrida a corrida (F1). El LLM es solo capa explicativa (advisory).
     gate = _gate_summary(det)
-    gate_verdict, gate_critical = gate[3], gate[1]
+    gate_critical = gate[1]
 
     model = a.model or payload.get("model", DEFAULT_MODEL)
     raw = call_llm(a.provider, model, payload["system"], payload["messages"][0]["content"] + JSON_REQ)

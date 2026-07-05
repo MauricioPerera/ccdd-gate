@@ -97,7 +97,7 @@ def diff_labels(current, desired):
     """(to_add, to_remove) gestionando SOLO el prefijo ccdd:* — no pisa labels ajenas. Idempotente."""
     current = set(current)
     desired = set(desired)
-    managed = {l for l in current if l.startswith(LABEL_PREFIX)}
+    managed = {label for label in current if label.startswith(LABEL_PREFIX)}
     return sorted(desired - current), sorted(managed - desired)
 
 
@@ -113,7 +113,7 @@ def issue_state(issue_ref):
     owner, repo, n = parse_issue_ref(issue_ref)
     data = _gh_json("api", f"repos/{owner}/{repo}/issues/{n}")
     return {"number": n, "state": data.get("state"), "title": data.get("title"),
-            "labels": [l["name"] for l in data.get("labels", [])]}
+            "labels": [label["name"] for label in data.get("labels", [])]}
 
 
 def sync_labels(issue_ref, desired, post=False):
