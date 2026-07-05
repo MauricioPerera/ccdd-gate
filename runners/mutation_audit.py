@@ -12,6 +12,7 @@ import ast
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -69,13 +70,35 @@ def _kth_mutant(src, k):
     return ast.unparse(tree), f"{kind}@L{line}"
 
 
+def _purge_bytecode_cache(target):
+    """Borra el __pycache__ del directorio del target antes de correr los tests de un mutante.
+
+    CPython valida un .pyc por la tupla (mtime del source, tamaño del source). Dos mutantes
+    consecutivos con el MISMO tamaño de archivo, escritos dentro del mismo segundo (la
+    resolución de mtime de varios FS es 1s), comparten clave de caché: el segundo mutante
+    cargaba el bytecode STALE del primero y el oráculo lo reportaba como 'sobreviviente'
+    pese a que los tests SÍ lo mataban (falso sobreviviente). Borrar el caché fuerza
+    recompilación fresca en cada mutante; junto con PYTHONDONTWRITEBYTECODE=1 (ver
+    _mutant_survives) garantiza bytecode fresco SIEMPRE —también entre corridas, en Windows
+    y en CI Linux— sin tocar el resto del comportamiento (mismas mutaciones, mismo shape)."""
+    cache = target.parent / "__pycache__"
+    if cache.is_dir():
+        shutil.rmtree(cache, ignore_errors=True)
+
+
 def _mutant_survives(cmd, cwd, target, mutant):
     """True si el test PASA contra el mutante (no lo cazó). Un timeout (bucle infinito introducido
-    por la mutación) NO es sobreviviente: el mutante no hizo pasar el test."""
+    por la mutación) NO es sobreviviente: el mutante no hizo pasar el test.
+
+    Bytecode fresco obligatorio: se borra el __pycache__ del target (ver _purge_bytecode_cache)
+    y se corre el subprocess con PYTHONDONTWRITEBYTECODE=1, así no se escribe .pyc nuevo que
+    podría reutilizarse entre mutantes del mismo tamaño/mismo segundo."""
     target.write_text(mutant, encoding="utf-8", newline="")
+    _purge_bytecode_cache(target)
     try:
         r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=30,
-                           env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
+                           env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
+                                "PYTHONDONTWRITEBYTECODE": "1"})
         return r.returncode == 0
     except subprocess.TimeoutExpired:
         return False
