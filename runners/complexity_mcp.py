@@ -138,6 +138,14 @@ run_ephemeral_agent: el implementador. **Solo pasás task_path** (ruta ABSOLUTA 
   "descubrirlos" curleando /v1/models (el implementador puede ser un modelo cloud que no aparece en
   esa lista). target y tests deben existir antes de llamar.
 
+run_tau_agent: implementador ALTERNATIVO. Mismos requisitos de invocación que run_ephemeral_agent
+  (solo task_path; target y tests deben existir antes de llamar), pero en vez de un Small Executor
+  sin agencia (solo genera texto), delega en el agente Tau (https://github.com/alejandro-ao/tau),
+  que corre su propio loop agéntico (read/write/edit/bash) en una sesión CLI (`tau -p`). El
+  veredicto SIGUE siendo el mismo gate determinista de siempre, corrido después; Tau solo escribe
+  el código. Igual que arriba: el modelo/proveedor de Tau lo decide el OPERADOR (su propio
+  ~/.tau/, o CCDD_TAU_PROVIDER/CCDD_TAU_MODEL), no el llamador.
+
 COMPOSICIÓN (cuando una tarea son varias funciones): tras implementar las funciones hoja, escribe
 un contrato de GRUPO (kind: group) que las componga: `children` (lista de .md de las funciones u
 otros grupos), `integration_tests` + `integration_test_command` con un oráculo que pruebe el
@@ -286,6 +294,14 @@ TOOLS = [
         "description": "Delega un Task Contract al implementador (Small Executor) y lo valida en bucle (max 3) contra task_gate.py hasta PASS o agotar intentos. EL MODELO Y EL ENDPOINT LOS DECIDE EL SERVIDOR — no se pasan ni se eligen desde aquí; tú solo indicas qué contrato implementar. Retorna status y nº de intentos.",
         "inputSchema": {"type": "object", "required": ["task_path"], "properties": {
             "task_path": {"type": "string", "description": "Ruta relativa o absoluta al archivo del Task Contract (.md). ÚNICO parámetro: el modelo lo fija el servidor."}
+        }},
+    },
+    {
+        "name": "run_tau_agent",
+        "description": "Implementador ALTERNATIVO a run_ephemeral_agent: en vez de un Small Executor sin agencia (solo genera texto), delega en el agente Tau (https://github.com/alejandro-ao/tau), que corre su propio loop agéntico (read/write/edit/bash) en una sesión CLI (`tau -p`) para implementar el contrato. El veredicto SIGUE siendo el mismo gate determinista de siempre (task_gate.gate), corrido después de cada intento; Tau solo escribe el código. Reintentos stateless (max 3, CCDD_TAU_MAX_ITERATIONS): cada intento es una sesión Tau nueva (Tau no soporta --resume en modo print) — el estado entre intentos vive en el archivo ya escrito en disco, no en una conversación. El modelo/proveedor de Tau sale de su propia config (~/.tau/) o de CCDD_TAU_PROVIDER/CCDD_TAU_MODEL si el operador los fija; el llamador NO los elige, igual que en run_ephemeral_agent. Requiere el binario `tau` instalado y en PATH (o CCDD_TAU_BIN apuntando a otra ruta). LIMITACIÓN CONOCIDA: Tau tiene un alcance de escritura más amplio que el Small Executor (bash incluido); si toca archivos fuera de `target`, solo `target` se restaura a su versión original si todos los intentos fallan.",
+        "inputSchema": {"type": "object", "required": ["task_path"], "properties": {
+            "task_path": {"type": "string", "description": "Ruta relativa o absoluta al archivo del Task Contract (.md)."},
+            "cwd": {"type": "string", "description": "Raíz bajo la que corre Tau (sandbox de sus tools read/write/edit/bash). Default: directorio actual."}
         }},
     },
     {
@@ -913,6 +929,187 @@ def run_ephemeral_agent(args):
             "last_gate": (proc.stdout or proc.stderr) if proc else ""}
 
 
+# ---------------------------------------------------------------------------
+# run_tau_agent — implementador alternativo: el agente Tau (loop agéntico real:
+# read/write/edit/bash) en vez del Small Executor sin agencia de arriba. El
+# veredicto sigue siendo el mismo gate determinista (task_gate.gate); solo
+# cambia quién escribe el código. Modelo/proveedor los decide Tau vía su propia
+# config (~/.tau/), o el operador vía CCDD_TAU_* — nunca el llamador.
+# ---------------------------------------------------------------------------
+
+def _tau_bin():
+    return os.environ.get("CCDD_TAU_BIN", "tau")
+
+
+def _tau_max_iterations():
+    try:
+        return max(1, int(os.environ.get("CCDD_TAU_MAX_ITERATIONS", "3")))
+    except ValueError:
+        return 3
+
+
+def _tau_timeout_seconds():
+    try:
+        return max(1, int(os.environ.get("CCDD_TAU_TIMEOUT_SECONDS", "300")))
+    except ValueError:
+        return 300
+
+
+def _prepare_tau_task(args):
+    """Carga el task-contract y el target. Devuelve (ctx, None) o (None, error_dict).
+
+    A diferencia de _prepare_ephemeral_task, no fija model/api_url (Tau usa su propio
+    ~/.tau/, no un executor chico); en cambio resuelve `cwd`: la raíz bajo la que corre
+    Tau (sandbox de sus tools read/write/edit/bash). Default: cwd del proceso.
+    """
+    task_path = args.get("task_path")
+    if not isinstance(task_path, str) or not task_path:
+        return None, {"status": "FAIL", "reason": "task_path requerido"}
+    tp = Path(task_path).resolve()
+    if not tp.exists():
+        return None, {"status": "FAIL", "reason": f"Task file no encontrado: {task_path}"}
+    try:
+        task_content = tp.read_text(encoding="utf-8")
+        fm, _body = tc_lint.split_front_matter(task_content)
+        target = (tp.parent / fm["target"]).resolve()
+        if not target.exists():
+            return None, {"status": "FAIL", "reason": f"Target no encontrado: {target}"}
+        original_source = target.read_text(encoding="utf-8")
+        tests_rel = fm.get("tests")
+        tests_path = (tp.parent / tests_rel).resolve() if tests_rel else None
+    except Exception as e:
+        return None, {"status": "FAIL", "reason": f"Error parseando: {e}"}
+
+    cwd_arg = args.get("cwd")
+    cwd = Path(cwd_arg).resolve() if isinstance(cwd_arg, str) and cwd_arg else Path.cwd()
+
+    return {
+        "tp": tp,
+        "target": target,
+        "original_source": original_source,
+        "signature": fm.get("signature", ""),
+        "tests_path": tests_path,
+        "cwd": cwd,
+    }, None
+
+
+def _build_tau_prompt(ctx, feedback=None):
+    """Prompt para el agente Tau: le indica DÓNDE leer, no QUÉ escribir. A diferencia
+    del Small Executor, Tau lee el contrato completo con su propia tool `read`, así que
+    no hace falta embeber el código fuente ni el contrato en el prompt."""
+    lines = [
+        "You are implementing a CCDD task-contract.",
+        f"Read the full contract at {ctx['tp']} before writing any code — it defines "
+        "Intent, Interface, Invariants, Examples, and Constraints.",
+        f"Implement {ctx['target']} to satisfy the contract's `signature` and `budget`.",
+    ]
+    if ctx["tests_path"] is not None:
+        lines.append(f"Do not modify the tests at {ctx['tests_path']}.")
+    lines.append("Do not add dependencies outside the contract's `deps_allowed`.")
+    lines.append(
+        "When you believe the implementation is complete and correct, stop — a separate "
+        "deterministic gate will verify it; you do not need to run the test command yourself."
+    )
+    if feedback:
+        lines.append("")
+        lines.append(
+            "Your previous attempt is already written to the target file above and FAILED "
+            "the gate. Read it, then fix ONLY what's wrong — do not rewrite parts that "
+            "already work."
+        )
+        lines.append(feedback)
+    return "\n".join(lines)
+
+
+def _build_tau_feedback(gate_json, signature):
+    """Feedback de un veredicto FAIL para Tau. A diferencia de _build_feedback (pensado
+    para el Small Executor, que reescribe el archivo entero cada vez), no pide regenerar
+    desde cero: Tau edita incrementalmente el archivo que ya escribió."""
+    feedback = f"Gate verdict:\n{json.dumps(gate_json, ensure_ascii=False, indent=2)}\n\n"
+    feedback += _stage_feedback(gate_json, signature)
+    return feedback.strip()
+
+
+def _run_tau_once(prompt, *, cwd, timeout_seconds):
+    """Invoca `tau -p <prompt> --cwd <cwd>` como subproceso.
+
+    Devuelve (ok, stdout, stderr, returncode). `ok` refleja si el PROCESO de Tau
+    terminó limpio (exit 0) — no el veredicto CCDD, que se corre aparte con
+    task_gate.gate() después de esta llamada.
+    """
+    import subprocess
+
+    cmd = [_tau_bin(), "-p", prompt, "--cwd", str(cwd), "--output", "json"]
+    provider = os.environ.get("CCDD_TAU_PROVIDER")
+    if provider:
+        cmd += ["--provider", provider]
+    model = os.environ.get("CCDD_TAU_MODEL")
+    if model:
+        cmd += ["--model", model]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as e:
+        return False, e.stdout or "", (e.stderr or "") + "\n[timeout]", None
+    except OSError as e:
+        return False, "", f"No se pudo ejecutar '{_tau_bin()}': {e}", None
+    return proc.returncode == 0, proc.stdout, proc.stderr, proc.returncode
+
+
+def run_tau_agent(args):
+    """Implementador alternativo: el agente Tau (loop agéntico real: read/write/edit/
+    bash) en vez del Small Executor sin agencia de run_ephemeral_agent. El veredicto
+    SIGUE siendo el mismo gate determinista (task_gate.gate); solo cambia quién escribe
+    el código. Reintentos stateless (una sesión Tau nueva por intento, sin --resume: no
+    está cableado en modo print de Tau) — el estado entre intentos vive en el
+    filesystem (el target ya tiene el intento anterior), no en una conversación.
+
+    LIMITACIÓN CONOCIDA: Tau tiene tools de escritura/bash de alcance más amplio que el
+    Small Executor (que solo genera texto). Si Tau toca archivos fuera de `target`, solo
+    `target` se restaura a su versión original si todos los intentos fallan.
+    """
+    ctx, error = _prepare_tau_task(args)
+    if error:
+        return error
+
+    max_iterations = _tau_max_iterations()
+    timeout_seconds = _tau_timeout_seconds()
+    feedback = None
+    verdict = None
+
+    for i in range(max_iterations):
+        prompt = _build_tau_prompt(ctx, feedback=feedback)
+        ok, tau_stdout, tau_stderr, returncode = _run_tau_once(
+            prompt, cwd=ctx["cwd"], timeout_seconds=timeout_seconds
+        )
+        if not ok:
+            ctx["target"].write_text(ctx["original_source"], encoding="utf-8")
+            return {
+                "status": "FAIL",
+                "iteration": i + 1,
+                "reason": "tau agent run failed",
+                "returncode": returncode,
+                "tau_stdout": tau_stdout[-4000:],
+                "tau_stderr": tau_stderr[-4000:],
+            }
+
+        verdict = task_gate.gate(str(ctx["tp"]))
+        if verdict.get("verdict") == "PASS":
+            return {"status": "PASS", "iterations": i + 1, "gate": verdict}
+
+        feedback = _build_tau_feedback(verdict, ctx["signature"])
+
+    ctx["target"].write_text(ctx["original_source"], encoding="utf-8")
+    return {
+        "status": "FAIL",
+        "iterations": max_iterations,
+        "reason": "Max iteraciones",
+        "last_gate": verdict,
+    }
+
+
 def run_eval_gate(args):
     """Veredicto Tier 1 de un eval-contract YA EN DISCO (ver runners/eval_gate.py). Sin LLM."""
     import eval_gate as _eg
@@ -1016,6 +1213,7 @@ DISPATCH = {"measure_complexity": measure_complexity,
             "mutation_audit": mutation_audit,
             "request_human_attestation": request_human_attestation,
             "run_ephemeral_agent": run_ephemeral_agent,
+            "run_tau_agent": run_tau_agent,
             "run_eval_gate": run_eval_gate,
             "eval_rubric": eval_rubric,
             "judge_audit": judge_audit,
