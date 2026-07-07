@@ -17,6 +17,7 @@ import os
 import re
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -298,7 +299,7 @@ TOOLS = [
     },
     {
         "name": "run_tau_agent",
-        "description": "Implementador ALTERNATIVO a run_ephemeral_agent: en vez de un Small Executor sin agencia (solo genera texto), delega en el agente Tau (https://github.com/alejandro-ao/tau), que corre su propio loop agéntico (read/write/edit/bash) en una sesión CLI (`tau -p`) para implementar el contrato. El veredicto SIGUE siendo el mismo gate determinista de siempre (task_gate.gate), corrido después de cada intento; Tau solo escribe el código. Reintentos stateless (max 3, CCDD_TAU_MAX_ITERATIONS): cada intento es una sesión Tau nueva (Tau no soporta --resume en modo print) — el estado entre intentos vive en el archivo ya escrito en disco, no en una conversación. El modelo/proveedor de Tau sale de su propia config (~/.tau/) o de CCDD_TAU_PROVIDER/CCDD_TAU_MODEL si el operador los fija; el llamador NO los elige, igual que en run_ephemeral_agent. Requiere el binario `tau` instalado y en PATH (o CCDD_TAU_BIN apuntando a otra ruta). LIMITACIÓN CONOCIDA: Tau tiene un alcance de escritura más amplio que el Small Executor (bash incluido); si toca archivos fuera de `target`, solo `target` se restaura a su versión original si todos los intentos fallan.",
+        "description": "Implementador ALTERNATIVO a run_ephemeral_agent: en vez de un Small Executor sin agencia (solo genera texto), delega en el agente Tau (https://github.com/MauricioPerera/tau, fork privado de huggingface/tau), que corre su propio loop agéntico (read/write/edit/bash) en una sesión CLI (`tau -p`) para implementar el contrato. El veredicto SIGUE siendo el mismo gate determinista de siempre (task_gate.gate), corrido después de cada intento; Tau solo escribe el código. Reintentos sobre la MISMA sesión Tau (max 3, CCDD_TAU_MAX_ITERATIONS): el intento 1 crea la sesión bajo un id explícito (--session-id), los siguientes la resumen (--resume) y solo mandan el feedback del gate como turno nuevo — Tau ve su propio intento anterior como conversación real, no solo el archivo ya escrito en disco. Requiere una build de Tau con soporte de --session-id/--resume en modo print (fork privado; huggingface/tau upstream no lo tiene). El modelo/proveedor de Tau sale de su propia config (~/.tau/) o de CCDD_TAU_PROVIDER/CCDD_TAU_MODEL si el operador los fija; el llamador NO los elige, igual que en run_ephemeral_agent. Requiere el binario `tau` instalado y en PATH (o CCDD_TAU_BIN apuntando a otra ruta). LIMITACIÓN CONOCIDA: Tau tiene un alcance de escritura más amplio que el Small Executor (bash incluido); si toca archivos fuera de `target`, solo `target` se restaura a su versión original si todos los intentos fallan.",
         "inputSchema": {"type": "object", "required": ["task_path"], "properties": {
             "task_path": {"type": "string", "description": "Ruta relativa o absoluta al archivo del Task Contract (.md)."},
             "cwd": {"type": "string", "description": "Raíz bajo la que corre Tau (sandbox de sus tools read/write/edit/bash). Default: directorio actual."}
@@ -1037,15 +1038,21 @@ def _resolve_contract_links(contract_body, contract_dir):
     return resolved
 
 
-def _build_tau_prompt(ctx, feedback=None):
-    """Prompt para el agente Tau: le indica DÓNDE leer, no QUÉ escribir. A diferencia
-    del Small Executor, Tau lee el contrato completo con su propia tool `read`, así que
-    no hace falta embeber el código fuente ni el contrato en el prompt.
+def _build_tau_prompt(ctx):
+    """Prompt INICIAL (primer intento) para el agente Tau: le indica DÓNDE leer, no
+    QUÉ escribir. A diferencia del Small Executor, Tau lee el contrato completo con
+    su propia tool `read`, así que no hace falta embeber el código fuente ni el
+    contrato en el prompt.
 
     Los enlaces markdown del contrato (nodos OKF referenciados en vez de
     duplicados, regla KDD) se resuelven acá y se listan explícitamente — así
     Tau no depende de notar y resolver los enlaces por su cuenta a mitad de
-    una tarea."""
+    una tarea.
+
+    Solo se usa para el intento 1: los siguientes reintentos resumen esta MISMA
+    sesión Tau (--resume) y solo mandan el feedback del gate como turno nuevo
+    (ver _build_tau_resume_prompt) — Tau ya tiene este prompt en su historial,
+    no hace falta repetirlo."""
     lines = [
         "You are implementing a CCDD task-contract.",
         f"Read the full contract at {ctx['tp']} before writing any code — it defines "
@@ -1076,15 +1083,21 @@ def _build_tau_prompt(ctx, feedback=None):
         "When you believe the implementation is complete and correct, stop — a separate "
         "deterministic gate will verify it; you do not need to run the test command yourself."
     )
-    if feedback:
-        lines.append("")
-        lines.append(
-            "Your previous attempt is already written to the target file above and FAILED "
-            "the gate. Read it, then fix ONLY what's wrong — do not rewrite parts that "
-            "already work."
-        )
-        lines.append(feedback)
     return "\n".join(lines)
+
+
+def _build_tau_resume_prompt(feedback):
+    """Prompt para un reintento RESUMIDO (--resume): la sesión Tau ya tiene el
+    prompt inicial completo (contrato, target, enlaces) en su historial de
+    conversación, así que este turno manda solo el feedback del gate — no
+    repite las instrucciones iniciales. Esto es lo que gana --resume frente al
+    reintento stateless: Tau ve su propio intento anterior como turnos reales
+    de conversación, no reconstruidos desde cero."""
+    return (
+        "Your previous attempt FAILED the gate. Read the feedback below, then fix ONLY "
+        "what's wrong in the target file you already wrote — do not rewrite parts that "
+        "already work.\n\n" + feedback
+    )
 
 
 def _build_tau_feedback(gate_json, signature):
@@ -1096,8 +1109,14 @@ def _build_tau_feedback(gate_json, signature):
     return feedback.strip()
 
 
-def _run_tau_once(prompt, *, cwd, timeout_seconds):
-    """Invoca `tau -p <prompt> --cwd <cwd>` como subproceso.
+def _run_tau_once(prompt, *, cwd, timeout_seconds, session_id=None, new_session_id=None):
+    """Invoca `tau -p <prompt>` como subproceso.
+
+    - `new_session_id`: primer intento — crea la sesión Tau bajo ESE id explícito
+      (`--session-id`), con `--cwd`, para poder resumirla en los intentos siguientes.
+    - `session_id`: intentos siguientes — resume esa misma sesión (`--resume`), sin
+      `--cwd` (Tau ya sabe el cwd original de la sesión resumida).
+    - Ninguno de los dos: comportamiento legacy, sesión nueva sin id fijo (stateless).
 
     Devuelve (ok, stdout, stderr, returncode). `ok` refleja si el PROCESO de Tau
     terminó limpio (exit 0) — no el veredicto CCDD, que se corre aparte con
@@ -1105,7 +1124,13 @@ def _run_tau_once(prompt, *, cwd, timeout_seconds):
     """
     import subprocess
 
-    cmd = [_tau_bin(), "-p", prompt, "--cwd", str(cwd), "--output", "json"]
+    cmd = [_tau_bin(), "-p", prompt, "--output", "json"]
+    if session_id:
+        cmd += ["--resume", session_id]
+    else:
+        if new_session_id:
+            cmd += ["--session-id", new_session_id]
+        cmd += ["--cwd", str(cwd)]
     provider = os.environ.get("CCDD_TAU_PROVIDER")
     if provider:
         cmd += ["--provider", provider]
@@ -1128,9 +1153,10 @@ def run_tau_agent(args):
     """Implementador alternativo: el agente Tau (loop agéntico real: read/write/edit/
     bash) en vez del Small Executor sin agencia de run_ephemeral_agent. El veredicto
     SIGUE siendo el mismo gate determinista (task_gate.gate); solo cambia quién escribe
-    el código. Reintentos stateless (una sesión Tau nueva por intento, sin --resume: no
-    está cableado en modo print de Tau) — el estado entre intentos vive en el
-    filesystem (el target ya tiene el intento anterior), no en una conversación.
+    el código. Reintentos sobre la MISMA sesión Tau (--session-id en el intento 1,
+    --resume en los siguientes): el feedback del gate se manda como turno de
+    conversación real, no reconstruyendo el prompt completo cada vez — Tau ve su
+    propio intento anterior en su propio historial, no solo el archivo en disco.
 
     LIMITACIÓN CONOCIDA: Tau tiene tools de escritura/bash de alcance más amplio que el
     Small Executor (que solo genera texto). Si Tau toca archivos fuera de `target`, solo
@@ -1142,14 +1168,23 @@ def run_tau_agent(args):
 
     max_iterations = _tau_max_iterations()
     timeout_seconds = _tau_timeout_seconds()
+    tau_session_id = f"ccdd-tau-agent-{uuid.uuid4().hex}"
     feedback = None
     verdict = None
 
     for i in range(max_iterations):
-        prompt = _build_tau_prompt(ctx, feedback=feedback)
-        ok, tau_stdout, tau_stderr, returncode = _run_tau_once(
-            prompt, cwd=ctx["cwd"], timeout_seconds=timeout_seconds
-        )
+        if i == 0:
+            prompt = _build_tau_prompt(ctx)
+            ok, tau_stdout, tau_stderr, returncode = _run_tau_once(
+                prompt, cwd=ctx["cwd"], timeout_seconds=timeout_seconds,
+                new_session_id=tau_session_id,
+            )
+        else:
+            prompt = _build_tau_resume_prompt(feedback)
+            ok, tau_stdout, tau_stderr, returncode = _run_tau_once(
+                prompt, cwd=ctx["cwd"], timeout_seconds=timeout_seconds,
+                session_id=tau_session_id,
+            )
         if not ok:
             ctx["target"].write_text(ctx["original_source"], encoding="utf-8")
             return {
