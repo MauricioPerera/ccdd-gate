@@ -970,7 +970,7 @@ def _prepare_tau_task(args):
         return None, {"status": "FAIL", "reason": f"Task file no encontrado: {task_path}"}
     try:
         task_content = tp.read_text(encoding="utf-8")
-        fm, _body = tc_lint.split_front_matter(task_content)
+        fm, body = tc_lint.split_front_matter(task_content)
         target = (tp.parent / fm["target"]).resolve()
         if not target.exists():
             return None, {"status": "FAIL", "reason": f"Target no encontrado: {target}"}
@@ -990,13 +990,62 @@ def _prepare_tau_task(args):
         "signature": fm.get("signature", ""),
         "tests_path": tests_path,
         "cwd": cwd,
+        "contract_body": body,
     }, None
+
+
+# Enlaces markdown [label](target.md) — mismo patrón que knowledge/OKF-SPEC.md §4.
+_MD_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)\n]*\.md)\)")
+
+
+def _find_knowledge_root(start):
+    """Busca hacia arriba desde `start` el `knowledge/` más cercano (raíz del
+    bundle OKF, para resolver enlaces bundle-absolutos `/foo.md`)."""
+    for path in (start, *start.parents):
+        candidate = path / "knowledge"
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _resolve_contract_links(contract_body, contract_dir):
+    """Resuelve los enlaces markdown a `.md` del cuerpo del contrato (regla KDD:
+    "enlazá a un nodo en vez de duplicar contenido" — ver .agents/skills/
+    kdd-okf-ccdd-hybrid). Soporta las dos formas de OKF-SPEC §4: relativos
+    (resueltos contra el directorio del contrato) y bundle-absolutos
+    (`/ruta.md`, resueltos contra el `knowledge/` ancestro más cercano).
+    Ignora enlaces externos (http(s)/mailto). Devuelve rutas absolutas únicas,
+    en orden de aparición — existan o no en disco (el caller decide qué hacer
+    con las que faltan)."""
+    resolved = []
+    seen = set()
+    for match in _MD_LINK_RE.finditer(contract_body):
+        target = match.group(1).strip()
+        if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", target):
+            continue  # esquema externo (http, mailto, ...)
+        if target.startswith("/"):
+            root = _find_knowledge_root(contract_dir)
+            if root is None:
+                continue
+            candidate = (root / target.lstrip("/")).resolve()
+        else:
+            candidate = (contract_dir / target).resolve()
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        resolved.append(candidate)
+    return resolved
 
 
 def _build_tau_prompt(ctx, feedback=None):
     """Prompt para el agente Tau: le indica DÓNDE leer, no QUÉ escribir. A diferencia
     del Small Executor, Tau lee el contrato completo con su propia tool `read`, así que
-    no hace falta embeber el código fuente ni el contrato en el prompt."""
+    no hace falta embeber el código fuente ni el contrato en el prompt.
+
+    Los enlaces markdown del contrato (nodos OKF referenciados en vez de
+    duplicados, regla KDD) se resuelven acá y se listan explícitamente — así
+    Tau no depende de notar y resolver los enlaces por su cuenta a mitad de
+    una tarea."""
     lines = [
         "You are implementing a CCDD task-contract.",
         f"Read the full contract at {ctx['tp']} before writing any code — it defines "
@@ -1006,6 +1055,23 @@ def _build_tau_prompt(ctx, feedback=None):
     if ctx["tests_path"] is not None:
         lines.append(f"Do not modify the tests at {ctx['tests_path']}.")
     lines.append("Do not add dependencies outside the contract's `deps_allowed`.")
+
+    linked = _resolve_contract_links(ctx.get("contract_body", ""), ctx["tp"].parent)
+    if linked:
+        existing = [p for p in linked if p.exists()]
+        missing = [p for p in linked if not p.exists()]
+        if existing:
+            lines.append(
+                "The contract links to these knowledge nodes for context — read them before "
+                "implementing, instead of guessing at the referenced design:"
+            )
+            lines.extend(f"- {p}" for p in existing)
+        if missing:
+            lines.append(
+                "The contract also links to these paths, but they were not found on disk "
+                "(ignore): " + ", ".join(str(p) for p in missing)
+            )
+
     lines.append(
         "When you believe the implementation is complete and correct, stop — a separate "
         "deterministic gate will verify it; you do not need to run the test command yourself."
