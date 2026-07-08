@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import metrics  # noqa: E402,F401  (registra el backend python al importarse)
 import metrics_backends as mb  # noqa: E402
 
@@ -58,19 +59,54 @@ def resolve_backend(path):
         return None
 
 
-def _is_exempt(code_str, ext):
-    """(exento, hash) — exento si hay una excepción firmada para el hash semántico."""
+SIGNATURE_SLOT_ID = "complexity_exception"
+
+
+def _valid_exception(exc, h, registry):
+    """True si `exc` es una excepción para el hash `h` con firma Ed25519 válida de un
+    reviewer registrado en `registry` (contracts/complexity-agent/reviewers.json). Nunca
+    lanza: una entrada mal formada, o `cryptography` ausente, es simplemente 'no exime'."""
+    if not isinstance(exc, dict) or exc.get("content_sha256") != h:
+        return False
+    pub_hex = registry.get(exc.get("reviewer"))
+    if not isinstance(pub_hex, str):
+        return False
+    try:
+        import ccdd
+        return ccdd.verify_attestation(pub_hex, SIGNATURE_SLOT_ID, h, exc.get("signature", ""))
+    except ImportError:
+        return False
+
+
+def _load_json_or_empty(path, default):
+    """JSON en `path`, o `default` si no existe o está corrupto. Nunca lanza: un archivo de
+    gobernanza mal formado no debe tumbar el hook en cada escritura de archivo."""
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return default
+
+
+def _is_exempt(code_str, ext, contract_dir=None):
+    """(exento, hash) — exento si hay una excepción con firma Ed25519 VÁLIDA (verificada
+    contra reviewers.json) para el hash semántico. Sin reviewers.json, sin attestations.json,
+    con JSON corrupto, o sin firma válida, nunca exime (deny-by-default: un content_sha256
+    que matchea no alcanza por sí solo). `contract_dir` (opcional, inyectable para tests):
+    default contracts/complexity-agent."""
     import semantic_hash
     h = semantic_hash.get_semantic_hash(code_str, ext)
-    contract_dir = Path(__file__).resolve().parent.parent / "contracts" / "complexity-agent"
-    attest_path = contract_dir / "attestations.json"
-    if not attest_path.exists():
-        return False, h
-    attest = json.loads(attest_path.read_text(encoding="utf-8"))
-    exceptions = attest.get("complexity_exception", [])
+    if contract_dir is None:
+        contract_dir = Path(__file__).resolve().parent.parent / "contracts" / "complexity-agent"
+    attest = _load_json_or_empty(contract_dir / "attestations.json", {})
+    exceptions = attest.get("complexity_exception", []) if isinstance(attest, dict) else []
     if isinstance(exceptions, dict):
         exceptions = [exceptions]
-    exempt = any(exc.get("content_sha256") == h for exc in exceptions)
+    registry = _load_json_or_empty(contract_dir / "reviewers.json", {})
+    if not isinstance(registry, dict):
+        registry = {}
+    exempt = any(_valid_exception(exc, h, registry) for exc in exceptions)
     return exempt, h
 
 
@@ -102,14 +138,19 @@ def main():
         return 0  # no-op anunciado: extensión sin backend
     code_str = Path(path).read_text(encoding="utf-8")
     ext = Path(path).suffix or ".py"
-
-    exempt, h = _is_exempt(code_str, ext)
-    if exempt:
-        print(f"[complexity-gate] PASS en {os.path.basename(path)} "
-              f"(EXCEPCIÓN FIRMADA para hash {h[:8]}).", file=sys.stderr)
-        return 0
-
     det = backend.extract_source(code_str, os.path.basename(path))
+
+    has_critical = any(f.get("severity") == "CRÍTICA" for f in det.get("findings", []))
+    if has_critical:
+        # Verificar la excepción (Ed25519 real) solo cuando hay algo que potencialmente eximir:
+        # evita el costo de leer attestations.json/reviewers.json y verificar firmas en el
+        # caso común (sin CRÍTICA), que es la inmensa mayoría de las invocaciones del hook.
+        exempt, h = _is_exempt(code_str, ext)
+        if exempt:
+            print(f"[complexity-gate] PASS en {os.path.basename(path)} "
+                  f"(EXCEPCIÓN FIRMADA para hash {h[:8]}).", file=sys.stderr)
+            return 0
+
     return _report_findings(path, det)
 
 
