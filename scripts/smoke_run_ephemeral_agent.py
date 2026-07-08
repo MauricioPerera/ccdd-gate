@@ -1,11 +1,12 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path("d:/repos/ccddgate/ccdd-gate/runners").resolve()))
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "runners"))
 import complexity_mcp
 
 args = {
-    "task_path": "d:/repos/ccddgate/ccdd-gate/examples/sandbox/task.md",
+    "task_path": str(REPO_ROOT / "examples" / "sandbox" / "task.md"),
     "model": "gemma-4-12b-coder",
     "api_url": "http://localhost:1234/v1"
 }

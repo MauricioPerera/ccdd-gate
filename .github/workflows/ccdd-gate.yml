@@ -31,8 +31,8 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
-      - name: Install optional tree-sitter (backend JS/TS para el dogfooding multi-lenguaje)
-        run: pip install tree_sitter tree_sitter_typescript
+      - name: Install optional tree-sitter grammars (dogfooding multi-lenguaje completo)
+        run: pip install tree_sitter tree_sitter_typescript tree_sitter_rust tree_sitter_go tree_sitter_java tree_sitter_c_sharp tree_sitter_php tree_sitter_ruby tree_sitter_kotlin tree_sitter_c tree_sitter_swift tree_sitter_cpp
 
       - name: ccdd-gate (tc_lint + task_gate) sobre los contratos del PR
         env:
@@ -46,7 +46,7 @@ jobs:
 
       # Dogfooding: el propio repo se somete al complexity gate. Falla si una función de
       # PRODUCCIÓN supera el umbral CRÍTICA firmado. Multi-lenguaje: cubre todo lenguaje con
-      # backend registrado (Python + JS/TS/JSX/TSX vía el tree-sitter instalado arriba).
+      # backend registrado (Python + los 13 lenguajes tree-sitter instalados arriba).
       # Los avisos ALTA se reportan pero no bloquean (espejo de la semántica del gate).
       - name: complexity-gate sobre el propio código (dogfooding)
         run: python runners/repo_gate.py
