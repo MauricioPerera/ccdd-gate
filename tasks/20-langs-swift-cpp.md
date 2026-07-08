@@ -86,3 +86,11 @@ rotación del ejemplar en `test_language_guardrails.py` con el comentario actual
   métodos template/calificados de C++ no pudieran medirse sin refactor de la capa
   neutral — en ese caso documentar la clase excluida con su fixture demostrativo y
   cerrar el batch con lo medible declarado, en vez de aproximar en silencio.
+
+## Enmienda 1 (2026-07-08, ejecución)
+Consecuencia forzada detectada por el PM al auditar el perímetro:
+`tests/test_conformance.py::test_python_baseline_is_complete` exigía baseline Python para
+TODO fixture, pero `template_function` es C++-only (los templates no existen en Python).
+El test pasa a saltear los fixtures sin fuente Python (los "solo-lenguaje"), en vez de
+exigir un baseline imposible. Un condicional, sin debilitar la verificación del resto.
+Autorizado y aplicado por el PM (leftover `out.txt` de debug del dev eliminado).
