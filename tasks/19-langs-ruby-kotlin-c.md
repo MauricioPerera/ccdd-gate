@@ -79,3 +79,13 @@ está instalada.
   forzar un override sin razón; o si `tree-sitter-kotlin` (community) resultara
   incompatible con la versión pineada de `tree_sitter` — en ese caso el batch se cierra
   con ruby+c y kotlin queda documentado como bloqueado.
+
+## Enmienda 1 (2026-07-07, ejecución)
+Consecuencia forzada detectada por el dev y verificada por el PM:
+`tests/test_language_guardrails.py` usaba a ruby como ejemplar de "lenguaje sin backend"
+para el fallback a regex; al volverse ruby soportado, el ejemplar rota a swift — la misma
+rotación que hizo `fb3977a` (go→ruby) cuando go ganó backend. Un assert, cero lógica
+nueva, comentario del test actualizado con ambos porqués. Además, para no romper los
+tests de la task 18: los LangSpec cuyos nombres de función no son un field plano exponen
+el hook opcional `name_resolver`, y `sig_treesitter` degrada limpio (fallback anunciado)
+en esos lenguajes — diseño documentado en `metrics_treesitter.py`.

@@ -16,7 +16,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Install optional tree-sitter grammars (backend multi-lenguaje)
-        run: pip install tree_sitter tree_sitter_typescript tree_sitter_rust tree_sitter_go tree_sitter_java tree_sitter_c_sharp tree_sitter_php
+        run: pip install tree_sitter tree_sitter_typescript tree_sitter_rust tree_sitter_go tree_sitter_java tree_sitter_c_sharp tree_sitter_php tree_sitter_ruby tree_sitter_kotlin tree_sitter_c
 
       - name: Install optional ruff (linter_gate)
         run: pip install ruff==0.15.20
