@@ -56,6 +56,18 @@ def _parse_sig_python(signature):
                      + (1 if a.vararg else 0) + (1 if a.kwarg else 0))
 
 
+def _parse_sig_treesitter(signature, language):
+    """Intenta parsear la firma con tree-sitter. Devuelve (name, aridad) o (None, None) si falla."""
+    try:
+        import sig_treesitter
+        parsed = sig_treesitter.parse_signature(signature, language)
+        if parsed is None:
+            return None, None
+        return parsed.get("name"), len(parsed.get("params", []))
+    except Exception:
+        return None, None
+
+
 _OPEN, _CLOSE = "([{<", ")]}>"
 
 
@@ -121,10 +133,19 @@ def _parse_sig_generic(signature):
 
 
 def parse_sig(signature, language=None):
-    """(nombre, aridad) de una firma. python usa el AST (preciso); el resto, aridad genérica."""
+    """(nombre, aridad) de una firma.
+
+    Python usa AST nativo (preciso). Otros lenguajes intentan tree-sitter primero (si gramática
+    disponible); si falla, cae a aridad genérica + warning tc-signature-generic.
+    """
     lang = (language or DEFAULT_LANGUAGE).lower()
     if lang in _NATIVE_SIG:
         return _parse_sig_python(signature)
+    # Intentar tree-sitter primero (si gramática disponible)
+    name, arity = _parse_sig_treesitter(signature, lang)
+    if name is not None:
+        return name, arity
+    # Fallback a aridad genérica
     return _parse_sig_generic(signature)
 
 
@@ -163,9 +184,15 @@ def r_signature(ctx):
         verb = "no parsea como def" if lang in _NATIVE_SIG else "no parsea (firma inválida)"
         return [err("tc-signature-valid", f"signature {verb}: {e}")]
     out = []
-    if lang not in _NATIVE_SIG:  # degradación documentada: solo aridad, sin parser nativo
-        out.append({"level": "warn", "rule": "tc-signature-generic",
-                    "msg": f"firma validada por aridad genérica (sin parser nativo para '{lang}')"})
+    # Solo emitir warning tc-signature-generic si realmente caímos al fallback genérico
+    # (tree-sitter no disponible o fallo). Chequear si tree-sitter tuvo éxito:
+    if lang not in _NATIVE_SIG:
+        # Intentar tree-sitter para saber si fue exitoso
+        name_ts, _ = _parse_sig_treesitter(ctx["fm"]["signature"], lang)
+        if name_ts is None:
+            # Cayó a aridad genérica: emitir warning
+            out.append({"level": "warn", "rule": "tc-signature-generic",
+                        "msg": f"firma validada por aridad genérica (sin parser tree-sitter para '{lang}')"})
     pmax = ctx["budget"].get("params_max") if isinstance(ctx["budget"], dict) else None
     if isinstance(pmax, int) and n > pmax:
         out.append(err("tc-signature-valid", f"la firma tiene {n} params > budget.params_max={pmax}"))
