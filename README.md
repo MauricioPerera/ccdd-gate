@@ -63,7 +63,7 @@ veredicto van en código que no se puede engañar.
 |---|---|---|
 | `runners/metrics_backends.py` | Capa neutral compartida (umbrales + `severity` + `lint_results`) y registro `get_backend(language\|extension)` para backends por lenguaje | no |
 | `runners/metrics.py` | Backend Python: métricas de complejidad por AST (ciclomática, anidamiento, params, longitud) | no |
-| `runners/metrics_treesitter.py` | Backend universal vía tree-sitter (TS/TSX/JS/Rust/Go/Java/C#/PHP) — **dep opcional**; sin ella, solo Python | no |
+| `runners/metrics_treesitter.py` | Backend universal vía tree-sitter (TS/TSX/JS/Rust/Go/Java/C#/PHP/Ruby/Kotlin/C/Swift/C++) — **dep opcional**; sin ella, solo Python | no |
 | `runners/pre_complexity_runner.py` | Orquestador L3 para el contrato `pre-complexity-agent` | no |
 | `runners/pre_complexity_helpers.py` | Data-helpers para inyectar contexto de diseño y negocio | no |
 | `runners/complexity_runner.py` | Orquestador L3 para el contrato `complexity-agent` | no |
@@ -158,7 +158,7 @@ Desde el repo, copiá `.mcp.json.example` a `.mcp.json`. Tools (sin LLM):
   lenguaje opt-in (`runners/guardrails_lang.yaml`, p. ej. `no-eval`). `agent` evalúa contra ese contrato. Sin `language`, Python.
 - `lint_task_contract(contract_text, test_code?)` - valida un task-contract (anti-desvarío del modelo grande).
 - `scan_dependencies(code, deps_allowed?, local_roots?)` - imports top-level de terceros NO permitidos (enforcement de `deps_allowed` / anti-slopsquatting). Determinista, sin LLM. `local_roots` (lista de dirs, opcional) exime los imports que resuelvan a un módulo/paquete local bajo alguno de esos roots (mismo mecanismo que el gate 4); sin el campo, ningún módulo local se exime.
-- `check_signature(source, fn_name, expected_signature, language?)` - "" si la firma implementada coincide con la esperada (nombre + nombres de params en orden), o el desajuste. Python usa AST nativo; otros lenguajes usan tree-sitter si la gramática está disponible (TS/TSX/JS/Rust/Go/Java/C#/PHP). Default language: python. Determinista, sin LLM.
+- `check_signature(source, fn_name, expected_signature, language?)` - "" si la firma implementada coincide con la esperada (nombre + nombres de params en orden), o el desajuste. Python usa AST nativo; otros lenguajes usan tree-sitter si la gramática está disponible (TS/TSX/JS/Rust/Go/Java/C#/PHP/Ruby/Kotlin/C/Swift/C++; Kotlin y C degradan a aridad genérica en la firma, ver "Conformancia multi-lenguaje"). Default language: python. Determinista, sin LLM.
 - `check_purity(source, fn_name, target_line?)` - operaciones impuras del cuerpo (`gate-purity`). Sin LLM.
 - `check_mutable_defaults(source, fn_name, target_line?)` - params con default mutable (`gate-mutdef`). Sin LLM.
 - `check_bare_except(source, fn_name, target_line?)` - líneas de `except:` desnudo (`gate-bareexcept`). Sin LLM.
@@ -355,15 +355,16 @@ Sin el campo, el comportamiento es idéntico al actual (Python).
 
 `fixtures/conformance/` define un **oráculo congelado** de las 4 métricas (fixtures equivalentes
 por lenguaje + valores esperados). Todo backend debe reproducirlo: Python es el baseline y los
-backends **tree-sitter** (TS/TSX/JS/Rust/Go/Java/C#/PHP) pasan la suite con métricas estructurales
+backends **tree-sitter** (TS/TSX/JS/Rust/Go/Java/C#/PHP/Ruby/Kotlin/C/Swift/C++) pasan la suite con métricas estructurales
 idénticas (`cyclomatic`/`nesting_depth`/`parameter_count`); solo `function_length` diverge por
 formato y se fija por-lenguaje. Un backend nuevo no se acepta hasta pasar
 `tests/test_conformance.py`. Ver
 [`fixtures/conformance/README.md`](fixtures/conformance/README.md).
 
-**Multi-lenguaje hoy (métricas de complejidad):** Python nativo (sin deps) + TS/TSX/JS/Rust/Go/Java/C#/PHP
+**Multi-lenguaje hoy (métricas de complejidad):** Python nativo (sin deps) + TS/TSX/JS/Rust/Go/Java/C#/PHP/Ruby/Kotlin/C/Swift/C++
 vía tree-sitter (dep opcional: `pip install tree_sitter tree_sitter_typescript tree_sitter_rust
-tree_sitter_go tree_sitter_java tree_sitter_c_sharp tree_sitter_php`). El gate, el hook y
+tree_sitter_go tree_sitter_java tree_sitter_c_sharp tree_sitter_php tree_sitter_ruby tree_sitter_kotlin
+tree_sitter_c tree_sitter_swift tree_sitter_cpp`). El gate, el hook y
 `measure_complexity` miden esas extensiones igual que `.py` cuando las gramáticas están instaladas;
 si no, esos archivos son no-op anunciado. Los checks de antipatrones (`gate-mutdef`, `gate-assert`,
 `gate-signature`, `gate-deps`, etc.) siguen siendo **Python-only** (AST nativo).

@@ -1,7 +1,7 @@
 ---
 type: 'Architecture'
 title: 'Backends de métricas'
-description: 'Capa neutral de métricas: backend Python AST nativo + backends tree-sitter (9 lenguajes) y el oráculo de conformancia congelado.'
+description: 'Capa neutral de métricas: backend Python AST nativo + backends tree-sitter (13 lenguajes) y el oráculo de conformancia congelado.'
 tags: ['architecture', 'metrics', 'tree-sitter', 'conformancia']
 ---
 
@@ -19,9 +19,9 @@ Umbrales CRÍTICA (espejo del contrato firmado `contracts/complexity-agent`): `c
 
 - `runners/metrics.py` — backend Python por AST nativo (sin dependencias). Es el baseline y siempre está disponible.
 
-## Backends tree-sitter (9 lenguajes)
+## Backends tree-sitter (13 lenguajes)
 
-- `runners/metrics_treesitter.py` — backend universal vía tree-sitter: TypeScript, TSX, JavaScript, Rust, Go, Java, C# y PHP (8 backends tree-sitter + Python nativo = 9 lenguajes). Es una **dependencia opcional**: si las gramáticas no están instaladas, esos archivos son un no-op anunciado (aviso por stderr, exit 0), nunca un fallo silencioso.
+- `runners/metrics_treesitter.py` — backend universal vía tree-sitter: TypeScript, TSX, JavaScript, Rust, Go, Java, C#, PHP, Ruby, Kotlin, C, Swift y C++ (13 backends tree-sitter + Python nativo = 14 lenguajes). Es una **dependencia opcional**: si las gramáticas no están instaladas, esos archivos son un no-op anunciado (aviso por stderr, exit 0), nunca un fallo silencioso.
 
 ## Oráculo de conformancia congelado
 
