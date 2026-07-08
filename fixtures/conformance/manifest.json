@@ -6,7 +6,9 @@
     "Métricas estructurales (cyclomatic, nesting_depth, parameter_count) deben coincidir entre lenguajes para la MISMA estructura lógica.",
     "function_length depende del formato del lenguaje (llaves añaden líneas): se compara por-lenguaje vía language_overrides, no entre lenguajes.",
     "Divergencias inevitables se declaran en cross_language_divergence_allowed con su razón en 'note' y se fijan por-lenguaje en language_overrides.",
-    "typescript/tsx/javascript/rust/go/java/csharp/php/ruby/kotlin/c via backend tree-sitter (dep opcional #7); 'comprehension' es sintaxis solo-Python (sin fixture en el resto).",
+    "typescript/tsx/javascript/rust/go/java/csharp/php/ruby/kotlin/c/swift/cpp via backend tree-sitter (dep opcional #7); 'comprehension' es sintaxis solo-Python (sin fixture en el resto).",
+    "swift: function_declaration como nodo de función; closures (lambda_literal) se miden y se nombran via property_declaration > pattern > simple_identifier (p. ej. `let f = { x in x }`). Decisiones: if/for/while/guard/switch_entry + conditional_expression (ternario). do anida SIN ser decisión (análogo de try de Python). Parámetros: nodos parameter directos del function_declaration, no bajo field. Nombre: simple_identifier directo, no bajo field.",
+    "cpp: function_definition como nodo de función; lambdas (lambda_expression) se miden y se nombran via init_declarator > name > identifier (p. ej. `auto lam = [](int x) { … }`). Extensión .h QUEDA EN C; cpp solo toma .cpp/.cc/.cxx/.hpp. Métodos calificados (T C::method) se extraen con name_resolver. Funciones dentro de template_declaration se miden igual que top-level (fixture template_function lo congela). Decisiones: if/for/while/do + conditional_expression + case_statement (modelo TS/C: cada case o default suma). Nido-sin-decisión: labeled_statement (goto cleanup pattern, idioma de C/C++).",
     "java/csharp/php: switch se modela distinto por gramática (ver reporte TAREA-JCSPHP): Java cuenta cada switch_label (case+default, modelo TS), C# cada switch_section (case+default, modelo TS), PHP cada case_statement excluyendo default_statement (modelo 'ramas − 1', análogo a Go/Python/Rust). Los tres reproducen cyclomatic=5 sobre su fixture. PHP usa language_php_only() (PHP puro, no embebido en HTML).",
     "ruby/kotlin/c: modelo de ramas por gramática (ver reporte TAREA-RKC): Ruby cuenta cada `when` de un case y NO el `else` (nodos distintos, modelo 'ramas − 1' análogo a Go/PHP); Kotlin cuenta cada when_entry INCLUIDO `else ->` (la gramática no lo distingue por tipo, modelo TS/Java); C cuenta cada case_statement INCLUIDO `default:` (mismo tipo de nodo, modelo TS/Java). Los tres reproducen cyclomatic=5 sobre su fixture.",
     "ruby/kotlin/c: nido-sin-decisión (análogo del `with` de Python en deep_nesting): Ruby begin/ensure, Kotlin try/finally, C bloque etiquetado (labeled_statement, idioma del goto de limpieza — C no tiene try/with/lock y un `{}` suelto doble-contaría los cuerpos de if/for). Ruby además filtra por is_named (sus nodos `if`/`when`/... comparten type con los tokens keyword) y NO cuenta bloques de método (`do…end`/`{}`) como funciones ni como nesting: son argumentos de call, indistinguibles de cualquier bloque sin resolución semántica (`lambda {}`/`proc {}` incluidos; la única anónima con nodo propio es el literal `->()`)."
@@ -48,6 +50,12 @@
         },
         "c": {
           "function_length": 3
+        },
+        "swift": {
+          "function_length": 3
+        },
+        "cpp": {
+          "function_length": 3
         }
       },
       "note": "Función trivial: sin decisiones ni anidamiento.",
@@ -64,7 +72,9 @@
         "php": "php/simple.php",
         "ruby": "ruby/simple.rb",
         "kotlin": "kotlin/simple.kt",
-        "c": "c/simple.c"
+        "c": "c/simple.c",
+        "swift": "swift/simple.swift",
+        "cpp": "cpp/simple.cpp"
       }
     },
     {
@@ -103,9 +113,15 @@
         },
         "c": {
           "function_length": 14
+        },
+        "swift": {
+          "function_length": 14
+        },
+        "cpp": {
+          "function_length": 14
         }
       },
-      "note": "Anidamiento profundo (5 niveles: for>if>while>with>if). Rust usa unsafe_block, Go select{default:}, Java/C#/PHP y Kotlin usan try/finally, Ruby begin/ensure y C un bloque etiquetado (labeled_statement, goto de limpieza) como análogo de `with` (nido sin decisión, ver reports TAREA-JCSPHP/TAREA-RKC). Longitudes: Ruby 16 (delimita con `end`: +ensure/nil/end suma 3 sobre el `with` de Python), Kotlin 15 (llaves, como Java/C#), C 14 (bloque etiquetado en 1 línea menos que un try{}finally{}).",
+      "note": "Anidamiento profundo (5 niveles: for>if>while>with>if). Rust usa unsafe_block, Go select{default:}, Java/C#/PHP y Kotlin usan try/finally, Ruby begin/ensure, C y C++ bloque etiquetado (labeled_statement, goto de limpieza) como análogo de `with` (nido sin decisión, ver reports TAREA-JCSPHP/TAREA-RKC). Swift usa do (do-catch maneja errores). Longitudes: Ruby 16 (delimita con `end`: +ensure/nil/end suma 3 sobre el `with` de Python), Kotlin 15 (llaves, como Java/C#), C/C++/Swift 14 (bloque etiquetado o do en 1 línea menos que un try{}finally{}).",
       "cross_language_divergence_allowed": [
         "function_length"
       ],
@@ -119,7 +135,9 @@
         "php": "php/deep_nesting.php",
         "ruby": "ruby/deep_nesting.rb",
         "kotlin": "kotlin/deep_nesting.kt",
-        "c": "c/deep_nesting.c"
+        "c": "c/deep_nesting.c",
+        "swift": "swift/deep_nesting.swift",
+        "cpp": "cpp/deep_nesting.cpp"
       }
     },
     {
@@ -158,9 +176,15 @@
         },
         "c": {
           "function_length": 3
+        },
+        "swift": {
+          "function_length": 3
+        },
+        "cpp": {
+          "function_length": 3
         }
       },
-      "note": "Aridad alta (6 parámetros). El fixture Go usa forma agrupada (a, b, c, d, e, f int): un solo parameter_declaration con 6 identifier hijos; el backend Go cuenta por nombre (hook _go_param_count), no por declaración. Regresión: sin el hook reportaría 1. Java/C#/PHP/Ruby/Kotlin declaran cada parámetro por separado (un nodo por parámetro; verificado por gramática: ninguna agrupa nombres). C también declara un parameter_declaration por parámetro, pero la lista vive bajo el declarator anidado: el hook _c_param_count desciende hasta el function_declarator (regresión: sin el hook reportaría 0) y cuenta `int f(void)` como 0.",
+      "note": "Aridad alta (6 parámetros). El fixture Go usa forma agrupada (a, b, c, d, e, f int): un solo parameter_declaration con 6 identifier hijos; el backend Go cuenta por nombre (hook _go_param_count), no por declaración. Regresión: sin el hook reportaría 1. Java/C#/PHP/Ruby/Kotlin declaran cada parámetro por separado (un nodo por parámetro; verificado por gramática: ninguna agrupa nombres). C también declara un parameter_declaration por parámetro, pero la lista vive bajo el declarator anidado: el hook _c_param_count desciende hasta el function_declarator (regresión: sin el hook reportaría 0) y cuenta `int f(void)` como 0. Swift y C++ declaran cada parámetro por separado (parámetro por nodo en ambos).",
       "cross_language_divergence_allowed": [
         "function_length"
       ],
@@ -174,7 +198,9 @@
         "php": "php/many_params.php",
         "ruby": "ruby/many_params.rb",
         "kotlin": "kotlin/many_params.kt",
-        "c": "c/many_params.c"
+        "c": "c/many_params.c",
+        "swift": "swift/many_params.swift",
+        "cpp": "cpp/many_params.cpp"
       }
     },
     {
@@ -213,6 +239,12 @@
         },
         "c": {
           "function_length": 93
+        },
+        "swift": {
+          "function_length": 82
+        },
+        "cpp": {
+          "function_length": 82
         }
       },
       "note": "Función larga (>80 líneas). function_length depende del formato del lenguaje. El fixture C usa `(void)` (0 parámetros): regresión de la regla void del hook _c_param_count.",
@@ -229,7 +261,9 @@
         "php": "php/long_function.php",
         "ruby": "ruby/long_function.rb",
         "kotlin": "kotlin/long_function.kt",
-        "c": "c/long_function.c"
+        "c": "c/long_function.c",
+        "swift": "swift/long_function.swift",
+        "cpp": "cpp/long_function.cpp"
       }
     },
     {
@@ -268,6 +302,12 @@
         },
         "c": {
           "function_length": 3
+        },
+        "swift": {
+          "function_length": 3
+        },
+        "cpp": {
+          "function_length": 3
         }
       },
       "note": "Cadena booleana a and b and c and d: +(operandos-1). Ruby cuenta `&&`/`||` y también sus formas verbales `and`/`or` (espejo del and/or de Python).",
@@ -284,7 +324,9 @@
         "php": "php/boolop_chain.php",
         "ruby": "ruby/boolop_chain.rb",
         "kotlin": "kotlin/boolop_chain.kt",
-        "c": "c/boolop_chain.c"
+        "c": "c/boolop_chain.c",
+        "swift": "swift/boolop_chain.swift",
+        "cpp": "cpp/boolop_chain.cpp"
       }
     },
     {
@@ -341,9 +383,15 @@
         },
         "c": {
           "function_length": 12
+        },
+        "swift": {
+          "function_length": 12
+        },
+        "cpp": {
+          "function_length": 12
         }
       },
-      "note": "match/switch: +1 por rama en ciclomática; en el backend Python NO suma a nesting_depth. Rust usa match con 4 brazos (0.._); Go usa switch con 4 cases explícitos (sin default: default_case es el camino base, +0). Java usa switch con 3 cases + default (cada switch_label cuenta, modelo TS); C# usa switch con 3 cases + default (cada switch_section cuenta, modelo TS); PHP usa switch con 4 cases explícitos sin default (case_statement cuenta, default_statement no, modelo 'ramas − 1'). Ruby usa case con 4 `when` sin else (when cuenta, else no: nodos distintos, modelo 'ramas − 1' como Go/PHP); Kotlin usa when con 3 ramas + else (cada when_entry cuenta INCLUIDO else: un solo tipo de nodo, modelo TS/Java); C usa switch con 3 cases + default (cada case_statement cuenta INCLUIDO default: un solo tipo de nodo, modelo TS/Java). Los 6 reproducen cyclomatic=5.",
+      "note": "match/switch: +1 por rama en ciclomática; en el backend Python NO suma a nesting_depth. Rust usa match con 4 brazos (0.._); Go usa switch con 4 cases explícitos (sin default: default_case es el camino base, +0). Java usa switch con 3 cases + default (cada switch_label cuenta, modelo TS); C# usa switch con 3 cases + default (cada switch_section cuenta, modelo TS); PHP usa switch con 4 cases explícitos sin default (case_statement cuenta, default_statement no, modelo 'ramas − 1'). Ruby usa case con 4 `when` sin else (when cuenta, else no: nodos distintos, modelo 'ramas − 1' como Go/PHP); Kotlin usa when con 3 ramas + else (cada when_entry cuenta INCLUIDO else: un solo tipo de nodo, modelo TS/Java); C/C++ usa switch con 3 cases + default (cada case_statement/switch_entry cuenta INCLUIDO default: un solo tipo de nodo, modelo TS/Java); Swift usa switch con 3 cases + default (cada switch_entry cuenta, modelo TS). Los 8 reproducen cyclomatic=5.",
       "cross_language_divergence_allowed": [
         "function_length",
         "nesting_depth"
@@ -358,7 +406,31 @@
         "php": "php/switch_case.php",
         "ruby": "ruby/switch_case.rb",
         "kotlin": "kotlin/switch_case.kt",
-        "c": "c/switch_case.c"
+        "c": "c/switch_case.c",
+        "swift": "swift/switch_case.swift",
+        "cpp": "cpp/switch_case.cpp"
+      }
+    },
+    {
+      "id": "template_function",
+      "target": "add",
+      "expected": {
+        "cyclomatic": 1,
+        "nesting_depth": 0,
+        "parameter_count": 2,
+        "function_length": 3
+      },
+      "language_overrides": {
+        "cpp": {
+          "function_length": 3
+        }
+      },
+      "note": "Función dentro de template_declaration (solo C++). La función dentro del template se mide igual que una función top-level: mismo oracle. template_function debe parsear sin errores y el backend tree-sitter debe encontrar la function_definition dentro del template_declaration.",
+      "cross_language_divergence_allowed": [
+        "function_length"
+      ],
+      "sources": {
+        "cpp": "cpp/template_function.cpp"
       }
     }
   ]

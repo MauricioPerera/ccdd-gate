@@ -68,9 +68,11 @@ class TestConformance(unittest.TestCase):
         self.assertGreater(checked, 0, "ningún backend/fixture verificado")
 
     def test_python_baseline_is_complete(self):
-        # Python (baseline) debe tener fuente y pasar TODOS los fixtures.
+        # Python (baseline) debe tener fuente y pasar TODOS los fixtures (excepto solo-lenguaje).
         for fixture in MANIFEST["fixtures"]:
-            self.assertIn("python", fixture.get("sources", {}), fixture["id"])
+            # Fixtures solo-lenguaje (p. ej., template_function en C++) pueden omitir Python
+            if "python" not in fixture.get("sources", {}):
+                continue
             m = measure_target("python", fixture["sources"]["python"], fixture["target"])
             exp = expected_for(fixture, "python")
             self.assertEqual({k: m[k] for k in METRICS}, exp, fixture["id"])

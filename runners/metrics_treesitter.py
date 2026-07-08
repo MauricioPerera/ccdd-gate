@@ -121,6 +121,16 @@ def _c_loader():
     return tsc.language()
 
 
+def _swift_loader():
+    import tree_sitter_swift as tss
+    return tss.language()
+
+
+def _cpp_loader():
+    import tree_sitter_cpp as tscpp
+    return tscpp.language()
+
+
 # Nodos comunes a TS/JS (la gramática typescript de tree-sitter cubre ambos sintácticamente).
 _JSTS_FUNCS = ("function_declaration", "function_expression", "arrow_function",
                "method_definition", "generator_function", "generator_function_declaration")
@@ -277,6 +287,140 @@ _C_DECISION = ("if_statement", "for_statement", "while_statement", "do_statement
 _C_NEST = ("if_statement", "for_statement", "while_statement", "do_statement",
            "labeled_statement")
 
+# --- Swift -------------------------------------------------------------------------
+# function_declaration es la única unidad con cuerpo. Closures (lambda_literal) se asignan
+# a variables via property_declaration (p. ej. `let f = { x in x }`).
+# Decisiones: if_statement/for_statement/while_statement/guard_statement +
+# switch_entry (cada case o default) + conditional_expression (ternario `x ? a : b`).
+# do_statement anida SIN ser decisión: equivalente del `try` de Python (do-catch maneja
+# errores, do anida, catch decide — pero la gramática no los distingue por nodo).
+# Boolops: binary_expression con `&&`/`||`.
+# Parámetros: la lista de parámetros no cuelga de un field — son hijos directos
+# `parameter` del function_declaration (hook params_node_types lo localiza por tipo).
+# Nombre: no cuelga de un field `name` — es un nodo `simple_identifier` hijo directo.
+_SWIFT_FUNCS = ("function_declaration", "lambda_literal")
+_SWIFT_DECISION = ("if_statement", "for_statement", "while_statement",
+                   "guard_statement", "switch_entry", "conditional_expression")
+_SWIFT_NEST = ("if_statement", "for_statement", "while_statement", "do_statement",
+              "guard_statement")
+# Lambda asignada: `let f = { x in … }` → property_declaration (campo "pattern" → simple_identifier)
+_SWIFT_ANON = {"property_declaration": "pattern"}
+
+# --- C++ -----------------------------------------------------------------------
+# function_definition es la única unidad con cuerpo. Lambdas (lambda_expression) aparecen
+# en contextos de asignación (init_declarator con campo "name" → identifier).
+# Decisiones: if_statement/for_statement/while_statement/do_statement + conditional_expression
+# (ternario) + case_statement (cada case o default, ambos son case_statement).
+# Boolops: binary_expression con `&&`/`||`.
+# Parámetros: cuelgan bajo function_declarator > parameter_list (usar params_field="function_declarator",
+# params_counter descendiente).
+# Nombre: dentro de function_declarator (puede ser qualified_identifier para métodos fuera de clase):
+# usar name_resolver que maneja ambos casos.
+# Nido-sin-decisión: bloque etiquetado (labeled_statement, idioma del goto de limpieza, análogo a C).
+_CPP_FUNCS = ("function_definition", "lambda_expression")
+_CPP_DECISION = ("if_statement", "for_statement", "while_statement", "do_statement",
+                 "conditional_expression", "case_statement")
+_CPP_NEST = ("if_statement", "for_statement", "while_statement", "do_statement",
+            "labeled_statement")
+# Lambda asignada: `auto lam = [](int x) { … };` → init_declarator (campo "name" → identifier)
+_CPP_ANON = {"init_declarator": "name"}
+
+
+def _swift_params_by_type(fn_node):
+    """Cuenta parámetros Swift (son hijos `parameter` directos, no bajo un field).
+
+    Los parámetros en function_declaration son nodos hijo de tipo `parameter`, no bajo
+    un contenedor de parámetros (a diferencia de otros lenguajes). Se cuenta directamente.
+    """
+    return sum(1 for c in fn_node.named_children if c.type == "parameter")
+
+
+def _cpp_params_count(func_declarator):
+    """Cuenta parámetros C++ dentro del function_declarator o function_definition."""
+    params_list = _cpp_find_params_list(func_declarator)
+    if params_list is None:
+        return 0
+    count = sum(1 for child in params_list.named_children
+                if child.type in ("parameter_declaration", "variadic_parameter"))
+    return count if count > 0 else sum(1 for _ in params_list.named_children)
+
+
+def _cpp_find_params_list(node):
+    """Localiza el nodo parameter_list en un function_declarator o function_definition."""
+    if node.type == "function_declarator":
+        return _cpp_get_params_from_declarator(node)
+    if node.type == "function_definition":
+        declarator = node.child_by_field_name("declarator")
+        while declarator and declarator.type != "function_declarator":
+            declarator = declarator.child_by_field_name("declarator")
+        return _cpp_get_params_from_declarator(declarator) if declarator else None
+    return None
+
+
+def _cpp_get_params_from_declarator(declarator):
+    """Extrae parameter_list de un function_declarator."""
+    params = declarator.child_by_field_name("parameters")
+    if params is not None:
+        return params
+    for child in declarator.named_children:
+        if child.type == "parameter_list":
+            return child
+    return None
+
+
+def _cpp_name_node(fn):
+    """Nodo identifier del nombre de una función C++.
+
+    function_definition > function_declarator > (identifier | qualified_identifier).
+    Si es qualified_identifier (método fuera de clase: T C::method), el nombre es
+    el identifier hijo derecho (después del ::).
+    """
+    declarator = fn.child_by_field_name("declarator")
+    if declarator is None:
+        return None
+    # Buscar identifier o qualified_identifier en el declarator
+    for child in declarator.named_children:
+        if child.type == "identifier":
+            return child
+        if child.type == "qualified_identifier":
+            # El último hijo es el identifier (después del ::)
+            idents = [c for c in child.named_children if c.type == "identifier"]
+            return idents[-1] if idents else None
+        # Descender recursivamente (puede haber abstract_function_declarator)
+        if child.type in ("abstract_function_declarator", "pointer_declarator",
+                         "reference_declarator", "array_declarator"):
+            node = _cpp_name_node_recurse(child)
+            if node:
+                return node
+    return None
+
+
+def _cpp_name_node_recurse(node):
+    """Helper recursivo para descender en declarators anidados."""
+    for child in node.named_children:
+        if child.type == "identifier":
+            return child
+        if child.type == "qualified_identifier":
+            idents = [c for c in child.named_children if c.type == "identifier"]
+            return idents[-1] if idents else None
+        if child.type in ("abstract_function_declarator", "pointer_declarator",
+                         "reference_declarator", "array_declarator"):
+            node = _cpp_name_node_recurse(child)
+            if node:
+                return node
+    return None
+
+
+def _swift_name_node(fn):
+    """Nodo identifier del nombre de una función Swift.
+
+    function_declaration tiene el nombre como nodo hijo directo simple_identifier.
+    """
+    for child in fn.named_children:
+        if child.type == "simple_identifier":
+            return child
+    return None
+
 
 def _go_param_count(params_node):
     """Cuenta parámetros Go por NOMBRE declarado, no por declaración.
@@ -378,6 +522,14 @@ SPECS = [
     LangSpec("c", (".c", ".h"), _c_loader, _C_FUNCS, _C_DECISION, _C_NEST,
              "binary_expression", ("&&", "||"), params_field="declarator",
              params_counter=_c_param_count, name_resolver=_c_name_node),
+    LangSpec("swift", (".swift",), _swift_loader, _SWIFT_FUNCS, _SWIFT_DECISION, _SWIFT_NEST,
+             "conjunction_expression", ("&&", "||"), params_field="parameters",
+             anon_name_parents=_SWIFT_ANON, params_counter=_swift_params_by_type,
+             name_resolver=_swift_name_node),
+    LangSpec("cpp", (".cpp", ".cc", ".cxx", ".hpp"), _cpp_loader, _CPP_FUNCS,
+             _CPP_DECISION, _CPP_NEST, "binary_expression", ("&&", "||"),
+             params_field="function_declarator", params_counter=_cpp_params_count,
+             name_resolver=_cpp_name_node, anon_name_parents=_CPP_ANON),
 ]
 
 
@@ -411,9 +563,15 @@ class TreeSitterBackend(_mb.Backend):
         if n.type in spec.decision_nodes and n.is_named:
             return 1
         if n.type == spec.boolop_node:
+            # Intentar localizar operador via field (mayoría de lenguajes)
             op = n.child_by_field_name("operator")
             if op is not None and op.type in spec.boolop_ops:
                 return 1
+            # Swift (conjunction_expression) usa nodos hijo de tipo "&&" o "||" (anónimos)
+            if spec.boolop_node == "conjunction_expression":
+                for child in n.children:  # Incluir children anónimos
+                    if child.type in spec.boolop_ops:
+                        return 1
         return 0
 
     def _cyclomatic(self, fn):
@@ -436,6 +594,11 @@ class TreeSitterBackend(_mb.Backend):
             fp = next((c for c in fn.named_children
                        if c.type in self.spec.params_node_types), None)
         if fp is None:
+            # Si hay un hook params_counter, intentar llamarlo directamente con el nodo función
+            # (necesario para lenguajes como Swift donde los parámetros son hijos del function_node
+            # sin un field contenedor).
+            if self.spec.params_counter is not None:
+                return self.spec.params_counter(fn)
             return 0
         # Hook opcional por lenguaje (p. ej. Go agrupa nombres que comparten tipo en un solo
         # nodo declaración). Default: len de named_children del nodo parameters.
@@ -470,13 +633,14 @@ class TreeSitterBackend(_mb.Backend):
     def _name(self, fn):
         nm = fn.child_by_field_name(self.spec.name_field)
         if nm is None and self.spec.name_resolver is not None:
-            # Hook por-gramática: C (identifier anidado en declarator) y kotlin (ver su spec).
+            # Hook por-gramática: C (identifier anidado en declarator), Swift (simple_identifier),
+            # y kotlin (ver su spec).
             nm = self.spec.name_resolver(fn)
         if nm is not None:
             return nm.text.decode("utf-8", "replace")
         # Función anónima (arrow/closure/func literal): subir por los ancestros (hasta 3)
         # y, si uno coincide con una regla de `anon_name_parents`, extraer el identificador.
-        ident_like = ("identifier", "field_identifier", "type_identifier", "name")
+        ident_like = ("identifier", "field_identifier", "type_identifier", "name", "simple_identifier")
         p = fn.parent
         for _ in range(3):
             if p is None:
