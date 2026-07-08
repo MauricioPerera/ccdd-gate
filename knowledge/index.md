@@ -7,7 +7,7 @@ Bienvenido a la base de conocimiento de ccdd-gate. El formato de los nodos está
 
 ## Arquitectura
 - [Arquitectura general](./architecture/overview.md) — los dos pilares (gate de código + evals), el servidor MCP y el flujo task-contract → lint → gate → veredicto.
-- [Backends de métricas](./architecture/metrics-backends.md) — capa neutral, backend Python AST nativo, backends tree-sitter (9 lenguajes) y el oráculo de conformancia congelado.
+- [Backends de métricas](./architecture/metrics-backends.md) — capa neutral, backend Python AST nativo, backends tree-sitter (13 lenguajes) y el oráculo de conformancia congelado.
 
 ## Conceptos
 - [Task-contract](./concepts/task-contract.md) — el contrato CCDD nativo: frontmatter, 7 secciones, tests congelados con sha256 y budget firmado.
