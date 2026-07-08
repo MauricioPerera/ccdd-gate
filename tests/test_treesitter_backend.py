@@ -27,6 +27,12 @@ _HAS_CSHARP = "csharp" in mb.supported_languages()
 skip_no_csharp = unittest.skipUnless(_HAS_CSHARP, "tree-sitter (c_sharp) no instalado: dep opcional")
 _HAS_PHP = "php" in mb.supported_languages()
 skip_no_php = unittest.skipUnless(_HAS_PHP, "tree-sitter (php) no instalado: dep opcional")
+_HAS_RUBY = "ruby" in mb.supported_languages()
+skip_no_ruby = unittest.skipUnless(_HAS_RUBY, "tree-sitter (ruby) no instalado: dep opcional")
+_HAS_KOTLIN = "kotlin" in mb.supported_languages()
+skip_no_kotlin = unittest.skipUnless(_HAS_KOTLIN, "tree-sitter (kotlin) no instalado: dep opcional")
+_HAS_C = "c" in mb.supported_languages()
+skip_no_c = unittest.skipUnless(_HAS_C, "tree-sitter (c) no instalado: dep opcional")
 
 TS_SAMPLE = """function decode(rom, pc) {
   if (rom && pc) {
@@ -615,6 +621,330 @@ class TestGateEndToEndPHP(unittest.TestCase):
         src = deep.read_text(encoding="utf-8")
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "crit.php"
+            p.write_text(src, encoding="utf-8")
+            env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+            r = subprocess.run([sys.executable, str(RUNNERS / "complexity_gate.py"), str(p)],
+                               capture_output=True, text=True, encoding="utf-8", env=env)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("CRÍTICA", r.stderr)
+
+
+# ── Ruby ──────────────────────────────────────────────────────────────────────────────
+RUBY_SAMPLE = """def decode(rom, pc)
+  if rom && pc
+    return 1
+  end
+  2
+end
+
+def self.cls_method(a, b)
+  a + b
+end
+
+f = ->(x) { x + 1 }
+"""
+
+
+@skip_no_ruby
+class TestTreeSitterRuby(unittest.TestCase):
+    def setUp(self):
+        self.b = mb.get_backend(language="ruby")
+
+    def test_shape_matches_lint_results_contract(self):
+        m = self.b.measure("def f(a)\n  a\nend")[0]
+        self.assertEqual(set(m), {"function", "line", "cyclomatic", "nesting_depth",
+                                  "parameter_count", "function_length"})
+        self.assertEqual(self.b.tool, "ccdd-treesitter-metrics")
+
+    def test_simple_function(self):
+        m = self.b.measure("def simple(x)\n  x + 1\nend")[0]
+        self.assertEqual(m["function"], "simple")
+        self.assertEqual(m["cyclomatic"], 1)
+        self.assertEqual(m["nesting_depth"], 0)
+        self.assertEqual(m["parameter_count"], 1)
+
+    def test_decision_and_boolop_counting(self):
+        # if (+1) + && (+1) sobre base 1 = 3 — regresión del filtro is_named: los nodos
+        # ruby `if`/`while` comparten type con sus tokens keyword (sin filtro contarían doble).
+        m = [f for f in self.b.measure(RUBY_SAMPLE) if f["function"] == "decode"][0]
+        self.assertEqual(m["cyclomatic"], 3)
+        self.assertEqual(m["parameter_count"], 2)
+
+    def test_verbal_boolops_count(self):
+        # and/or verbales cuentan igual que &&/|| (espejo del and/or de Python).
+        m = self.b.measure("def t(a, b)\n  a and b or a\nend")[0]
+        self.assertEqual(m["cyclomatic"], 3)
+
+    def test_nested_decisions(self):
+        src = ("def d(items)\n  for a in items\n    if a\n      while a\n        begin\n"
+               "          if a\n            return a\n          end\n        ensure\n"
+               "          nil\n        end\n      end\n    end\n  end\n  0\nend\n")
+        m = [f for f in self.b.measure(src) if f["function"] == "d"][0]
+        # for + if + while + if = 4 decisiones -> cyc 5; begin/ensure es nido sin decisión
+        # -> 5 niveles (for>if>while>begin>if)
+        self.assertEqual(m["cyclomatic"], 5)
+        self.assertEqual(m["nesting_depth"], 5)
+
+    def test_name_extraction_variants(self):
+        names = {f["function"] for f in self.b.measure(RUBY_SAMPLE)}
+        self.assertIn("decode", names)      # method
+        self.assertIn("cls_method", names)  # singleton_method
+        self.assertIn("f", names)           # lambda literal asignada, vía assignment
+
+    def test_lambda_assigned_params(self):
+        # Anónima de contrato: lambda literal `->(x){...}` asignada — nombre y params.
+        fns = {f["function"]: f for f in self.b.measure(RUBY_SAMPLE)}
+        self.assertEqual(fns["f"]["parameter_count"], 1)
+        self.assertEqual(fns["cls_method"]["parameter_count"], 2)
+
+    def test_case_when_counting(self):
+        src = ("def s(x)\n  case x\n  when 0\n    0\n  when 1\n    1\n  when 2\n    2\n"
+               "  when 3\n    3\n  else\n    9\n  end\nend\n")
+        m = [f for f in self.b.measure(src) if f["function"] == "s"][0]
+        # 4 `when` explícitos (+4); else NO suma (nodo propio, modelo 'ramas − 1') -> cyc 5;
+        # case NO anida -> nesting 0
+        self.assertEqual(m["cyclomatic"], 5)
+        self.assertEqual(m["nesting_depth"], 0)
+
+    def test_modifier_forms_count(self):
+        m = self.b.measure("def t(x)\n  return 1 if x\n  return 2 unless x\nend")[0]
+        # if_modifier + unless_modifier -> cyc 3
+        self.assertEqual(m["cyclomatic"], 3)
+
+    def test_method_blocks_are_not_functions(self):
+        # `lambda {}` / `proc {}` / `.each {}` son calls con block: NO se cuentan como funciones.
+        out = self.b.measure("g = lambda { |x| x + 1 }\nitems.each { |i| puts i }\n")
+        self.assertEqual(out, [])
+
+
+@skip_no_ruby
+class TestRoutingRuby(unittest.TestCase):
+    def test_routing_by_language_extension_filename(self):
+        self.assertEqual(mb.get_backend(language="ruby").language, "ruby")
+        self.assertEqual(mb.get_backend(extension=".rb").language, "ruby")
+        self.assertEqual(mb.get_backend(filename="a.rb").language, "ruby")
+
+    def test_ruby_registered(self):
+        self.assertIn("ruby", mb.supported_languages())
+        self.assertIn(".rb", mb.supported_extensions())
+
+
+@skip_no_ruby
+class TestGateEndToEndRuby(unittest.TestCase):
+    def test_gate_blocks_critical_ruby(self):
+        # deep_nesting del fixture: nesting_depth=5 -> CRÍTICA
+        deep = (REPO / "fixtures" / "conformance" / "ruby" / "deep_nesting.rb")
+        src = deep.read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "crit.rb"
+            p.write_text(src, encoding="utf-8")
+            env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+            r = subprocess.run([sys.executable, str(RUNNERS / "complexity_gate.py"), str(p)],
+                               capture_output=True, text=True, encoding="utf-8", env=env)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("CRÍTICA", r.stderr)
+
+
+# ── Kotlin ────────────────────────────────────────────────────────────────────────────
+KOTLIN_SAMPLE = """fun decode(rom: ByteArray, pc: Int): Int {
+    if (rom.isNotEmpty() && pc > 0) {
+        return 1
+    }
+    return 2
+}
+
+val f = { x: Int -> x + 1 }
+val g = fun(y: Int): Int { return y + 1 }
+"""
+
+
+@skip_no_kotlin
+class TestTreeSitterKotlin(unittest.TestCase):
+    def setUp(self):
+        self.b = mb.get_backend(language="kotlin")
+
+    def test_shape_matches_lint_results_contract(self):
+        m = self.b.measure("fun f(a: Int): Int { return a }")[0]
+        self.assertEqual(set(m), {"function", "line", "cyclomatic", "nesting_depth",
+                                  "parameter_count", "function_length"})
+        self.assertEqual(self.b.tool, "ccdd-treesitter-metrics")
+
+    def test_simple_function(self):
+        m = self.b.measure("fun simple(x: Int): Int { return x + 1 }")[0]
+        self.assertEqual(m["function"], "simple")
+        self.assertEqual(m["cyclomatic"], 1)
+        self.assertEqual(m["nesting_depth"], 0)
+        self.assertEqual(m["parameter_count"], 1)
+
+    def test_decision_and_boolop_counting(self):
+        # if (+1) + && (+1) sobre base 1 = 3
+        m = [f for f in self.b.measure(KOTLIN_SAMPLE) if f["function"] == "decode"][0]
+        self.assertEqual(m["cyclomatic"], 3)
+        self.assertEqual(m["parameter_count"], 2)
+
+    def test_nested_decisions(self):
+        src = ("fun d(items: IntArray): Int {\n  for (a in items) {\n    if (a > 0) {\n"
+               "      while (a > 0) {\n        try {\n          if (a > 0) { return a }\n"
+               "        } finally { }\n      }\n    }\n  }\n  return 0\n}\n")
+        m = [f for f in self.b.measure(src) if f["function"] == "d"][0]
+        # for + if + while + if = 4 decisiones -> cyc 5; try/finally anida sin decisión
+        # -> 5 niveles (for>if>while>try>if)
+        self.assertEqual(m["cyclomatic"], 5)
+        self.assertEqual(m["nesting_depth"], 5)
+
+    def test_name_extraction_variants(self):
+        names = {f["function"] for f in self.b.measure(KOTLIN_SAMPLE)}
+        self.assertIn("decode", names)  # function_declaration (name via name_resolver)
+        self.assertIn("f", names)       # lambda_literal en val, vía property_declaration
+        self.assertIn("g", names)       # anonymous_function en val
+
+    def test_lambda_in_val_params(self):
+        # Anónima de contrato: lambda en val — nombre y params (lambda_parameters sin field:
+        # regresión del fallback params_node_types; sin él reportaría 0).
+        fns = {f["function"]: f for f in self.b.measure(KOTLIN_SAMPLE)}
+        self.assertEqual(fns["f"]["parameter_count"], 1)
+        self.assertEqual(fns["g"]["parameter_count"], 1)
+
+    def test_when_counting(self):
+        src = ("fun s(x: Int): Int {\n  when (x) {\n    0 -> return 0\n    1 -> return 1\n"
+               "    2 -> return 2\n    else -> return 3\n  }\n  return -1\n}\n")
+        m = [f for f in self.b.measure(src) if f["function"] == "s"][0]
+        # 4 when_entry (3 ramas + else, un solo tipo de nodo: modelo TS/Java) -> +4 -> cyc 5;
+        # when NO anida -> nesting 0
+        self.assertEqual(m["cyclomatic"], 5)
+        self.assertEqual(m["nesting_depth"], 0)
+
+
+@skip_no_kotlin
+class TestRoutingKotlin(unittest.TestCase):
+    def test_routing_by_language_extension_filename(self):
+        self.assertEqual(mb.get_backend(language="kotlin").language, "kotlin")
+        self.assertEqual(mb.get_backend(extension=".kt").language, "kotlin")
+        self.assertEqual(mb.get_backend(extension=".kts").language, "kotlin")
+        self.assertEqual(mb.get_backend(filename="a.kt").language, "kotlin")
+
+    def test_kotlin_registered(self):
+        self.assertIn("kotlin", mb.supported_languages())
+        self.assertIn(".kt", mb.supported_extensions())
+
+
+@skip_no_kotlin
+class TestGateEndToEndKotlin(unittest.TestCase):
+    def test_gate_blocks_critical_kotlin(self):
+        # deep_nesting del fixture: nesting_depth=5 -> CRÍTICA
+        deep = (REPO / "fixtures" / "conformance" / "kotlin" / "deep_nesting.kt")
+        src = deep.read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "crit.kt"
+            p.write_text(src, encoding="utf-8")
+            env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+            r = subprocess.run([sys.executable, str(RUNNERS / "complexity_gate.py"), str(p)],
+                               capture_output=True, text=True, encoding="utf-8", env=env)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("CRÍTICA", r.stderr)
+
+
+# ── C ─────────────────────────────────────────────────────────────────────────────────
+C_SAMPLE = """int decode(int *rom, int pc) {
+    if (rom != 0 && pc > 0) {
+        return 1;
+    }
+    return 2;
+}
+
+int *ptr_fn(int a) {
+    return 0;
+}
+"""
+
+
+@skip_no_c
+class TestTreeSitterC(unittest.TestCase):
+    def setUp(self):
+        self.b = mb.get_backend(language="c")
+
+    def test_shape_matches_lint_results_contract(self):
+        m = self.b.measure("int f(int a) { return a; }")[0]
+        self.assertEqual(set(m), {"function", "line", "cyclomatic", "nesting_depth",
+                                  "parameter_count", "function_length"})
+        self.assertEqual(self.b.tool, "ccdd-treesitter-metrics")
+
+    def test_simple_function(self):
+        m = self.b.measure("int simple(int x) { return x + 1; }")[0]
+        self.assertEqual(m["function"], "simple")
+        self.assertEqual(m["cyclomatic"], 1)
+        self.assertEqual(m["nesting_depth"], 0)
+        self.assertEqual(m["parameter_count"], 1)
+
+    def test_decision_and_boolop_counting(self):
+        # if (+1) + && (+1) sobre base 1 = 3
+        m = [f for f in self.b.measure(C_SAMPLE) if f["function"] == "decode"][0]
+        self.assertEqual(m["cyclomatic"], 3)
+        self.assertEqual(m["parameter_count"], 2)
+
+    def test_nested_decisions(self):
+        src = ("int d(int n) {\n  for (int a = 0; a < n; a++) {\n    if (a > 0) {\n"
+               "      while (a > 0) {\n        cleanup: {\n          if (a > 0) { return a; }\n"
+               "        }\n      }\n    }\n  }\n  return 0;\n}\n")
+        m = [f for f in self.b.measure(src) if f["function"] == "d"][0]
+        # for + if + while + if = 4 decisiones -> cyc 5; el bloque etiquetado anida sin decisión
+        # -> 5 niveles (for>if>while>labeled_statement>if)
+        self.assertEqual(m["cyclomatic"], 5)
+        self.assertEqual(m["nesting_depth"], 5)
+
+    def test_name_extraction_variants(self):
+        # Nombre vía name_resolver: identifier anidado en el declarator (regresión: sin el
+        # hook el nombre sería "<anonymous>"), incluido el retorno puntero (pointer_declarator).
+        names = {f["function"] for f in self.b.measure(C_SAMPLE)}
+        self.assertIn("decode", names)
+        self.assertIn("ptr_fn", names)
+
+    def test_param_count_void_and_variadic(self):
+        # Regresiones del hook _c_param_count: sin él, params sería 0 siempre (la lista vive
+        # bajo el declarator anidado); `(void)` cuenta 0 y `...` cuenta como slot.
+        src = ("int zero(void) { return 0; }\n"
+               "int six(int a, int b, int c, int d, int e, int f) { return a; }\n"
+               "int var_args(int a, ...) { return a; }\n")
+        fns = {f["function"]: f for f in self.b.measure(src)}
+        self.assertEqual(fns["zero"]["parameter_count"], 0)
+        self.assertEqual(fns["six"]["parameter_count"], 6)
+        self.assertEqual(fns["var_args"]["parameter_count"], 2)
+
+    def test_ternary_counts(self):
+        m = self.b.measure("int t(int x) { return x ? 1 : 2; }")[0]
+        self.assertEqual(m["cyclomatic"], 2)
+
+    def test_switch_counting(self):
+        src = ("int s(int x) {\n  switch (x) {\n  case 0: return 0;\n  case 1: return 1;\n"
+               "  case 2: return 2;\n  default: return 3;\n  }\n}\n")
+        m = [f for f in self.b.measure(src) if f["function"] == "s"][0]
+        # 4 case_statement (3 cases + default, un solo tipo de nodo: modelo TS/Java) -> +4
+        # -> cyc 5; switch NO anida -> nesting 0
+        self.assertEqual(m["cyclomatic"], 5)
+        self.assertEqual(m["nesting_depth"], 0)
+
+
+@skip_no_c
+class TestRoutingC(unittest.TestCase):
+    def test_routing_by_language_extension_filename(self):
+        self.assertEqual(mb.get_backend(language="c").language, "c")
+        self.assertEqual(mb.get_backend(extension=".c").language, "c")
+        self.assertEqual(mb.get_backend(extension=".h").language, "c")
+        self.assertEqual(mb.get_backend(filename="a.c").language, "c")
+
+    def test_c_registered(self):
+        self.assertIn("c", mb.supported_languages())
+        self.assertIn(".c", mb.supported_extensions())
+
+
+@skip_no_c
+class TestGateEndToEndC(unittest.TestCase):
+    def test_gate_blocks_critical_c(self):
+        # deep_nesting del fixture: nesting_depth=5 -> CRÍTICA
+        deep = (REPO / "fixtures" / "conformance" / "c" / "deep_nesting.c")
+        src = deep.read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "crit.c"
             p.write_text(src, encoding="utf-8")
             env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
             r = subprocess.run([sys.executable, str(RUNNERS / "complexity_gate.py"), str(p)],

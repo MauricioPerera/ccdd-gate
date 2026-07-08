@@ -36,10 +36,20 @@ class LangSpec:
                         `func f(a, b int)` es UN `parameter_declaration` con dos `identifier`
                         hijos, no dos nodos). El default intacto garantiza cero cambio para el
                         resto de los backends.
+    params_node_types : fallback OPCIONAL para gramáticas que NO exponen la lista de parámetros
+                        bajo ningún field (kotlin: function_value_parameters / lambda_parameters
+                        son hijos directos sin campo): si params_field no resuelve, se toma el
+                        primer hijo directo cuyo tipo esté en este set. Default None: cero
+                        cambio para el resto de los backends.
+    name_resolver    : hook OPCIONAL (nodo función) -> nodo identifier | None, consultado solo
+                        si name_field no resuelve. Necesario cuando el nombre no cuelga de un
+                        field plano (C: identifier anidado en el declarator; kotlin: ver la nota
+                        de su spec). Default None: cero cambio para el resto.
     """
     def __init__(self, language, extensions, grammar_loader, function_nodes, decision_nodes,
                  nest_nodes, boolop_node, boolop_ops, params_field="parameters", name_field="name",
-                 anon_name_parents=None, params_counter=None):
+                 anon_name_parents=None, params_counter=None, params_node_types=None,
+                 name_resolver=None):
         self.language = language
         self.extensions = extensions
         self.grammar_loader = grammar_loader
@@ -52,6 +62,8 @@ class LangSpec:
         self.name_field = name_field
         self.anon_name_parents = anon_name_parents or {}
         self.params_counter = params_counter
+        self.params_node_types = set(params_node_types) if params_node_types else None
+        self.name_resolver = name_resolver
 
 
 # --- gramáticas concretas ---------------------------------------------------------------------
@@ -92,6 +104,21 @@ def _php_loader():
     # para PHP embebido en HTML (envuelve el source en `text/html` + `program_fragment`); sobre
     # fuente pura produce un árbol más ruidoso y menos estable. Para medir .php usamos php_only.
     return tsphp.language_php_only()
+
+
+def _ruby_loader():
+    import tree_sitter_ruby as tsrb
+    return tsrb.language()
+
+
+def _kotlin_loader():
+    import tree_sitter_kotlin as tskt
+    return tskt.language()
+
+
+def _c_loader():
+    import tree_sitter_c as tsc
+    return tsc.language()
 
 
 # Nodos comunes a TS/JS (la gramática typescript de tree-sitter cubre ambos sintácticamente).
@@ -189,6 +216,67 @@ _PHP_NEST = ("if_statement", "for_statement", "foreach_statement", "while_statem
 # → variable_name → nodo `name`). Requiere reconocer el nodo `name` (ver ident_like en _name).
 _PHP_ANON = {"assignment_expression": "left"}
 
+# --- Ruby ----------------------------------------------------------------------
+# method (`def`) y singleton_method (`def self.x`) son las unidades con cuerpo; lambda es el
+# literal `->(a){…}`, la única anónima con nodo propio (`lambda {}` / `proc {}` son calls con
+# block, indistinguibles de cualquier call con bloque sin resolución semántica: NO se cuentan).
+# OJO: esta gramática nombra sus reglas con la keyword desnuda (`if`, `while`, `when`, `begin`)
+# igual que sus tokens anónimos: el conteo filtra por is_named (ver _decision_weight/_nesting).
+# Decisiones: if/elsif/unless/while/until/for + sus formas modificador (`return 1 if x`), cada
+# `when` de un case (`else` es nodo propio y NO suma: camino base, modelo "ramas − 1" análogo a
+# Go/PHP/Python/Rust), rescue (el catch de Ruby, incluido rescue_modifier) y conditional (el
+# ternario `x ? a : b`). begin anida SIN ser decisión: begin/ensure es el try/finally de Ruby,
+# análogo del `with` de Python (rescue decide, begin anida). Los bloques de método (`do…end` /
+# `{ }` de un call) NO anidan ni son funciones: son argumentos (contarlos inflaría nesting
+# frente al baseline Python en cada `.each`).
+_RUBY_FUNCS = ("method", "singleton_method", "lambda")
+_RUBY_DECISION = ("if", "elsif", "unless", "while", "until", "for", "when", "conditional",
+                  "rescue", "if_modifier", "unless_modifier", "while_modifier",
+                  "until_modifier", "rescue_modifier")
+_RUBY_NEST = ("if", "elsif", "unless", "while", "until", "for", "begin")
+# Lambda anónima: `f = ->(x){…}` → cuelga de un assignment (campo "left" → identifier).
+_RUBY_ANON = {"assignment": "left"}
+
+# --- Kotlin --------------------------------------------------------------------
+# function_declaration (`fun`), lambda_literal (`{ x -> … }`) y anonymous_function
+# (`fun(x) = …`) son las unidades medidas. La gramática kotlin expone POCOS fields: la lista de
+# parámetros no cuelga de ningún campo (params_node_types la localiza por TIPO) y el nombre se
+# extrae con name_resolver. name_field se deja deliberadamente sin resolver
+# ("__via_name_resolver__"): así sig_treesitter — que solo entiende fields planos y, sin field
+# de parámetros, reportaría SIEMPRE aridad 0 en silencio — declara kotlin no-soportado y
+# tc_lint conserva su fallback genérico anunciado (aridad real + warning), exactamente el
+# comportamiento previo a esta tarea (congelado en test_sig_treesitter).
+# Decisiones: if/for/while/do_while + cada when_entry (INCLUIDO el `else ->`: la gramática no lo
+# distingue por tipo — modelo TS/Java, ver reporte TAREA-RKC) + catch_block.
+# try_expression anida SIN ser decisión: try/finally es el análogo del `with` de Python.
+_KOTLIN_FUNCS = ("function_declaration", "lambda_literal", "anonymous_function")
+_KOTLIN_DECISION = ("if_expression", "for_statement", "while_statement", "do_while_statement",
+                    "when_entry", "catch_block")
+_KOTLIN_NEST = ("if_expression", "for_statement", "while_statement", "do_while_statement",
+                "try_expression")
+# Lambda anónima: `val f = { x -> … }` → property_declaration SIN fields: el valor de la regla
+# se interpreta como TIPO de hijo (variable_declaration → identifier), ver _anon_ident.
+_KOTLIN_ANON = {"property_declaration": "variable_declaration"}
+
+# --- C -------------------------------------------------------------------------
+# function_definition es la única unidad con cuerpo (C no tiene anónimas: sin anon_name_parents).
+# Nombre y parámetros viven bajo el campo "declarator" ANIDADO (function_definition >
+# [pointer_declarator >] function_declarator > identifier / parameter_list): name_resolver y
+# params_counter descienden por ese campo. name_field="name" no existe en esta gramática y es
+# deliberado: sig_treesitter (fields planos) declara C no-soportado y tc_lint usa su fallback
+# genérico anunciado, en vez de extraer un nombre basura tipo "f(int a)" del declarator.
+# Decisiones: if/for/while/do + conditional_expression (ternario `?:`) + case_statement. La
+# gramática NO distingue `case X:` de `default:` por tipo (ambos case_statement): default suma,
+# modelo TS/Java (ver reporte TAREA-RKC). switch_statement NO está en nest (espejo de TS).
+# labeled_statement anida SIN ser decisión: el bloque etiquetado `out: { … }` (idioma del goto
+# de limpieza) es el análogo local del `with` de Python / unsafe de Rust — C no tiene
+# try/with/lock, y un `{}` suelto (compound_statement) doble-contaría cada cuerpo de if/for.
+_C_FUNCS = ("function_definition",)
+_C_DECISION = ("if_statement", "for_statement", "while_statement", "do_statement",
+               "conditional_expression", "case_statement")
+_C_NEST = ("if_statement", "for_statement", "while_statement", "do_statement",
+           "labeled_statement")
+
 
 def _go_param_count(params_node):
     """Cuenta parámetros Go por NOMBRE declarado, no por declaración.
@@ -219,6 +307,47 @@ def _go_param_count(params_node):
             count += 1  # defensivo: nodo declarado no reconocido
     return count
 
+def _c_param_count(decl_node):
+    """Cuenta parámetros C descendiendo al `function_declarator` anidado.
+
+    En C, params_field="declarator" entrega el declarador del function_definition (que puede
+    envolverse en pointer_declarator: `int *f(…)`); se desciende por el campo "declarator"
+    hasta el function_declarator y se cuenta su parameter_list:
+      - `parameter_declaration` CON declarator: 1 nombre (`int a` -> 1).
+      - `parameter_declaration` SIN declarator: 0 — es el caso `int f(void)` (0 parámetros).
+      - `variadic_parameter` (`...`): 1 slot extra, espejo del variadic de Go.
+    """
+    node = decl_node
+    while node is not None and node.type != "function_declarator":
+        node = node.child_by_field_name("declarator")
+    params = node.child_by_field_name("parameters") if node is not None else None
+    if params is None:
+        return 0
+    count = 0
+    for child in params.named_children:
+        if child.type == "parameter_declaration":
+            count += 1 if child.child_by_field_name("declarator") is not None else 0
+        else:
+            count += 1  # variadic_parameter u otro nodo declarado
+    return count
+
+
+def _c_name_node(fn):
+    """Nodo identifier del nombre de una función C: desciende por el campo "declarator"
+    (function_definition > [pointer_declarator >] function_declarator > identifier)."""
+    node = fn.child_by_field_name("declarator")
+    while node is not None and node.type != "identifier":
+        node = node.child_by_field_name("declarator")
+    return node
+
+
+def _kotlin_name_node(fn):
+    """Nombre de una función kotlin: el field "name" REAL de la gramática. Se consulta vía
+    name_resolver (y no vía name_field) para que sig_treesitter no vea a kotlin como
+    soportado — ver la nota del bloque Kotlin."""
+    return fn.child_by_field_name("name")
+
+
 SPECS = [
     LangSpec("typescript", (".ts",), _ts_loader, _JSTS_FUNCS, _JSTS_DECISION, _JSTS_NEST,
              "binary_expression", ("&&", "||"), anon_name_parents=_JSTS_ANON),
@@ -238,6 +367,17 @@ SPECS = [
              "binary_expression", ("&&", "||"), anon_name_parents=_CSHARP_ANON),
     LangSpec("php", (".php",), _php_loader, _PHP_FUNCS, _PHP_DECISION, _PHP_NEST,
              "binary_expression", ("&&", "||"), anon_name_parents=_PHP_ANON),
+    LangSpec("ruby", (".rb",), _ruby_loader, _RUBY_FUNCS, _RUBY_DECISION, _RUBY_NEST,
+             "binary", ("&&", "||", "and", "or"), anon_name_parents=_RUBY_ANON),
+    LangSpec("kotlin", (".kt", ".kts"), _kotlin_loader, _KOTLIN_FUNCS, _KOTLIN_DECISION,
+             _KOTLIN_NEST, "binary_expression", ("&&", "||"),
+             params_field="function_value_parameters",
+             params_node_types=("function_value_parameters", "lambda_parameters"),
+             name_field="__via_name_resolver__", name_resolver=_kotlin_name_node,
+             anon_name_parents=_KOTLIN_ANON),
+    LangSpec("c", (".c", ".h"), _c_loader, _C_FUNCS, _C_DECISION, _C_NEST,
+             "binary_expression", ("&&", "||"), params_field="declarator",
+             params_counter=_c_param_count, name_resolver=_c_name_node),
 ]
 
 
@@ -263,8 +403,12 @@ class TreeSitterBackend(_mb.Backend):
 
     # --- métricas por función ---
     def _decision_weight(self, n, spec):
-        """+1 si el nodo es una decisión o un operador booleano contado (guard clauses planas)."""
-        if n.type in spec.decision_nodes:
+        """+1 si el nodo es una decisión o un operador booleano contado (guard clauses planas).
+
+        Solo nodos NAMED: la gramática ruby nombra reglas con la keyword desnuda (`if`, `when`)
+        y sus tokens anónimos comparten ese type — sin el filtro cada decisión contaría doble.
+        Los demás lenguajes usan nombres con sufijo (if_statement…): cero cambio."""
+        if n.type in spec.decision_nodes and n.is_named:
             return 1
         if n.type == spec.boolop_node:
             op = n.child_by_field_name("operator")
@@ -279,12 +423,18 @@ class TreeSitterBackend(_mb.Backend):
     def _nesting(self, node, depth=0):
         best = depth
         for child in node.children:
-            d = depth + 1 if child.type in self.spec.nest_nodes else depth
+            # is_named: mismo filtro que _decision_weight (nodos ruby homónimos de sus tokens).
+            d = depth + 1 if (child.type in self.spec.nest_nodes and child.is_named) else depth
             best = max(best, self._nesting(child, d))
         return best
 
     def _params(self, fn):
         fp = fn.child_by_field_name(self.spec.params_field)
+        if fp is None and self.spec.params_node_types:
+            # Gramáticas sin field para la lista de parámetros (kotlin): localizarla por TIPO
+            # entre los hijos directos. Default None: cero cambio para el resto.
+            fp = next((c for c in fn.named_children
+                       if c.type in self.spec.params_node_types), None)
         if fp is None:
             return 0
         # Hook opcional por lenguaje (p. ej. Go agrupa nombres que comparten tipo en un solo
@@ -305,6 +455,10 @@ class TreeSitterBackend(_mb.Backend):
             return None
         val = p.child_by_field_name(field)
         if val is None:
+            # Gramáticas sin fields en el ancestro (kotlin property_declaration): la regla se
+            # interpreta como TIPO de hijo directo del que extraer el identificador.
+            val = next((c for c in p.named_children if c.type == field), None)
+        if val is None:
             return None
         if val.type in ident_like:
             return val.text.decode("utf-8", "replace")
@@ -315,6 +469,9 @@ class TreeSitterBackend(_mb.Backend):
 
     def _name(self, fn):
         nm = fn.child_by_field_name(self.spec.name_field)
+        if nm is None and self.spec.name_resolver is not None:
+            # Hook por-gramática: C (identifier anidado en declarator) y kotlin (ver su spec).
+            nm = self.spec.name_resolver(fn)
         if nm is not None:
             return nm.text.decode("utf-8", "replace")
         # Función anónima (arrow/closure/func literal): subir por los ancestros (hasta 3)
