@@ -112,7 +112,13 @@ class TestLanguageInLint(unittest.TestCase):
         finally:
             shutil.rmtree(d, ignore_errors=True)
         self.assertEqual(errs, set(), errs)              # firma TS válida: sin errores
-        self.assertIn("tc-signature-generic", warns)     # degradación documentada con warning
+        # Task 18: con gramática instalada la firma se parsea precisa (sin warning);
+        # sin gramática se degrada a aridad genérica y el warning DEBE seguir (zero-dep).
+        import sig_treesitter
+        if sig_treesitter.parse_signature("function probe(a: string)", "typescript") is None:
+            self.assertIn("tc-signature-generic", warns)     # sin gramática: degradación anunciada
+        else:
+            self.assertNotIn("tc-signature-generic", warns)  # con gramática: parse preciso
 
     def test_params_max_enforced_for_ts(self):
         d, task = _write(TS_CONTRACT, sig="function decode(a: number, b: number, c: number): R")

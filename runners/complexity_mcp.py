@@ -330,14 +330,16 @@ TOOLS = [
     },
     {
         "name": "check_signature",
-        "description": "Conformidad de la firma IMPLEMENTADA vs la esperada (runners/sig_check.py). Compara "
-                       "nombre + nombres de parámetros en orden (ignora anotaciones y defaults). Determinista, "
-                       "sin LLM, AST puro. Devuelve {mismatch}: '' (vacío) si la firma implementada coincide, "
+        "description": "Conformidad de la firma IMPLEMENTADA vs la esperada (runners/sig_check.py / sig_treesitter.py). "
+                       "Compara nombre + nombres de parámetros en orden (ignora anotaciones y defaults). Python usa AST nativo; "
+                       "otros lenguajes usan tree-sitter si la gramática está disponible. Determinista, sin LLM. "
+                       "Devuelve {mismatch}: '' (vacío) si la firma implementada coincide, "
                        "una cadena no vacía con el desajuste en caso contrario.",
         "inputSchema": {"type": "object", "required": ["source", "fn_name", "expected_signature"], "properties": {
             "source": {"type": "string", "description": "Código fuente donde buscar la función."},
             "fn_name": {"type": "string", "description": "Nombre de la función a verificar."},
             "expected_signature": {"type": "string", "description": "Firma esperada (def parseable, ej: \"def f(x: int) -> str\")."},
+            "language": {"type": "string", "description": "Lenguaje del código (optional, default 'python'). Python usa AST nativo; otros lenguajes usan tree-sitter si disponible."},
             "target_line": {"type": "integer", "description": "Línea de la def a verificar (opcional, desambigua funciones homónimas)."}}},
     },
     {
@@ -949,9 +951,16 @@ def scan_dependencies(args):
 
 
 def check_signature(args):
-    """Conformidad de firma implementada vs esperada (runners/sig_check.py). Sin LLM."""
-    import sig_check
-    return {"mismatch": sig_check.signature_mismatch(args["source"], args["fn_name"], args["expected_signature"], target_line=args.get("target_line"))}
+    """Conformidad de firma implementada vs esperada (runners/sig_check.py / sig_treesitter.py).
+    Python usa AST nativo; otros lenguajes usan tree-sitter si disponible. Sin LLM."""
+    lang = args.get("language", "python").lower()
+    if lang == "python":
+        import sig_check
+        return {"mismatch": sig_check.signature_mismatch(args["source"], args["fn_name"], args["expected_signature"], target_line=args.get("target_line"))}
+    else:
+        import sig_treesitter
+        mismatch = sig_treesitter.check_signature_src(args["source"], args["fn_name"], args["expected_signature"], lang, target_line=args.get("target_line"))
+        return {"mismatch": mismatch}
 
 
 def check_purity(args):

@@ -77,3 +77,11 @@ gramática (warning presente solo en el fallback).
   estable para su LangSpec (documentar el hallazgo y excluir ESE lenguaje del parsing
   preciso manteniendo su fallback, en vez de aproximar), o si el cambio exigiera tocar
   los thresholds firmados o el shape de `lint_results`.
+
+## Enmienda 1 (2026-07-07, ejecución)
+El dev PARÓ (correcto) ante `tests/test_tc_lint_language.py:115`: el test congelado de la
+tarea 4 fijaba el comportamiento VIEJO (warning `tc-signature-generic` SIEMPRE en TS), que
+este task supersede a propósito. El PM autorizó y aplicó el ajuste de ese único assert a
+la versión condicional al entorno: sin gramática el warning DEBE seguir (default
+zero-dep); con gramática, el parse preciso no lo emite. Ambas direcciones quedan
+congeladas también en `tests/test_sig_treesitter.py`.
