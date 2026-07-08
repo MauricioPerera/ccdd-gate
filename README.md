@@ -421,6 +421,11 @@ one-shot trivial (ahí es más caro).
   ajeno usá un sandbox aislado (contenedor), no el host.
 - **Auditar tests requiere un modelo grande.** Un modelo de ~12B como auditor tiende a
   aprobar tests rotos. Implementar lo hace bien; auditar, no.
+- **`pre_complexity_runner.py` no es ninguno de los "dos pilares".** Analiza un documento de
+  diseño (sin AST posible), así que su veredicto (`summary.critical > 0`) depende enteramente
+  de las `signals` que devuelve el LLM — a diferencia del resto del sistema, no tiene un
+  mecanismo de calibración tipo `judge_audit.py` que mida si ese veredicto es de fiar. Tratalo
+  como una señal advisory, no como un gate determinista.
 
 ## Licencia
 
