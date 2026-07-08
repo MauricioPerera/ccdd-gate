@@ -756,7 +756,7 @@ def _build_ephemeral_prompts(ctx):
         user_prompt = f"### TASK CONTRACT:\n{task_content}\n\n### FIRMA ORIGINAL REQUERIDA:\n{signature}\n\n### FUNCIÓN AISLADA (Compactada):\n```\n{target_block}\n```"
     else:
         sys_prompt = "Eres un Small Executor experto en refactorización orientada a métricas de complejidad ciclomática."
-        user_prompt = f"### TASK CONTRACT:\\n{task_content}\\n\\n### CODIGO FUENTE COMPLETO:\\n```\\n{original_source}\\n```\\n\\nDevuelve TODO el archivo refactorizado dentro de un bloque markdown de código (```)."
+        user_prompt = f"### TASK CONTRACT:\n{task_content}\n\n### CODIGO FUENTE COMPLETO:\n```\n{original_source}\n```\n\nDevuelve TODO el archivo refactorizado dentro de un bloque markdown de código (```)."
     return sys_prompt, user_prompt, target_block, start_idx, end_idx
 
 
