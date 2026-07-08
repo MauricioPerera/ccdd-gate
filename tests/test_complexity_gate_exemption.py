@@ -102,6 +102,38 @@ class TestComplexityExemption(unittest.TestCase):
         self.assertFalse(exempt)
         self.assertEqual(h, self.h)
 
+    def test_corrupt_attestations_json_does_not_crash(self):
+        """Un attestations.json corrupto no debe tumbar el hook (que corre en cada
+        escritura de archivo) — degrada a 'no exime', no lanza."""
+        with tempfile.TemporaryDirectory() as d:
+            cdir = Path(d)
+            (cdir / "attestations.json").write_text("{ esto no es JSON valido", encoding="utf-8")
+            exempt, h = complexity_gate._is_exempt(CODE, ".py", contract_dir=cdir)
+        self.assertFalse(exempt)
+        self.assertEqual(h, self.h)
+
+    def test_corrupt_reviewers_json_does_not_crash(self):
+        priv_hex, _pub_hex = _keypair()
+        sig = ccdd.sign_attestation(priv_hex, complexity_gate.SIGNATURE_SLOT_ID, self.h)
+        with tempfile.TemporaryDirectory() as d:
+            cdir = Path(d)
+            (cdir / "reviewers.json").write_text("not json either", encoding="utf-8")
+            (cdir / "attestations.json").write_text(json.dumps(
+                {"complexity_exception": [{"reviewer": "alice", "content_sha256": self.h,
+                                           "signature": sig}]}), encoding="utf-8")
+            exempt, _ = complexity_gate._is_exempt(CODE, ".py", contract_dir=cdir)
+        self.assertFalse(exempt)
+
+    def test_non_dict_exception_entry_does_not_crash(self):
+        """Una entrada mal formada (no-dict) en complexity_exception no debe lanzar."""
+        with tempfile.TemporaryDirectory() as d:
+            cdir = Path(d)
+            (cdir / "reviewers.json").write_text(json.dumps({}), encoding="utf-8")
+            (cdir / "attestations.json").write_text(json.dumps(
+                {"complexity_exception": ["not-a-dict", 42, None]}), encoding="utf-8")
+            exempt, _ = complexity_gate._is_exempt(CODE, ".py", contract_dir=cdir)
+        self.assertFalse(exempt)
+
 
 if __name__ == "__main__":
     unittest.main()

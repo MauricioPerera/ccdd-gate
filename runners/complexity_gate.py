@@ -64,34 +64,48 @@ SIGNATURE_SLOT_ID = "complexity_exception"
 
 def _valid_exception(exc, h, registry):
     """True si `exc` es una excepción para el hash `h` con firma Ed25519 válida de un
-    reviewer registrado en `registry` (contracts/complexity-agent/reviewers.json)."""
-    if exc.get("content_sha256") != h:
+    reviewer registrado en `registry` (contracts/complexity-agent/reviewers.json). Nunca
+    lanza: una entrada mal formada, o `cryptography` ausente, es simplemente 'no exime'."""
+    if not isinstance(exc, dict) or exc.get("content_sha256") != h:
         return False
     pub_hex = registry.get(exc.get("reviewer"))
     if not isinstance(pub_hex, str):
         return False
-    import ccdd
-    return ccdd.verify_attestation(pub_hex, SIGNATURE_SLOT_ID, h, exc.get("signature", ""))
+    try:
+        import ccdd
+        return ccdd.verify_attestation(pub_hex, SIGNATURE_SLOT_ID, h, exc.get("signature", ""))
+    except ImportError:
+        return False
+
+
+def _load_json_or_empty(path, default):
+    """JSON en `path`, o `default` si no existe o está corrupto. Nunca lanza: un archivo de
+    gobernanza mal formado no debe tumbar el hook en cada escritura de archivo."""
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return default
 
 
 def _is_exempt(code_str, ext, contract_dir=None):
     """(exento, hash) — exento si hay una excepción con firma Ed25519 VÁLIDA (verificada
-    contra reviewers.json) para el hash semántico. Sin reviewers.json o sin firma válida,
-    nunca exime (deny-by-default: un content_sha256 que matchea no alcanza por sí solo).
-    `contract_dir` (opcional, inyectable para tests): default contracts/complexity-agent."""
+    contra reviewers.json) para el hash semántico. Sin reviewers.json, sin attestations.json,
+    con JSON corrupto, o sin firma válida, nunca exime (deny-by-default: un content_sha256
+    que matchea no alcanza por sí solo). `contract_dir` (opcional, inyectable para tests):
+    default contracts/complexity-agent."""
     import semantic_hash
     h = semantic_hash.get_semantic_hash(code_str, ext)
     if contract_dir is None:
         contract_dir = Path(__file__).resolve().parent.parent / "contracts" / "complexity-agent"
-    attest_path = contract_dir / "attestations.json"
-    if not attest_path.exists():
-        return False, h
-    attest = json.loads(attest_path.read_text(encoding="utf-8"))
-    exceptions = attest.get("complexity_exception", [])
+    attest = _load_json_or_empty(contract_dir / "attestations.json", {})
+    exceptions = attest.get("complexity_exception", []) if isinstance(attest, dict) else []
     if isinstance(exceptions, dict):
         exceptions = [exceptions]
-    registry_path = contract_dir / "reviewers.json"
-    registry = json.loads(registry_path.read_text(encoding="utf-8")) if registry_path.exists() else {}
+    registry = _load_json_or_empty(contract_dir / "reviewers.json", {})
+    if not isinstance(registry, dict):
+        registry = {}
     exempt = any(_valid_exception(exc, h, registry) for exc in exceptions)
     return exempt, h
 
