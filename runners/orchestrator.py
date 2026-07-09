@@ -203,7 +203,11 @@ def parse_args(argv):
                                  description="Loop grande-planifica/pequeño-implementa, gateado determinista con CEFL paralelo.")
     ap.add_argument("tasks", nargs="+", help="uno o más task-contracts (.md)")
     ap.add_argument("--provider", default="ollama", choices=["anthropic", "ollama", "openai", "stub"])
-    ap.add_argument("--model", default="kimi-k2.7-code:cloud")
+    # Mismo default que complexity_mcp.DEFAULT_EXECUTOR_MODEL: validado por benchmark
+    # (trivial a LeetCode-Hard en ~4-6s a primer intento; un modelo mayor no aportó
+    # capacidad, solo latencia). Unifica el default del implementador entre el CLI
+    # standalone y el server MCP; overrideable con --model en ambos casos.
+    ap.add_argument("--model", default="qwen3-coder:480b-cloud")
     ap.add_argument("--max-attempts", type=int, default=3)
     ap.add_argument("--escalate-model", default=None, help="modelo grande para el último recurso")
     ap.add_argument("--escalate-provider", default="anthropic", choices=["anthropic", "ollama", "openai"],
