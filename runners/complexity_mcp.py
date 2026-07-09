@@ -1066,7 +1066,7 @@ def handle(msg):
     method, mid = msg.get("method"), msg.get("id")
     if method == "initialize":
         return send(mid, {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
-                          "serverInfo": {"name": "ccdd-complexity-mcp", "version": "0.1"},
+                          "serverInfo": {"name": "ccdd-complexity-mcp", "version": "0.2.0"},
                           "instructions": INSTRUCTIONS})
     if method == "tools/list":
         return send(mid, {"tools": TOOLS})

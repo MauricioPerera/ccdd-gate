@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ccdd-gate"
-version = "0.1.0"
+version = "0.2.0"
 description = "Gate determinista de complejidad y task-contracts (CCDD), con servidor MCP. Sin LLM en el veredicto."
 readme = "README.md"
 requires-python = ">=3.10"
