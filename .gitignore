@@ -6,6 +6,10 @@ __pycache__/
 .venv/
 venv/
 
+# Build artifacts (python -m build)
+dist/
+build/
+
 # Runtime artifacts
 analysis_report.json
 last-assembly.json
