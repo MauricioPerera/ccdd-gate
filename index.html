@@ -1,0 +1,835 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ccdd-gate — The verdict comes from a machine</title>
+<meta name="description" content="A small model implements. An arbiter that can't be bribed decides if it passed. Deterministic gates for AI-written code." />
+<style>
+  /* ============ TOKENS ============
+     Instrument-panel identity: the repo's own severity vocabulary is
+     literally AMBER / RED (metrics_backends.py _SEVERITY_BANDS), and its
+     pass state is green in every terminal demo — so the palette is lifted
+     straight from the subject, not decorated onto it. */
+  :root{
+    --carbon:         #14181D;
+    --carbon-panel:   #1C222A;
+    --carbon-line:    #333C47;
+    --carbon-text:    #E7E9E4;
+    --carbon-text-dim:#9BA6AC;
+
+    --paper:          #E9ECE7;
+    --paper-panel:    #DCE0D6;
+    --paper-line:     #C1C6B8;
+    --paper-text:     #1B211D;
+    --paper-text-dim: #565F53;
+
+    --amber:          #D99A3E;
+    --verified-bg:    rgba(47,143,115,.14);
+    --flagged-bg:     rgba(192,69,58,.14);
+
+    /* amber-strong/verified/flagged double as small-text colors (gate-tag labels,
+       boundary check/dash glyphs) — a single shared hex can't clear 4.5:1 (WCAG AA,
+       small text) against BOTH a light and a dark ground at once, so each gets a
+       light- and dark-optimized value, switched the same way --bg/--text are. */
+    --amber-strong-light:  #835314;  /* vs paper  #E9ECE7: 5.48:1 */
+    --amber-strong-dark:   #E0A64D;  /* vs carbon #14181D: 8.26:1 */
+    --verified-light:      #1F6E55;  /* vs paper: 5.15:1 */
+    --verified-dark:       #45A683;  /* vs carbon: 5.97:1 */
+    --flagged-light:       #9F362C;  /* vs paper: 5.32:1 */
+    --flagged-dark:        #D0665A;  /* vs carbon: 4.86:1 */
+
+    --bg:       var(--paper);
+    --panel:    var(--paper-panel);
+    --line:     var(--paper-line);
+    --text:     var(--paper-text);
+    --text-dim: var(--paper-text-dim);
+    --amber-strong: var(--amber-strong-light);
+    --verified:     var(--verified-light);
+    --flagged:      var(--flagged-light);
+
+    --mono: "JetBrains Mono","IBM Plex Mono","Fira Code","SF Mono","Cascadia Code",Consolas,monospace;
+    --sans: -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+
+    --measure: 66ch;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:var(--carbon); --panel:var(--carbon-panel); --line:var(--carbon-line); --text:var(--carbon-text); --text-dim:var(--carbon-text-dim);
+      --amber-strong:var(--amber-strong-dark); --verified:var(--verified-dark); --flagged:var(--flagged-dark);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:var(--carbon); --panel:var(--carbon-panel); --line:var(--carbon-line); --text:var(--carbon-text); --text-dim:var(--carbon-text-dim);
+    --amber-strong:var(--amber-strong-dark); --verified:var(--verified-dark); --flagged:var(--flagged-dark);
+  }
+  :root[data-theme="light"]{
+    --bg:var(--paper); --panel:var(--paper-panel); --line:var(--paper-line); --text:var(--paper-text); --text-dim:var(--paper-text-dim);
+    --amber-strong:var(--amber-strong-light); --verified:var(--verified-light); --flagged:var(--flagged-light);
+  }
+
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; padding:0; }
+  body{
+    background:var(--bg); color:var(--text); font-family:var(--sans);
+    font-size:16.5px; line-height:1.6; -webkit-font-smoothing:antialiased;
+  }
+  ::selection{ background:var(--amber); color:var(--carbon); }
+  a{ color:inherit; }
+  h1,h2,h3{ font-family:var(--mono); font-weight:700; text-wrap:balance; margin:0; letter-spacing:-.01em; }
+  code, .mono{ font-family:var(--mono); }
+  .skip-link{
+    position:absolute; left:-999px; top:0; background:var(--amber); color:var(--carbon);
+    padding:.6em 1em; z-index:200; font-family:var(--sans); font-weight:600;
+  }
+  .skip-link:focus{ left:1rem; top:1rem; }
+  a:focus-visible, button:focus-visible{ outline:2px solid var(--amber); outline-offset:3px; }
+
+  /* ============ NAV: mobile sticky bar + hamburger dropdown below 960px;
+     persistent sidebar at/above 960px. Two separate presentations, never
+     both visible, so nothing reshuffles across the breakpoint. ============ */
+  .lang-toggle{
+    display:inline-flex; border:1px solid var(--line); border-radius:2px;
+    overflow:hidden; font-family:var(--mono); font-size:.72rem; flex:0 0 auto;
+  }
+  .lang-toggle button{
+    background:transparent; border:none; color:var(--text-dim); padding:.4em .7em; cursor:pointer;
+    font-family:var(--mono); font-size:.72rem; letter-spacing:.03em;
+  }
+  .lang-toggle button[aria-pressed="true"]{ background:var(--amber); color:var(--carbon); }
+
+  .mobile-bar{
+    position:sticky; top:0; z-index:50; background:var(--bg);
+    display:flex; align-items:center; justify-content:space-between; gap:1rem;
+    padding:.85rem 1.25rem; border-bottom:1px solid var(--line);
+  }
+  .mobile-mark{ font-family:var(--mono); font-weight:700; font-size:.98rem; }
+  .mobile-mark .dot{ color:var(--amber); }
+  .mobile-actions{ display:flex; align-items:center; gap:.8rem; }
+  .hamburger{
+    width:34px; height:34px; border:1px solid var(--line); border-radius:2px;
+    background:transparent; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; gap:5px; cursor:pointer; flex:0 0 auto;
+  }
+  .hamburger .bar{ width:16px; height:2px; background:var(--text); transition:transform .25s ease, opacity .2s ease; }
+  .hamburger[aria-expanded="true"] .bar:nth-child(1){ transform:translateY(7px) rotate(45deg); }
+  .hamburger[aria-expanded="true"] .bar:nth-child(2){ opacity:0; }
+  .hamburger[aria-expanded="true"] .bar:nth-child(3){ transform:translateY(-7px) rotate(-45deg); }
+  .mobile-nav-panel{
+    position:sticky; top:57px; z-index:49; background:var(--panel);
+    border-bottom:1px solid var(--line); padding:.5rem 1.25rem 1rem;
+    display:flex; flex-direction:column;
+  }
+  .mobile-nav-panel[hidden]{ display:none; }
+  .mobile-nav-panel a{
+    display:flex; align-items:baseline; gap:.6em; padding:.75rem 0; color:var(--text);
+    text-decoration:none; border-bottom:1px solid var(--line); font-size:.95rem;
+  }
+  .mobile-nav-panel a:last-of-type{ border-bottom:none; }
+  .mobile-nav-panel .tag{ font-family:var(--mono); font-size:.76rem; color:var(--amber-strong); }
+
+  .shell{ display:block; }
+  .rail{ display:none; }
+  @media (min-width: 960px){
+    .mobile-bar, .mobile-nav-panel{ display:none; }
+    .shell{ display:grid; grid-template-columns:250px 1fr; }
+    .rail{
+      display:flex; flex-direction:column; gap:1.5rem; padding:2.2rem 1.4rem;
+      border-right:1px solid var(--line);
+      position:sticky; top:0; align-self:start; /* start, not stretch: stretch silently
+        breaks position:sticky on a grid item in real engines (confirmed empirically
+        on the KDD landing page this session). No vh unit, no explicit height. */
+    }
+    .rail-mark{ font-family:var(--mono); font-weight:700; font-size:1.02rem; }
+    .rail-mark .dot{ color:var(--amber); }
+    .rail-index{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.6rem; }
+    .rail-index a{ display:flex; gap:.55rem; align-items:baseline; text-decoration:none; color:var(--text-dim); font-size:.85rem; }
+    .rail-index a:hover{ color:var(--amber-strong); }
+    .rail-index .tag{ font-family:var(--mono); font-size:.7rem; color:var(--amber); flex:0 0 auto; }
+    .rail .lang-toggle{ margin-top:auto; align-self:flex-start; }
+  }
+
+  /* ============ HERO (always carbon-dark: the instrument is always on) ============ */
+  .hero{
+    background:
+      radial-gradient(1100px 560px at 12% -8%, rgba(217,154,62,.16), transparent 60%),
+      var(--carbon);
+    color:var(--carbon-text);
+    padding:5.5rem 2rem 4.5rem; border-bottom:1px solid var(--carbon-line);
+  }
+  .hero-grid{ max-width:1100px; margin:0 auto; display:grid; grid-template-columns:1.05fr .95fr; gap:3rem; align-items:center; }
+  @media (max-width: 980px){ .hero-grid{ grid-template-columns:1fr; } }
+  .eyebrow{
+    font-family:var(--mono); font-size:.72rem; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--amber); display:flex; align-items:center; gap:.6em; margin-bottom:1.1rem;
+  }
+  .eyebrow::before{ content:""; width:1.6em; height:1px; background:var(--amber); display:inline-block; }
+  .hero h1{ font-size:clamp(1.85rem, 3.6vw, 2.7rem); line-height:1.2; color:var(--carbon-text); }
+  .hero h1 em{ font-style:normal; color:var(--amber); }
+  .hero p.lead{ font-family:var(--sans); color:var(--carbon-text-dim); font-size:1.05rem; max-width:54ch; margin:1.25rem 0 2rem; }
+  .cta-row{ display:flex; gap:.9rem; flex-wrap:wrap; }
+  .btn{
+    font-family:var(--sans); font-weight:600; font-size:.92rem; padding:.75em 1.3em;
+    border-radius:2px; text-decoration:none; display:inline-flex; align-items:center; gap:.5em;
+    border:1px solid transparent; transition:transform .15s ease, box-shadow .15s ease;
+  }
+  .btn:hover{ transform:translateY(-1px); }
+  .btn-primary{ background:var(--amber); color:var(--carbon); }
+  .btn-primary:hover{ box-shadow:0 6px 20px rgba(217,154,62,.35); }
+  .btn-ghost{ border-color:var(--carbon-line); color:var(--carbon-text); }
+  .btn-ghost:hover{ border-color:var(--amber); }
+
+  .term{
+    background:#0F1318; border:1px solid #2B333C; border-radius:6px; overflow:hidden;
+    box-shadow:0 30px 60px -20px rgba(0,0,0,.55);
+  }
+  .term-bar{ display:flex; gap:.4em; padding:.65em .8em; background:#161C22; border-bottom:1px solid #2B333C; }
+  .term-bar span{ width:9px; height:9px; border-radius:50%; background:#333C47; }
+  .term-body{ padding:1.1em 1.2em 1.3em; font-family:var(--mono); font-size:.8rem; line-height:1.7; color:#D3D8DD; min-height:230px; }
+  .term-body .p{ color:#7C8990; }
+  .term-body .ok{ color:#5FAE8C; }
+  .term-body .bad{ color:#D07568; }
+  .term-body .seal{ color:#E0AD5C; }
+  .term-body .comment{ color:#5C6870; }
+  .term-cursor::after{ content:"▍"; animation:blink 1s step-start infinite; color:#D3D8DD; }
+  @keyframes blink{ 50%{ opacity:0; } }
+
+  /* ============ SECTIONS ============ */
+  section{ padding:4.5rem 2rem; border-bottom:1px solid var(--line); }
+  .col{ max-width:var(--measure); margin:0 auto; }
+  .col-wide{ max-width:1100px; margin:0 auto; }
+  .gate-tag{
+    font-family:var(--mono); font-size:.72rem; letter-spacing:.08em; color:var(--amber-strong);
+    text-transform:uppercase; margin-bottom:.6rem; display:block;
+  }
+  section h2{ font-size:clamp(1.4rem, 2.4vw, 1.85rem); margin-bottom:1rem; }
+  section p{ color:var(--text-dim); max-width:62ch; }
+  section p + p{ margin-top:1em; }
+
+  .pillars{ display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; margin-top:2rem; }
+  @media (max-width: 700px){ .pillars{ grid-template-columns:1fr; } }
+  .pillar{ background:var(--panel); border:1px solid var(--line); border-radius:4px; padding:1.6rem; }
+  .pillar .mark{ font-family:var(--mono); font-weight:700; font-size:1.15rem; color:var(--amber-strong); display:block; margin-bottom:.5rem; }
+  .pillar p{ color:var(--text-dim); font-size:.96rem; }
+
+  .flow{ display:flex; align-items:center; justify-content:space-between; gap:0; margin:2.5rem 0 1rem; position:relative; }
+  @media (max-width: 900px){ .flow{ flex-direction:column; align-items:flex-start; gap:1.4rem; } }
+  .flow-line{ position:absolute; left:4%; right:4%; top:22px; height:2px; background:var(--line); z-index:0; }
+  .flow-line .fill{ position:absolute; inset:0; background:var(--amber); width:0%; transition:width 1.8s ease; }
+  @media (max-width: 900px){ .flow-line{ display:none; } }
+  .step{ position:relative; z-index:1; display:flex; flex-direction:column; align-items:center; gap:.55rem; flex:1; text-align:center; }
+  @media (max-width: 900px){ .step{ flex-direction:row; text-align:left; width:100%; } }
+  .step .node{
+    width:42px; height:42px; border-radius:50%; background:var(--panel); border:2px solid var(--line);
+    display:flex; align-items:center; justify-content:center; font-family:var(--mono); font-size:.72rem;
+    color:var(--text-dim); transition:all .4s ease; flex:0 0 auto;
+  }
+  .step.on .node{ border-color:var(--amber); color:var(--amber-strong); background:var(--verified-bg); }
+  .step .label{ font-family:var(--mono); font-size:.68rem; letter-spacing:.05em; text-transform:uppercase; color:var(--text-dim); }
+  .step.on .label{ color:var(--text); }
+  .verdict-stamp{
+    margin-top:1.2rem; display:inline-flex; align-items:center; gap:.6em; padding:.6em 1.1em;
+    border:2px solid var(--verified); color:var(--verified); font-family:var(--mono); font-weight:700;
+    letter-spacing:.05em; border-radius:4px; transform:scale(.85) rotate(-3deg); opacity:0;
+    transition:transform .5s cubic-bezier(.2,1.4,.4,1), opacity .3s ease;
+  }
+  .verdict-stamp.on{ transform:scale(1) rotate(-3deg); opacity:1; }
+
+  .term-annotated{ display:grid; grid-template-columns:1.2fr .8fr; gap:2rem; margin-top:2rem; align-items:start; }
+  @media (max-width: 860px){ .term-annotated{ grid-template-columns:1fr; } }
+  .annot{ display:flex; flex-direction:column; gap:1.4rem; padding-top:.4rem; }
+  .annot .note{ font-size:.87rem; color:var(--text-dim); border-left:2px solid var(--amber); padding-left:.9rem; }
+  .annot .note b{ color:var(--text); font-family:var(--sans); }
+
+  .stats{ display:grid; grid-template-columns:repeat(5,1fr); gap:1.4rem; margin-top:2rem; }
+  @media (max-width: 900px){ .stats{ grid-template-columns:repeat(2,1fr); } }
+  .stat{ border-top:2px solid var(--amber); padding-top:.8rem; }
+  .stat .n{ font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:1.9rem; font-weight:700; color:var(--text); display:block; }
+  .stat .d{ font-size:.8rem; color:var(--text-dim); margin-top:.3rem; }
+
+  .boundary{ display:grid; grid-template-columns:1fr 1fr; gap:1.6rem; margin-top:2rem; }
+  @media (max-width: 760px){ .boundary{ grid-template-columns:1fr; } }
+  .bcol{ padding:1.5rem; border-radius:4px; }
+  .bcol.yes{ background:var(--verified-bg); border:1px solid rgba(47,143,115,.35); }
+  .bcol.no{ background:var(--flagged-bg); border:1px solid rgba(192,69,58,.35); }
+  .bcol h3{ font-family:var(--mono); font-size:.78rem; letter-spacing:.05em; text-transform:uppercase; margin-bottom:1rem; }
+  .bcol.yes h3{ color:var(--verified); }
+  .bcol.no h3{ color:var(--flagged); }
+  .bcol ul{ margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:.8rem; }
+  .bcol li{ font-size:.92rem; color:var(--text); padding-left:1.1em; position:relative; }
+  .bcol.yes li::before{ content:"✓"; position:absolute; left:0; color:var(--verified); font-family:var(--mono); }
+  .bcol.no li::before{ content:"—"; position:absolute; left:0; color:var(--flagged); font-family:var(--mono); }
+
+  .langs{ display:grid; grid-template-columns:repeat(7,1fr); gap:.7rem; margin-top:2rem; }
+  @media (max-width: 900px){ .langs{ grid-template-columns:repeat(4,1fr); } }
+  @media (max-width: 560px){ .langs{ grid-template-columns:repeat(3,1fr); } }
+  .lang-chip{
+    display:flex; align-items:center; justify-content:center; padding:.9rem .4rem;
+    background:var(--panel); border:1px solid var(--line); border-radius:2px;
+    font-family:var(--mono); font-size:.78rem; font-weight:700; color:var(--text);
+  }
+  .langs-note{ margin-top:1.2rem; font-size:.86rem; }
+
+  .closing{ text-align:center; border-bottom:none; }
+  .closing .col{ max-width:56ch; }
+  .closing .cta-row{ justify-content:center; margin-top:1.6rem; }
+  .closing .btn-ghost{ border-color:var(--line); color:var(--text); }
+  .credit{ margin-top:3rem; font-size:.8rem; color:var(--text-dim); font-family:var(--mono); }
+
+  @media (prefers-reduced-motion: reduce){
+    *{ animation-duration:.001s !important; transition-duration:.001s !important; }
+  }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main" data-i18n="a11y.skip">Skip to content</a>
+
+<div class="shell">
+  <header class="mobile-bar">
+    <div class="mobile-mark"><span class="dot">▣</span> ccdd-gate</div>
+    <div class="mobile-actions">
+      <div class="lang-toggle" role="group" aria-label="Language">
+        <button type="button" data-set-lang="en" aria-pressed="true">EN</button>
+        <button type="button" data-set-lang="es" aria-pressed="false">ES</button>
+        <button type="button" data-set-lang="pt" aria-pressed="false">PT</button>
+      </div>
+      <button type="button" class="hamburger" id="menu-btn" aria-expanded="false" aria-controls="mobile-nav-panel" aria-label="Menu">
+        <span class="bar"></span><span class="bar"></span><span class="bar"></span>
+      </button>
+    </div>
+  </header>
+  <nav class="mobile-nav-panel" id="mobile-nav-panel" aria-label="Gate index" hidden>
+    <a href="#problem"><span class="tag">00</span><span data-i18n="nav.a">The problem</span></a>
+    <a href="#pillars"><span class="tag">01</span><span data-i18n="nav.b">Two pillars</span></a>
+    <a href="#flow"><span class="tag">02</span><span data-i18n="nav.c">How a task moves</span></a>
+    <a href="#terminal"><span class="tag">03</span><span data-i18n="nav.d">Trust no fixtures</span></a>
+    <a href="#numbers"><span class="tag">04</span><span data-i18n="nav.e">By the numbers</span></a>
+    <a href="#boundary"><span class="tag">05</span><span data-i18n="nav.f">The boundary</span></a>
+    <a href="#langs"><span class="tag">06</span><span data-i18n="nav.g">Fourteen languages</span></a>
+  </nav>
+
+  <nav class="rail" aria-label="Gate index">
+    <div class="rail-mark"><span class="dot">▣</span> ccdd-gate</div>
+    <ul class="rail-index">
+      <li><a href="#problem"><span class="tag">00</span><span data-i18n="nav.a">The problem</span></a></li>
+      <li><a href="#pillars"><span class="tag">01</span><span data-i18n="nav.b">Two pillars</span></a></li>
+      <li><a href="#flow"><span class="tag">02</span><span data-i18n="nav.c">How a task moves</span></a></li>
+      <li><a href="#terminal"><span class="tag">03</span><span data-i18n="nav.d">Trust no fixtures</span></a></li>
+      <li><a href="#numbers"><span class="tag">04</span><span data-i18n="nav.e">By the numbers</span></a></li>
+      <li><a href="#boundary"><span class="tag">05</span><span data-i18n="nav.f">The boundary</span></a></li>
+      <li><a href="#langs"><span class="tag">06</span><span data-i18n="nav.g">Fourteen languages</span></a></li>
+    </ul>
+    <div class="lang-toggle" role="group" aria-label="Language">
+      <button type="button" data-set-lang="en" aria-pressed="true">EN</button>
+      <button type="button" data-set-lang="es" aria-pressed="false">ES</button>
+      <button type="button" data-set-lang="pt" aria-pressed="false">PT</button>
+    </div>
+  </nav>
+
+<main id="main">
+
+    <section class="hero">
+      <div class="hero-grid">
+        <div>
+          <span class="eyebrow" data-i18n="hero.eyebrow">Deterministic gates for AI-written code</span>
+          <h1 data-i18n-html="hero.h1">A small model implements.<br>An arbiter that can't be <em>bribed</em> decides.</h1>
+          <p class="lead" data-i18n="hero.lead">ccdd-gate seals a task's property-tests and complexity budget before any agent touches the target. Same input, same verdict — every run.</p>
+          <div class="cta-row">
+            <a class="btn btn-primary" href="https://github.com/MauricioPerera/ccdd-gate" data-i18n="hero.cta1">View on GitHub</a>
+            <a class="btn btn-ghost" href="https://github.com/MauricioPerera/ccdd-gate#readme" data-i18n="hero.cta2">Read the README</a>
+          </div>
+        </div>
+        <div class="term" id="hero-term">
+          <div class="term-bar"><span></span><span></span><span></span></div>
+          <div class="term-body" id="hero-term-body"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="problem">
+      <div class="col">
+        <span class="gate-tag" data-i18n="problem.tag">Gate 00</span>
+        <h2 data-i18n="problem.h2">The verdict a demo never shows you</h2>
+        <p data-i18n="problem.p1">A small model implements fast. Nothing about that tells you whether the result respects the budget your team signed off on, or whether the tests it "passes" are the ones that actually matter.</p>
+        <p data-i18n="problem.p2">The usual fix is a bigger model reviewing its own work — slower, non-deterministic, and it costs tokens every single time. ccdd-gate replaces that review with a script: complexity measured by AST, tests frozen by hash, a verdict that never changes between runs.</p>
+      </div>
+    </section>
+
+    <section id="pillars">
+      <div class="col-wide">
+        <span class="gate-tag" data-i18n="pillars.tag">Gate 01</span>
+        <h2 data-i18n="pillars.h2">Two pillars, one arbiter</h2>
+        <div class="pillars">
+          <div class="pillar">
+            <span class="mark" data-i18n="pillars.codet">CODE</span>
+            <p data-i18n="pillars.code">The complexity/tests gate: cyclomatic complexity, nesting depth, parameter count and length, measured by real AST across 14 languages — never estimated. A function only passes below the signed budget, with its frozen property-tests green.</p>
+          </div>
+          <div class="pillar">
+            <span class="mark" data-i18n="pillars.evalst">EVALS</span>
+            <p data-i18n="pillars.evals">For an agent's non-deterministic output (text/JSON): a frozen, signed dataset plus deterministic checks — schema, groundedness, PII, trajectory — decide PASS/FAIL with zero LLM calls (Tier 1). A bounded LLM judge is Tier 2, opt-in, and its own agreement with a human golden set is measured before anyone trusts it.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="flow">
+      <div class="col-wide">
+        <span class="gate-tag" data-i18n="flow.tag">Gate 02</span>
+        <h2 data-i18n="flow.h2">How a task moves through the gate</h2>
+        <p data-i18n="flow.p" style="margin-bottom:0">The contract's exit code is the only opinion that counts — from lint to verdict.</p>
+        <div class="flow" id="flow-anim">
+          <div class="flow-line"><div class="fill" id="flow-fill"></div></div>
+          <div class="step" data-i="0"><div class="node">1</div><div class="label" data-i18n="flow.s1">Lint</div></div>
+          <div class="step" data-i="1"><div class="node">2</div><div class="label" data-i18n="flow.s2">Freeze tests</div></div>
+          <div class="step" data-i="2"><div class="node">🔒</div><div class="label" data-i18n="flow.s3">Sign budget</div></div>
+          <div class="step" data-i="3"><div class="node">3</div><div class="label" data-i18n="flow.s4">Implement</div></div>
+          <div class="step" data-i="4"><div class="node">4</div><div class="label" data-i18n="flow.s5">Gate</div></div>
+        </div>
+        <div style="text-align:center;">
+          <span class="verdict-stamp" id="verdict-stamp" data-i18n="flow.verdict">VERDICT: PASS</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="terminal">
+      <div class="col-wide">
+        <span class="gate-tag" data-i18n="term2.tag">Gate 03</span>
+        <h2 data-i18n="term2.h2">The oracle is only as strong as it's proven to be</h2>
+        <div class="term-annotated">
+          <div class="term" id="ann-term">
+            <div class="term-bar"><span></span><span></span><span></span></div>
+            <div class="term-body" id="ann-term-body"></div>
+          </div>
+          <div class="annot">
+            <div class="note"><b data-i18n="term2.n1t">The tests pass clean.</b><br><span data-i18n="term2.n1">Green tests look like a strong oracle — but green only means no one has tried to break it yet.</span></div>
+            <div class="note"><b data-i18n="term2.n2t">So mutation_audit tries.</b><br><span data-i18n="term2.n2">A fixed set of mutations — flipped comparators, swapped operators — run against the frozen tests. A mutant that survives means the oracle missed it.</span></div>
+            <div class="note"><b data-i18n="term2.n3t">A weak spot, found.</b><br><span data-i18n="term2.n3">One boundary case slipped through untested. Add the test that kills it, and the score — not a feeling — says the oracle is strong now.</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="numbers">
+      <div class="col-wide">
+        <span class="gate-tag" data-i18n="numbers.tag">Gate 04</span>
+        <h2 data-i18n="numbers.h2">By the numbers, as of this file</h2>
+        <p data-i18n="numbers.p">Every figure below is checked into the repository — verifiable, not asserted.</p>
+        <div class="stats">
+          <div class="stat"><span class="n">14</span><span class="d" data-i18n="numbers.s1">languages measured by real AST</span></div>
+          <div class="stat"><span class="n">23</span><span class="d" data-i18n="numbers.s2">MCP tools, one LLM call among them</span></div>
+          <div class="stat"><span class="n">541</span><span class="d" data-i18n="numbers.s3">tests, zero mocks on the crypto path</span></div>
+          <div class="stat"><span class="n">0</span><span class="d" data-i18n="numbers.s4">tokens spent to compute a verdict</span></div>
+          <div class="stat"><span class="n">9</span><span class="d" data-i18n="numbers.s5">signed governance rules, Ed25519-verified</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="boundary">
+      <div class="col-wide">
+        <span class="gate-tag" data-i18n="boundary.tag">Gate 05</span>
+        <h2 data-i18n="boundary.h2">What gets gated, what stays out</h2>
+        <p data-i18n="boundary.p">The honest boundary is part of the method, not a gap in it.</p>
+        <div class="boundary">
+          <div class="bcol yes">
+            <h3 data-i18n="boundary.yesh">Can be gated</h3>
+            <ul>
+              <li data-i18n="boundary.yes1">Complexity and length, measured by AST — never estimated by a model</li>
+              <li data-i18n="boundary.yes2">A frozen property-test's pass/fail, hash-sealed before the implementer sees the task</li>
+              <li data-i18n="boundary.yes3">A signature drift between the contract and the implementation, before it breaks a caller</li>
+              <li data-i18n="boundary.yes4">A complexity exception, but only with a real Ed25519 signature from a registered reviewer</li>
+            </ul>
+          </div>
+          <div class="bcol no">
+            <h3 data-i18n="boundary.noh">Stays out, declared</h3>
+            <ul>
+              <li data-i18n="boundary.no1">Whether a test oracle is well-designed — mutation testing measures its strength, it doesn't write it for you</li>
+              <li data-i18n="boundary.no2">Coherence and usefulness of an agent's prose — that's what the opt-in Tier 2 judge is for, and even it gets audited</li>
+              <li data-i18n="boundary.no3">The implementer's reasoning. ccdd-gate contracts the artifact a model produces, never how it thinks.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="langs">
+      <div class="col-wide">
+        <span class="gate-tag" data-i18n="langs.tag">Gate 06</span>
+        <h2 data-i18n="langs.h2">Fourteen languages, one oracle</h2>
+        <p data-i18n="langs.p">A frozen conformance suite is the reference: every new tree-sitter backend must reproduce the same cyclomatic, nesting and parameter counts as the Python baseline before it's accepted.</p>
+        <div class="langs">
+          <div class="lang-chip">Python</div>
+          <div class="lang-chip">TypeScript</div>
+          <div class="lang-chip">JavaScript</div>
+          <div class="lang-chip">Rust</div>
+          <div class="lang-chip">Go</div>
+          <div class="lang-chip">Java</div>
+          <div class="lang-chip">C#</div>
+          <div class="lang-chip">PHP</div>
+          <div class="lang-chip">Ruby</div>
+          <div class="lang-chip">Kotlin</div>
+          <div class="lang-chip">C</div>
+          <div class="lang-chip">Swift</div>
+          <div class="lang-chip">C++</div>
+          <div class="lang-chip">TSX</div>
+        </div>
+        <p class="langs-note" data-i18n="langs.note">Python is native (stdlib AST, zero deps); the other thirteen are one optional dependency away (tree-sitter grammars) — a missing grammar degrades to an announced no-op, never a silent skip.</p>
+      </div>
+    </section>
+
+    <section class="closing">
+      <div class="col">
+        <h2 data-i18n="closing.h2">Read the gate yourself</h2>
+        <p data-i18n="closing.p">MIT-licensed. Every claim on this page is checked into the repository that backs it.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://github.com/MauricioPerera/ccdd-gate" data-i18n="closing.cta1">Open the repository</a>
+          <a class="btn btn-ghost" href="https://pypi.org/project/ccdd-gate/" data-i18n="closing.cta2">Install from PyPI</a>
+        </div>
+        <div class="credit">— Mauricio Perera</div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var REDUCED = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  var I18N = {
+    en: {
+      "a11y.skip":"Skip to content",
+      "nav.a":"The problem","nav.b":"Two pillars","nav.c":"How a task moves","nav.d":"Trust no fixtures",
+      "nav.e":"By the numbers","nav.f":"The boundary","nav.g":"Fourteen languages",
+      "hero.eyebrow":"Deterministic gates for AI-written code",
+      "hero.h1":"A small model implements.<br>An arbiter that can't be <em>bribed</em> decides.",
+      "hero.lead":"ccdd-gate seals a task's property-tests and complexity budget before any agent touches the target. Same input, same verdict — every run.",
+      "hero.cta1":"View on GitHub","hero.cta2":"Read the README",
+      "problem.tag":"Gate 00","problem.h2":"The verdict a demo never shows you",
+      "problem.p1":"A small model implements fast. Nothing about that tells you whether the result respects the budget your team signed off on, or whether the tests it \"passes\" are the ones that actually matter.",
+      "problem.p2":"The usual fix is a bigger model reviewing its own work — slower, non-deterministic, and it costs tokens every single time. ccdd-gate replaces that review with a script: complexity measured by AST, tests frozen by hash, a verdict that never changes between runs.",
+      "pillars.tag":"Gate 01","pillars.h2":"Two pillars, one arbiter",
+      "pillars.codet":"CODE",
+      "pillars.code":"The complexity/tests gate: cyclomatic complexity, nesting depth, parameter count and length, measured by real AST across 14 languages — never estimated. A function only passes below the signed budget, with its frozen property-tests green.",
+      "pillars.evalst":"EVALS",
+      "pillars.evals":"For an agent's non-deterministic output (text/JSON): a frozen, signed dataset plus deterministic checks — schema, groundedness, PII, trajectory — decide PASS/FAIL with zero LLM calls (Tier 1). A bounded LLM judge is Tier 2, opt-in, and its own agreement with a human golden set is measured before anyone trusts it.",
+      "flow.tag":"Gate 02","flow.h2":"How a task moves through the gate",
+      "flow.p":"The contract's exit code is the only opinion that counts — from lint to verdict.",
+      "flow.s1":"Lint","flow.s2":"Freeze tests","flow.s3":"Sign budget","flow.s4":"Implement","flow.s5":"Gate",
+      "flow.verdict":"VERDICT: PASS",
+      "term2.tag":"Gate 03","term2.h2":"The oracle is only as strong as it's proven to be",
+      "term2.n1t":"The tests pass clean.","term2.n1":"Green tests look like a strong oracle — but green only means no one has tried to break it yet.",
+      "term2.n2t":"So mutation_audit tries.","term2.n2":"A fixed set of mutations — flipped comparators, swapped operators — run against the frozen tests. A mutant that survives means the oracle missed it.",
+      "term2.n3t":"A weak spot, found.","term2.n3":"One boundary case slipped through untested. Add the test that kills it, and the score — not a feeling — says the oracle is strong now.",
+      "numbers.tag":"Gate 04","numbers.h2":"By the numbers, as of this file",
+      "numbers.p":"Every figure below is checked into the repository — verifiable, not asserted.",
+      "numbers.s1":"languages measured by real AST","numbers.s2":"MCP tools, one LLM call among them",
+      "numbers.s3":"tests, zero mocks on the crypto path","numbers.s4":"tokens spent to compute a verdict",
+      "numbers.s5":"signed governance rules, Ed25519-verified",
+      "boundary.tag":"Gate 05","boundary.h2":"What gets gated, what stays out",
+      "boundary.p":"The honest boundary is part of the method, not a gap in it.",
+      "boundary.yesh":"Can be gated",
+      "boundary.yes1":"Complexity and length, measured by AST — never estimated by a model",
+      "boundary.yes2":"A frozen property-test's pass/fail, hash-sealed before the implementer sees the task",
+      "boundary.yes3":"A signature drift between the contract and the implementation, before it breaks a caller",
+      "boundary.yes4":"A complexity exception, but only with a real Ed25519 signature from a registered reviewer",
+      "boundary.noh":"Stays out, declared",
+      "boundary.no1":"Whether a test oracle is well-designed — mutation testing measures its strength, it doesn't write it for you",
+      "boundary.no2":"Coherence and usefulness of an agent's prose — that's what the opt-in Tier 2 judge is for, and even it gets audited",
+      "boundary.no3":"The implementer's reasoning. ccdd-gate contracts the artifact a model produces, never how it thinks.",
+      "langs.tag":"Gate 06","langs.h2":"Fourteen languages, one oracle",
+      "langs.p":"A frozen conformance suite is the reference: every new tree-sitter backend must reproduce the same cyclomatic, nesting and parameter counts as the Python baseline before it's accepted.",
+      "langs.note":"Python is native (stdlib AST, zero deps); the other thirteen are one optional dependency away (tree-sitter grammars) — a missing grammar degrades to an announced no-op, never a silent skip.",
+      "closing.h2":"Read the gate yourself",
+      "closing.p":"MIT-licensed. Every claim on this page is checked into the repository that backs it.",
+      "closing.cta1":"Open the repository","closing.cta2":"Install from PyPI"
+    },
+    es: {
+      "a11y.skip":"Ir al contenido",
+      "nav.a":"El problema","nav.b":"Dos pilares","nav.c":"Cómo avanza una tarea","nav.d":"No confiar en fixtures",
+      "nav.e":"En números","nav.f":"El límite","nav.g":"Catorce lenguajes",
+      "hero.eyebrow":"Gates deterministas para código escrito por IA",
+      "hero.h1":"Un modelo pequeño implementa.<br>Un árbitro que no se puede <em>sobornar</em> decide.",
+      "hero.lead":"ccdd-gate sella los property-tests y el presupuesto de complejidad de una tarea antes de que cualquier agente toque el target. Mismo input, mismo veredicto — en cada corrida.",
+      "hero.cta1":"Ver en GitHub","hero.cta2":"Leer el README",
+      "problem.tag":"Gate 00","problem.h2":"El veredicto que ningún demo te muestra",
+      "problem.p1":"Un modelo pequeño implementa rápido. Nada de eso te dice si el resultado respeta el presupuesto que tu equipo firmó, o si los tests que \"pasa\" son los que realmente importan.",
+      "problem.p2":"La solución habitual es un modelo más grande revisando su propio trabajo — más lento, no determinista, y cuesta tokens cada vez. ccdd-gate reemplaza esa revisión por un script: complejidad medida por AST, tests congelados por hash, un veredicto que nunca cambia entre corridas.",
+      "pillars.tag":"Gate 01","pillars.h2":"Dos pilares, un solo árbitro",
+      "pillars.codet":"CÓDIGO",
+      "pillars.code":"El gate de complejidad/tests: complejidad ciclomática, profundidad de anidamiento, número de parámetros y longitud, medidos por AST real en 14 lenguajes — nunca estimados. Una función solo pasa por debajo del presupuesto firmado, con sus property-tests congelados en verde.",
+      "pillars.evalst":"EVALS",
+      "pillars.evals":"Para la salida no determinista de un agente (texto/JSON): un dataset congelado y firmado más checks deterministas — schema, groundedness, PII, trayectoria — deciden PASS/FAIL sin ninguna llamada a un LLM (Tier 1). Un juez LLM acotado es Tier 2, opt-in, y su propio acuerdo con un golden set humano se mide antes de que nadie confíe en él.",
+      "flow.tag":"Gate 02","flow.h2":"Cómo avanza una tarea por el gate",
+      "flow.p":"El exit code del contrato es la única opinión que cuenta — del lint al veredicto.",
+      "flow.s1":"Lint","flow.s2":"Congelar tests","flow.s3":"Firmar presupuesto","flow.s4":"Implementar","flow.s5":"Gate",
+      "flow.verdict":"VEREDICTO: PASS",
+      "term2.tag":"Gate 03","term2.h2":"El oráculo vale lo que se demuestre que vale",
+      "term2.n1t":"Los tests pasan limpios.","term2.n1":"Tests en verde parecen un oráculo fuerte — pero verde solo significa que todavía nadie intentó romperlo.",
+      "term2.n2t":"Entonces mutation_audit lo intenta.","term2.n2":"Un set fijo de mutaciones — comparadores invertidos, operadores cambiados — corre contra los tests congelados. Un mutante que sobrevive significa que el oráculo no lo cazó.",
+      "term2.n3t":"Un punto débil, encontrado.","term2.n3":"Un caso límite se coló sin testear. Se agrega el test que mata al mutante, y el score — no una sensación — dice que el oráculo ahora es fuerte.",
+      "numbers.tag":"Gate 04","numbers.h2":"En números, a la fecha de este archivo",
+      "numbers.p":"Cada cifra de abajo está en el repositorio — verificable, no afirmada.",
+      "numbers.s1":"lenguajes medidos por AST real","numbers.s2":"tools MCP, una sola llamada a un LLM entre ellas",
+      "numbers.s3":"tests, cero mocks en el camino criptográfico","numbers.s4":"tokens gastados para calcular un veredicto",
+      "numbers.s5":"reglas de gobernanza firmadas, verificadas con Ed25519",
+      "boundary.tag":"Gate 05","boundary.h2":"Qué se gatea, qué queda fuera",
+      "boundary.p":"La frontera honesta es parte del método, no un hueco en él.",
+      "boundary.yesh":"Se puede gatear",
+      "boundary.yes1":"Complejidad y longitud, medidas por AST — nunca estimadas por un modelo",
+      "boundary.yes2":"El pass/fail de un property-test congelado, sellado por hash antes de que el implementador vea la tarea",
+      "boundary.yes3":"Un drift de firma entre el contrato y la implementación, antes de que rompa a un caller",
+      "boundary.yes4":"Una excepción de complejidad, pero solo con una firma Ed25519 real de un reviewer registrado",
+      "boundary.noh":"Queda fuera, declarado",
+      "boundary.no1":"Si un oráculo de tests está bien diseñado — el mutation testing mide su fuerza, no lo escribe por vos",
+      "boundary.no2":"Coherencia y utilidad de la prosa de un agente — para eso está el juez Tier 2 opt-in, y hasta a él lo auditan",
+      "boundary.no3":"El razonamiento del implementador. ccdd-gate contrata el artefacto que un modelo produce, nunca cómo piensa.",
+      "langs.tag":"Gate 06","langs.h2":"Catorce lenguajes, un solo oráculo",
+      "langs.p":"Una suite de conformancia congelada es la referencia: todo backend tree-sitter nuevo debe reproducir la misma ciclomática, anidamiento y conteo de parámetros que el baseline de Python antes de aceptarse.",
+      "langs.note":"Python es nativo (AST de la stdlib, cero deps); los otros trece están a una dependencia opcional de distancia (gramáticas tree-sitter) — una gramática faltante degrada a un no-op anunciado, nunca a un salteo silencioso.",
+      "closing.h2":"Leé el gate vos mismo",
+      "closing.p":"Licencia MIT. Cada afirmación de esta página está commiteada en el repositorio que la respalda.",
+      "closing.cta1":"Abrir el repositorio","closing.cta2":"Instalar desde PyPI"
+    },
+    pt: {
+      "a11y.skip":"Pular para o conteúdo",
+      "nav.a":"O problema","nav.b":"Dois pilares","nav.c":"Como uma tarefa avança","nav.d":"Não confiar em fixtures",
+      "nav.e":"Em números","nav.f":"O limite","nav.g":"Catorze linguagens",
+      "hero.eyebrow":"Gates determinísticos para código escrito por IA",
+      "hero.h1":"Um modelo pequeno implementa.<br>Um árbitro que não pode ser <em>subornado</em> decide.",
+      "hero.lead":"O ccdd-gate sela os property-tests e o orçamento de complexidade de uma tarefa antes de qualquer agente tocar o alvo. Mesma entrada, mesmo veredito — em toda execução.",
+      "hero.cta1":"Ver no GitHub","hero.cta2":"Ler o README",
+      "problem.tag":"Gate 00","problem.h2":"O veredito que nenhum demo mostra",
+      "problem.p1":"Um modelo pequeno implementa rápido. Nada nisso te diz se o resultado respeita o orçamento que sua equipe assinou, ou se os testes que ele \"passa\" são os que realmente importam.",
+      "problem.p2":"A solução costumeira é um modelo maior revisando o próprio trabalho — mais lento, não determinístico, e custa tokens toda vez. O ccdd-gate substitui essa revisão por um script: complexidade medida por AST, testes congelados por hash, um veredito que nunca muda entre execuções.",
+      "pillars.tag":"Gate 01","pillars.h2":"Dois pilares, um só árbitro",
+      "pillars.codet":"CÓDIGO",
+      "pillars.code":"O gate de complexidade/testes: complexidade ciclomática, profundidade de aninhamento, número de parâmetros e comprimento, medidos por AST real em 14 linguagens — nunca estimados. Uma função só passa abaixo do orçamento assinado, com seus property-tests congelados em verde.",
+      "pillars.evalst":"EVALS",
+      "pillars.evals":"Para a saída não determinística de um agente (texto/JSON): um dataset congelado e assinado, mais checks determinísticos — schema, groundedness, PII, trajetória — decidem PASS/FAIL com zero chamadas a um LLM (Tier 1). Um juiz LLM limitado é Tier 2, opt-in, e sua própria concordância com um golden set humano é medida antes de alguém confiar nele.",
+      "flow.tag":"Gate 02","flow.h2":"Como uma tarefa avança pelo gate",
+      "flow.p":"O exit code do contrato é a única opinião que conta — do lint ao veredito.",
+      "flow.s1":"Lint","flow.s2":"Congelar testes","flow.s3":"Assinar orçamento","flow.s4":"Implementar","flow.s5":"Gate",
+      "flow.verdict":"VEREDITO: PASS",
+      "term2.tag":"Gate 03","term2.h2":"O oráculo vale o que se prova que vale",
+      "term2.n1t":"Os testes passam limpos.","term2.n1":"Testes verdes parecem um oráculo forte — mas verde só significa que ninguém tentou quebrá-lo ainda.",
+      "term2.n2t":"Então o mutation_audit tenta.","term2.n2":"Um conjunto fixo de mutações — comparadores invertidos, operadores trocados — roda contra os testes congelados. Um mutante que sobrevive significa que o oráculo não o pegou.",
+      "term2.n3t":"Um ponto fraco, encontrado.","term2.n3":"Um caso-limite escapou sem ser testado. Adiciona-se o teste que mata o mutante, e o score — não uma sensação — diz que o oráculo agora é forte.",
+      "numbers.tag":"Gate 04","numbers.h2":"Em números, na data deste arquivo",
+      "numbers.p":"Cada número abaixo está commitado no repositório — verificável, não afirmado.",
+      "numbers.s1":"linguagens medidas por AST real","numbers.s2":"ferramentas MCP, uma única chamada a um LLM entre elas",
+      "numbers.s3":"testes, zero mocks no caminho criptográfico","numbers.s4":"tokens gastos para calcular um veredito",
+      "numbers.s5":"regras de governança assinadas, verificadas com Ed25519",
+      "boundary.tag":"Gate 05","boundary.h2":"O que é gateado, o que fica de fora",
+      "boundary.p":"A fronteira honesta é parte do método, não uma lacuna nele.",
+      "boundary.yesh":"Pode ser gateado",
+      "boundary.yes1":"Complexidade e comprimento, medidos por AST — nunca estimados por um modelo",
+      "boundary.yes2":"O pass/fail de um property-test congelado, selado por hash antes de o implementador ver a tarefa",
+      "boundary.yes3":"Um desvio de assinatura entre o contrato e a implementação, antes que quebre um caller",
+      "boundary.yes4":"Uma exceção de complexidade, mas só com uma assinatura Ed25519 real de um revisor registrado",
+      "boundary.noh":"Fica de fora, declarado",
+      "boundary.no1":"Se um oráculo de testes está bem projetado — o mutation testing mede sua força, não o escreve por você",
+      "boundary.no2":"Coerência e utilidade da prosa de um agente — é para isso que serve o juiz Tier 2 opt-in, e até ele é auditado",
+      "boundary.no3":"O raciocínio do implementador. O ccdd-gate contrata o artefato que um modelo produz, nunca como ele pensa.",
+      "langs.tag":"Gate 06","langs.h2":"Catorze linguagens, um só oráculo",
+      "langs.p":"Uma suíte de conformidade congelada é a referência: todo novo backend tree-sitter precisa reproduzir a mesma ciclomática, aninhamento e contagem de parâmetros do baseline em Python antes de ser aceito.",
+      "langs.note":"Python é nativo (AST da stdlib, zero deps); as outras treze estão a uma dependência opcional de distância (gramáticas tree-sitter) — uma gramática ausente degrada para um no-op anunciado, nunca um pulo silencioso.",
+      "closing.h2":"Leia o gate você mesmo",
+      "closing.p":"Licenciado sob MIT. Cada afirmação desta página está commitada no repositório que a sustenta.",
+      "closing.cta1":"Abrir o repositório","closing.cta2":"Instalar via PyPI"
+    }
+  };
+
+  function applyLang(lang){
+    document.documentElement.setAttribute("lang", lang);
+    document.documentElement.setAttribute("data-lang", lang);
+    var dict = I18N[lang] || I18N.en;
+    document.querySelectorAll("[data-i18n]").forEach(function(el){
+      var k = el.getAttribute("data-i18n");
+      if (dict[k] !== undefined) el.textContent = dict[k];
+    });
+    document.querySelectorAll("[data-i18n-html]").forEach(function(el){
+      var k = el.getAttribute("data-i18n-html");
+      if (dict[k] !== undefined) el.innerHTML = dict[k];
+    });
+    document.querySelectorAll(".lang-toggle button").forEach(function(b){
+      b.setAttribute("aria-pressed", b.getAttribute("data-set-lang") === lang ? "true" : "false");
+    });
+    try{ localStorage.setItem("ccdd-gate-lang", lang); }catch(e){}
+    buildTerminals(lang);
+  }
+  document.querySelectorAll(".lang-toggle button").forEach(function(b){
+    b.addEventListener("click", function(){ applyLang(b.getAttribute("data-set-lang")); });
+  });
+
+  var HERO_LINES = {
+    en: [
+      {c:"p", t:"$ python runners/task_gate.py task.md"},
+      {c:"bad", t:"FAIL — gate2-complexity: cyclomatic=14 > cyclomatic_max=10"},
+      {c:"comment", t:"# small model retries: extracts a guard clause"},
+      {c:"p", t:"$ python runners/task_gate.py task.md"},
+      {c:"seal", t:"VERDICT: PASS — frozen tests green, budget respected"}
+    ],
+    es: [
+      {c:"p", t:"$ python runners/task_gate.py task.md"},
+      {c:"bad", t:"FAIL — gate2-complexity: cyclomatic=14 > cyclomatic_max=10"},
+      {c:"comment", t:"# el modelo pequeño reintenta: extrae una guard clause"},
+      {c:"p", t:"$ python runners/task_gate.py task.md"},
+      {c:"seal", t:"VEREDICTO: PASS — tests congelados en verde, presupuesto respetado"}
+    ],
+    pt: [
+      {c:"p", t:"$ python runners/task_gate.py task.md"},
+      {c:"bad", t:"FAIL — gate2-complexity: cyclomatic=14 > cyclomatic_max=10"},
+      {c:"comment", t:"# o modelo pequeno tenta de novo: extrai uma guard clause"},
+      {c:"p", t:"$ python runners/task_gate.py task.md"},
+      {c:"seal", t:"VEREDITO: PASS — testes congelados em verde, orçamento respeitado"}
+    ]
+  };
+  var ANN_LINES = {
+    en: [
+      {c:"p", t:"$ python runners/mutation_audit.py task.md"},
+      {c:"p", t:"{\"mutants\": 8, \"killed\": 7, \"survived\": 1, \"mutation_score\": 0.875}"},
+      {c:"comment", t:"# a mutant survived: the boundary case at the exact threshold"},
+      {c:"p", t:"$ echo 'assert clamp(cap, 0, cap) == cap' >> test_clamp.py"},
+      {c:"p", t:"$ python runners/mutation_audit.py task.md"},
+      {c:"ok", t:"{\"mutants\": 8, \"killed\": 8, \"survived\": 0, \"mutation_score\": 1.0}"},
+      {c:"seal", t:"ORACLE CONFIRMED STRONG. Verdict stands."}
+    ],
+    es: [
+      {c:"p", t:"$ python runners/mutation_audit.py task.md"},
+      {c:"p", t:"{\"mutants\": 8, \"killed\": 7, \"survived\": 1, \"mutation_score\": 0.875}"},
+      {c:"comment", t:"# un mutante sobrevivió: el caso límite en el umbral exacto"},
+      {c:"p", t:"$ echo 'assert clamp(cap, 0, cap) == cap' >> test_clamp.py"},
+      {c:"p", t:"$ python runners/mutation_audit.py task.md"},
+      {c:"ok", t:"{\"mutants\": 8, \"killed\": 8, \"survived\": 0, \"mutation_score\": 1.0}"},
+      {c:"seal", t:"ORÁCULO CONFIRMADO FUERTE. El veredicto queda en pie."}
+    ],
+    pt: [
+      {c:"p", t:"$ python runners/mutation_audit.py task.md"},
+      {c:"p", t:"{\"mutants\": 8, \"killed\": 7, \"survived\": 1, \"mutation_score\": 0.875}"},
+      {c:"comment", t:"# um mutante sobreviveu: o caso-limite no limiar exato"},
+      {c:"p", t:"$ echo 'assert clamp(cap, 0, cap) == cap' >> test_clamp.py"},
+      {c:"p", t:"$ python runners/mutation_audit.py task.md"},
+      {c:"ok", t:"{\"mutants\": 8, \"killed\": 8, \"survived\": 0, \"mutation_score\": 1.0}"},
+      {c:"seal", t:"ORÁCULO CONFIRMADO FORTE. O veredito se mantém."}
+    ]
+  };
+
+  var heroTimer = null, annTimer = null;
+
+  function typeLines(el, lines, opts){
+    opts = opts || {};
+    if (heroTimer && opts.isHero) { clearTimeout(heroTimer); }
+    if (annTimer && !opts.isHero) { clearTimeout(annTimer); }
+    el.innerHTML = "";
+    if (REDUCED){
+      lines.forEach(function(ln){
+        var div = document.createElement("div");
+        div.className = ln.c; div.textContent = ln.t;
+        el.appendChild(div);
+      });
+      return;
+    }
+    var li = 0, ci = 0;
+    var cur = document.createElement("div");
+    cur.className = lines[0] ? lines[0].c : "";
+    el.appendChild(cur);
+    function step(){
+      if (li >= lines.length){
+        cur.classList.remove("term-cursor");
+        if (opts.loop){
+          var t = setTimeout(function(){ typeLines(el, lines, opts); }, 2200);
+          if (opts.isHero) heroTimer = t; else annTimer = t;
+        }
+        return;
+      }
+      var line = lines[li];
+      cur.className = line.c + " term-cursor";
+      if (ci < line.t.length){
+        cur.textContent = line.t.slice(0, ci+1);
+        ci++;
+        var t = setTimeout(step, line.t[ci-1] === " " ? 6 : 14);
+        if (opts.isHero) heroTimer = t; else annTimer = t;
+      } else {
+        cur.classList.remove("term-cursor");
+        li++; ci = 0;
+        cur = document.createElement("div");
+        if (lines[li]) cur.className = lines[li].c;
+        el.appendChild(cur);
+        var t2 = setTimeout(step, 260);
+        if (opts.isHero) heroTimer = t2; else annTimer = t2;
+      }
+    }
+    step();
+  }
+
+  function buildTerminals(lang){
+    var heroEl = document.getElementById("hero-term-body");
+    var annEl = document.getElementById("ann-term-body");
+    typeLines(heroEl, HERO_LINES[lang] || HERO_LINES.en, {loop:true, isHero:true});
+    typeLines(annEl, ANN_LINES[lang] || ANN_LINES.en, {loop:true, isHero:false});
+  }
+
+  var flowPlayed = false;
+  function playFlow(){
+    if (flowPlayed) return; flowPlayed = true;
+    var steps = document.querySelectorAll("#flow-anim .step");
+    var fill = document.getElementById("flow-fill");
+    var stamp = document.getElementById("verdict-stamp");
+    if (REDUCED){
+      steps.forEach(function(s){ s.classList.add("on"); });
+      if (fill) fill.style.width = "100%";
+      if (stamp) stamp.classList.add("on");
+      return;
+    }
+    steps.forEach(function(s, i){
+      setTimeout(function(){
+        s.classList.add("on");
+        if (fill) fill.style.width = Math.round(((i+1)/steps.length)*100) + "%";
+      }, i*500);
+    });
+    setTimeout(function(){ if (stamp) stamp.classList.add("on"); }, steps.length*500 + 300);
+  }
+  var flowTarget = document.getElementById("flow-anim");
+  if (flowTarget && "IntersectionObserver" in window){
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){ if (en.isIntersecting) playFlow(); });
+    }, {threshold:.4});
+    io.observe(flowTarget);
+  } else if (flowTarget){
+    playFlow();
+  }
+
+  var menuBtn = document.getElementById("menu-btn");
+  var navPanel = document.getElementById("mobile-nav-panel");
+  function closeMenu(){
+    if (!navPanel || navPanel.hidden) return;
+    navPanel.hidden = true;
+    if (menuBtn) menuBtn.setAttribute("aria-expanded", "false");
+  }
+  function openMenu(){
+    navPanel.hidden = false;
+    menuBtn.setAttribute("aria-expanded", "true");
+  }
+  if (menuBtn && navPanel){
+    menuBtn.addEventListener("click", function(){
+      if (navPanel.hidden) openMenu(); else closeMenu();
+    });
+    navPanel.querySelectorAll("a").forEach(function(a){
+      a.addEventListener("click", closeMenu);
+    });
+    document.addEventListener("keydown", function(e){
+      if (e.key === "Escape") closeMenu();
+    });
+    window.addEventListener("resize", function(){
+      if (window.innerWidth >= 960) closeMenu();
+    });
+  }
+
+  var saved = null;
+  try{ saved = localStorage.getItem("ccdd-gate-lang"); }catch(e){}
+  applyLang(saved === "es" || saved === "pt" || saved === "en" ? saved : "en");
+})();
+</script>
+</body>
+</html>
