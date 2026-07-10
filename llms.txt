@@ -1,0 +1,21 @@
+# ccdd-gate — deterministic code gate
+
+> Complexity <= signed budget + hash-frozen property tests: code verified with
+> NO LLM in the verdict. The code-artifact sibling of CCDD (which governs
+> context) and taskmd (which verdicts task completion).
+> This page publishes the gate's own docs as searchable skills.
+
+## Docs
+
+- [Landing](/index.html)
+- [Repository](https://github.com/MauricioPerera/ccdd-gate)
+
+<!-- skills-memory: {"snapshot":"/skills-index.snapshot","snapshot_sha256":"7f4ac9a7070a65bc2651291f760d34b04f6e038a0da8aa2a8a966056a949595e","format":"minimemory-okf-v1"} -->
+
+## Skills
+
+Skills published by ccdd-gate - search and browse the project's own docs (spec, methodology, findings).
+
+- [search_knowledge](/skills/search_knowledge/SKILL.md): BM25 search over this origin's published knowledge bundle. Use it to find which concept answers a question before fetching it. <!-- skill: {"version":"0.1.0","license":"MIT","sha256":"a093440b30bb81abafc12014a130635b6acc22c608e2dae3914511e058fbde5e","tool":"/skills/search_knowledge/tool.js","tool_sha256":"b13a3c0448c4ee8c744b1ee33b1dd441ecc0c7c3552e23f04b5f9aaf79049ab7"} -->
+- [get_concept](/skills/get_concept/SKILL.md): fetch the full markdown of a knowledge concept by id from this origin's bundle. <!-- skill: {"version":"0.1.0","license":"MIT","sha256":"c63b95427c4888b215b476442044d0e8ceeb9e4bd7e15eac7d762c9754988655","tool":"/skills/get_concept/tool.js","tool_sha256":"cafbfbb5c92e4bb255477953eabba0c1f9baebb65cf52349ffac3b6b0879c268"} -->
+- [list_concepts](/skills/list_concepts/SKILL.md): list every knowledge concept this origin publishes (id, type, title, description). <!-- skill: {"version":"0.1.0","license":"MIT","sha256":"3576ada3394b026b552620b009c8b3d6690995778d0cb63c4ca32fe78e793c19","tool":"/skills/list_concepts/tool.js","tool_sha256":"8c3f7c395eed1c512ce92751c274143a8f389a906bc593f7f8afbb0270663939"} -->

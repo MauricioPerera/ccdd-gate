@@ -1,0 +1,46 @@
+{
+  "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+  "signing_alg": "ed25519",
+  "signing_key": "5q9GiTwWER5jIxseYf9Y0bvLA8B0dU8u6iqSydIskNE=",
+  "skills": [
+    {
+      "name": "search_knowledge",
+      "type": "skill-md",
+      "description": "BM25 search over this origin's published knowledge bundle. Use it to find which concept answers a question before fetching it.",
+      "url": "/skills/search_knowledge/SKILL.md",
+      "digest": "sha256:a093440b30bb81abafc12014a130635b6acc22c608e2dae3914511e058fbde5e",
+      "version": "0.1.0",
+      "license": "MIT",
+      "sha256": "a093440b30bb81abafc12014a130635b6acc22c608e2dae3914511e058fbde5e",
+      "tool": "/skills/search_knowledge/tool.js",
+      "tool_sha256": "b13a3c0448c4ee8c744b1ee33b1dd441ecc0c7c3552e23f04b5f9aaf79049ab7",
+      "signature": "oM5jCJzeBZsiuceVtG9Ejo3S3tpVBmyKAPLN9HFJUHcQlbvynzlLYd5rVaN9idhbqoWRn8C5V5lPqPReuSrPDA=="
+    },
+    {
+      "name": "get_concept",
+      "type": "skill-md",
+      "description": "Fetch the full markdown of a knowledge concept by id from this origin's bundle.",
+      "url": "/skills/get_concept/SKILL.md",
+      "digest": "sha256:c63b95427c4888b215b476442044d0e8ceeb9e4bd7e15eac7d762c9754988655",
+      "version": "0.1.0",
+      "license": "MIT",
+      "sha256": "c63b95427c4888b215b476442044d0e8ceeb9e4bd7e15eac7d762c9754988655",
+      "tool": "/skills/get_concept/tool.js",
+      "tool_sha256": "cafbfbb5c92e4bb255477953eabba0c1f9baebb65cf52349ffac3b6b0879c268",
+      "signature": "1RkKRCP/EVQn9B6TUTCGmsao6h1PH7rAICZ2ntIoi/x7/CLZbwzoYpNBN4tK2cqr5EYEthdtN+yHp80VQ9UJBQ=="
+    },
+    {
+      "name": "list_concepts",
+      "type": "skill-md",
+      "description": "List every knowledge concept this origin publishes (id, type, title, description).",
+      "url": "/skills/list_concepts/SKILL.md",
+      "digest": "sha256:3576ada3394b026b552620b009c8b3d6690995778d0cb63c4ca32fe78e793c19",
+      "version": "0.1.0",
+      "license": "MIT",
+      "sha256": "3576ada3394b026b552620b009c8b3d6690995778d0cb63c4ca32fe78e793c19",
+      "tool": "/skills/list_concepts/tool.js",
+      "tool_sha256": "8c3f7c395eed1c512ce92751c274143a8f389a906bc593f7f8afbb0270663939",
+      "signature": "2pYyvQrt+jiTk439080CJNjNMM3H5NsF3n1GIB+wQW4PXYQQWarf7NKspApHsI6iVzTE8zKm5uc9KGefRb2RCw=="
+    }
+  ]
+}
