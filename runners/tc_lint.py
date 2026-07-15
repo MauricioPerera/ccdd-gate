@@ -183,11 +183,40 @@ def r_budget_sane(ctx):
                         "msg": f"budget.{k}={v} excede el tope global firmado ({cap})"})
     return out
 
+def _find_repo_root(start):
+    """Sube desde `start` buscando el ancestro mas cercano con `.git`. None si no lo encuentra."""
+    cur = Path(start).resolve()
+    for parent in (cur, *cur.parents):
+        if (parent / ".git").exists():
+            return parent
+    return None
+
+
+def resolve_contract_path(contract_dir, rel):
+    """Resuelve `rel` (target/tests del frontmatter) relativo a `contract_dir` -- comportamiento
+    historico, intacto: si esa ruta existe, es la que se usa SIEMPRE, sin excepcion.
+
+    Si no existe ahi, cae a resolverla relativa a la raiz del repo (el ancestro mas cercano con
+    `.git` subiendo desde `contract_dir`). Soporta contratos que declaran `target`/`tests`
+    relativos a la raiz del proyecto (convencion de KDD-template's validate_contracts.py) en vez
+    de relativos al propio contrato con `../..` (convencion nativa de este gate). Retrocompatible
+    por diseno: nunca cambia una resolucion que ya funcionaba."""
+    p = Path(contract_dir) / rel
+    if p.exists():
+        return p
+    root = _find_repo_root(contract_dir)
+    if root is not None:
+        alt = root / rel
+        if alt.exists():
+            return alt
+    return p
+
+
 def r_tests_frozen(ctx):
     tests = ctx["fm"].get("tests")
     if not tests:
         return []
-    tp = ctx["path"].parent / tests
+    tp = resolve_contract_path(ctx["path"].parent, tests)
     if not tp.exists() or tp.stat().st_size == 0:
         return [err("tc-tests-frozen", "los property-tests deben existir y no estar vacíos: " + str(tests))]
     if ctx["fn_name"] and ctx["fn_name"] not in tp.read_text(encoding="utf-8"):
@@ -211,7 +240,7 @@ def r_tests_assert(ctx):
     tests = ctx["fm"].get("tests")
     if not tests:
         return []
-    tp = ctx["path"].parent / tests
+    tp = resolve_contract_path(ctx["path"].parent, tests)
     if not tp.exists():
         return []  # la ausencia ya la reporta r_tests_frozen
     try:

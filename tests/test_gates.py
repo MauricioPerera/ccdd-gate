@@ -415,5 +415,121 @@ class TestTestsAssert(unittest.TestCase):
         self.assertNotIn("tc-tests-assert", self._rules("f(1)\n", lang="javascript"))
 
 
+class TestRepoRootPathFallback(unittest.TestCase):
+    """resolve_contract_path: si target/tests no existen relativos al directorio del contrato,
+    cae a resolverlos relativos a la raiz del repo (ancestro mas cercano con `.git`). Soporta
+    contratos que declaran target/tests relativos a la raiz del proyecto (convencion de
+    KDD-template's validate_contracts.py) en vez de relativos al propio contrato con `../..`
+    (convencion nativa de este gate) -- sin romper NUNCA la resolucion historica."""
+
+    def _repo(self):
+        d = Path(tempfile.mkdtemp())
+        (d / ".git").mkdir()
+        (d / "knowledge" / "contracts").mkdir(parents=True)
+        return d
+
+    def test_prefers_contract_relative_when_it_exists(self):
+        d = self._repo()
+        try:
+            contract_dir = d / "knowledge" / "contracts"
+            (contract_dir / "local.py").write_text("x", encoding="utf-8")
+            (d / "local.py").write_text("y", encoding="utf-8")  # tambien existe en la raiz
+            got = tc_lint.resolve_contract_path(contract_dir, "local.py")
+            self.assertEqual(got, contract_dir / "local.py")  # gana SIEMPRE contract-relative
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_falls_back_to_repo_root_when_contract_relative_missing(self):
+        d = self._repo()
+        try:
+            contract_dir = d / "knowledge" / "contracts"
+            (d / "src").mkdir()
+            (d / "src" / "impl.py").write_text("x", encoding="utf-8")
+            got = tc_lint.resolve_contract_path(contract_dir, "src/impl.py")
+            self.assertEqual(got.resolve(), (d / "src" / "impl.py").resolve())
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_returns_original_when_neither_exists(self):
+        d = self._repo()
+        try:
+            contract_dir = d / "knowledge" / "contracts"
+            got = tc_lint.resolve_contract_path(contract_dir, "nope.py")
+            self.assertEqual(got, contract_dir / "nope.py")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_no_repo_root_found_returns_original(self):
+        d = Path(tempfile.mkdtemp())  # sin .git en ningun ancestro conocido -- no debe reventar
+        try:
+            got = tc_lint.resolve_contract_path(d, "nope.py")
+            self.assertEqual(got, d / "nope.py")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_r_tests_frozen_passes_with_repo_root_relative_tests(self):
+        d = self._repo()
+        try:
+            contract_dir = d / "knowledge" / "contracts"
+            (d / "tests").mkdir()
+            (d / "tests" / "test_impl.py").write_text(
+                "def test_f():\n    assert f(1) == 1\n", encoding="utf-8")
+            fm = ('---\ntask: f\nsignature: "def f(x)"\ntests: tests/test_impl.py\n---\n'
+                  '## Intent\nx\n')
+            contract = contract_dir / "c.md"
+            contract.write_text(fm, encoding="utf-8")
+            rules = {x["rule"] for x in tc_lint.lint(contract)}
+            self.assertNotIn("tc-tests-frozen", rules)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_task_gate_pass_with_repo_root_relative_target_and_tests(self):
+        """End-to-end: contrato con target/tests relativos a la RAIZ del repo (convencion
+        KDD-template), no al directorio del contrato -- pasa task_gate.gate() completo via el
+        fallback a raiz del repo (deteccion por `.git` ancestro)."""
+        d = self._repo()
+        try:
+            contract_dir = d / "knowledge" / "contracts"
+            (d / "src").mkdir()
+            (d / "tests").mkdir()
+            (d / "src" / "impl.py").write_text(
+                "def add_one(x: int) -> int:\n    return x + 1\n", encoding="utf-8")
+            (d / "tests" / "test_impl.py").write_text(
+                "import unittest, sys, os\n"
+                "sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))\n"
+                "from impl import add_one\n"
+                "class T(unittest.TestCase):\n"
+                "    def test_it(self):\n"
+                "        self.assertEqual(add_one(1), 2)\n"
+                "if __name__ == '__main__':\n    unittest.main()\n",
+                encoding="utf-8")
+            fm = (
+                '---\n'
+                'task: add-one\n'
+                'intent: "Sumar uno a un entero."\n'
+                'target: src/impl.py\n'
+                'signature: "def add_one(x: int) -> int"\n'
+                'test_command: "python tests/test_impl.py"\n'
+                'test_cwd: ../..\n'
+                'budget: { cyclomatic_max: 5, nesting_max: 2, params_max: 1, lines_max: 10 }\n'
+                'tests: tests/test_impl.py\n'
+                'deps_allowed: []\n'
+                'forbids: [network, subprocess, llm]\n'
+                '---\n'
+                '## Intent\nx\n## Interface\n```\ndef add_one(x: int) -> int\n```\n'
+                '## Invariants\n- siempre suma 1\n'
+                '## Examples\n- add_one(1) -> 2\n- add_one(0) -> 1\n'
+                "## Do / Don't\n- DO: nada especial\n"
+                '## Tests\nver tests/test_impl.py\n'
+                '## Constraints\n- PARAR si necesita red\n'
+            )
+            contract = contract_dir / "add-one.md"
+            contract.write_text(fm, encoding="utf-8")
+            v = task_gate.gate(str(contract))
+            self.assertEqual(v["verdict"], "PASS", msg=v)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

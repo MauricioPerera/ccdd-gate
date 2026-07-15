@@ -431,8 +431,8 @@ def gate(task_path, _depth=0):
                 "detail": "el task-contract no lintea (corre tc_lint.py para el detalle)"}
     if fm.get("kind") == "group":
         return integration_gate(task_path, fm, _depth)
-    target = p.parent / fm["target"]
-    tests = p.parent / fm["tests"]
+    target = tc_lint.resolve_contract_path(p.parent, fm["target"])
+    tests = tc_lint.resolve_contract_path(p.parent, fm["tests"])
     fn_name, _n = tc_lint.parse_sig(fm["signature"], fm.get("language"))
 
     return (_gate_test_approval(fm, tests)
