@@ -11,8 +11,14 @@ cryptography>=42     # firmas Ed25519 de revisores (keygen/attest/quórum en dif
 #             Los backends ollama / openai-compatible (LM Studio, vLLM) usan urllib (stdlib).
 # anthropic>=0.40
 #
-# tree-sitter : backend UNIVERSAL de métricas para lenguajes no-Python (TS/JS/…, decisión #7).
-#               Dep OPCIONAL: sin ella, Python (backend nativo) sigue funcionando igual.
-#               Instalar para medir .ts/.tsx/.js:  pip install tree_sitter tree_sitter_typescript
+# tree-sitter : backend UNIVERSAL de métricas + firma para lenguajes no-Python (decisión #7).
+#               Dep OPCIONAL por lenguaje: sin la gramática instalada, Python (backend nativo)
+#               sigue funcionando igual, y measure_complexity/lint_task_contract degradan a
+#               vacío/aridad genérica para ESE lenguaje sin lanzar. Soporta: typescript/tsx/
+#               javascript, rust, go, java, csharp, php, ruby, kotlin, c, swift, cpp.
+#               Instalar vía extra del paquete (recomendado):
+#                 pip install ccdd-gate[rust]      # un lenguaje
+#                 pip install ccdd-gate[all]       # los 11
+#               O manualmente (ejemplo Rust):       pip install tree_sitter tree_sitter_rust
 # tree_sitter>=0.23
-# tree_sitter_typescript>=0.23
+# tree_sitter_rust>=0.23
