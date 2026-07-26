@@ -3,8 +3,12 @@
 Sin LLM. (a) Unit sobre normalizacion y politicas inyectando un runner fake (version mismatch,
 ausente+required, ausente+no-required, findings, limpio, config invalida, glob vacio).
 (b) Integracion REAL con ruff: tempdir con F401 -> exit 1; arreglado -> exit 0; mismatch -> exit 2.
-Los de integracion saltan limpios (skipUnless) si ruff no esta o su version != pin del test."""
+Los de integracion saltan limpios (skipUnless) si ruff no esta o su version != pin del test.
+
+Misma estructura para clippy (adaptador crate-completo, no por-archivo: ver ClippyAdapter)."""
+import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -202,10 +206,10 @@ class ConfigValidation(unittest.TestCase):
         self.assertEqual(code, 2)
 
     def test_unknown_tool_exit2(self):
-        cfg = _write_cfg(self.root, [{"tool": "clippy", "version": "1.0"}])
+        cfg = _write_cfg(self.root, [{"tool": "eslint", "version": "1.0"}])
         code, payload = lg.gate(cfg, str(self.root), runner=FakeRunner())
         self.assertEqual(code, 2)
-        self.assertIn("clippy", payload["error"])
+        self.assertIn("eslint", payload["error"])
 
     def test_empty_version_exit2(self):
         cfg = _write_cfg(self.root, [{"tool": "ruff", "version": ""}])
@@ -255,6 +259,241 @@ class IntegrationRealRuff(unittest.TestCase):
         code, payload = lg.gate(self._cfg(version="0.0.0"), str(self.root))
         self.assertEqual(code, 2)
         self.assertFalse(payload["ok"])
+        self.assertIn("entorno inválido", payload["error"])
+
+
+# --- clippy: mismo contrato que ruff, pero el adaptador linta el crate COMPLETO (no archivos
+# sueltos como input) y usa `files` solo para skip-si-vacio + post-filtro de findings. ---
+
+def _installed_clippy():
+    """Version instalada de clippy, o None si cargo/clippy no esta (subprocess real, sin mock)."""
+    try:
+        out = subprocess.run(["cargo", "clippy", "--version"], capture_output=True, encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    if out.returncode != 0:
+        return None
+    parts = out.stdout.strip().split()
+    return parts[1] if len(parts) >= 2 else out.stdout.strip()
+
+
+_INSTALLED_CLIPPY = _installed_clippy()  # pin = lo instalado; sin cargo, integracion salta
+CLIPPY_PIN = _INSTALLED_CLIPPY or "0.0.0"
+_HAS_CLIPPY = _INSTALLED_CLIPPY is not None
+
+
+class ClippyFakeRunner:
+    """Runner inyectable: despacha `cargo clippy --version` y `cargo clippy --message-format=json`."""
+    def __init__(self, version=CLIPPY_PIN, not_installed=False, jsonl="", rc=0):
+        self.version = version
+        self.not_installed = not_installed
+        self.jsonl = jsonl
+        self.rc = rc
+        self.calls = []
+
+    def __call__(self, args, cwd):
+        self.calls.append((list(args), cwd))
+        if args[:3] == ["cargo", "clippy", "--version"]:
+            if self.not_installed:
+                raise FileNotFoundError("cargo")
+            return 0, f"clippy {self.version} (abc 2026-01-01)\n", ""
+        return self.rc, self.jsonl, ""
+
+
+def _clippy_msg(file_name, line, code, message, level="warning"):
+    """Una linea JSON `reason: compiler-message` como la emite `cargo --message-format=json`."""
+    return json.dumps({
+        "reason": "compiler-message",
+        "message": {
+            "level": level, "message": message, "code": {"code": code},
+            "spans": [{"file_name": file_name, "line_start": line, "is_primary": True}],
+        },
+    })
+
+
+CLIPPY_NOISE_LINES = "\n".join([
+    json.dumps({"reason": "compiler-artifact"}),
+    json.dumps({"reason": "build-finished", "success": True}),
+    json.dumps({  # resumen sin codigo de lint -- no debe contarse como finding
+        "reason": "compiler-message",
+        "message": {"level": "warning", "message": "1 warning emitted", "code": None, "spans": []},
+    }),
+])
+
+
+class ClippyNormalize(unittest.TestCase):
+    def test_parse_and_normalize_sorted_and_filtered(self):
+        jsonl = "\n".join([
+            _clippy_msg("src/b.rs", 2, "clippy::foo", "b lint"),
+            _clippy_msg("src/a.rs", 5, "clippy::bar", "a lint late"),
+            _clippy_msg("src/a.rs", 1, "clippy::foo", "a lint early"),
+            CLIPPY_NOISE_LINES,
+        ])
+        adapter = lg.ClippyAdapter()
+        diagnostics = adapter._parse_messages(jsonl)
+        self.assertEqual(len(diagnostics), 3)  # el resumen sin codigo quedo afuera
+        got = adapter._normalize(diagnostics, ".", allowed=set())
+        self.assertEqual(got, [
+            {"file": "src/a.rs", "line": 1, "code": "clippy::foo", "msg": "a lint early"},
+            {"file": "src/a.rs", "line": 5, "code": "clippy::bar", "msg": "a lint late"},
+            {"file": "src/b.rs", "line": 2, "code": "clippy::foo", "msg": "b lint"},
+        ])
+
+    def test_normalize_windows_backslash_path(self):
+        diagnostics = [json.loads(_clippy_msg("src\\main.rs", 7, "clippy::len_zero", "m"))["message"]]
+        got = lg.ClippyAdapter()._normalize(diagnostics, ".", allowed=set())
+        self.assertEqual(got[0]["file"], "src/main.rs")
+
+    def test_normalize_filters_to_allowed(self):
+        diagnostics = [
+            json.loads(_clippy_msg("crates/a/src/lib.rs", 1, "clippy::foo", "m"))["message"],
+            json.loads(_clippy_msg("crates/b/src/lib.rs", 1, "clippy::foo", "m"))["message"],
+        ]
+        got = lg.ClippyAdapter()._normalize(diagnostics, ".", allowed={"crates/a/src/lib.rs"})
+        self.assertEqual([f["file"] for f in got], ["crates/a/src/lib.rs"])
+
+    def test_normalize_empty_allowed_means_no_filter(self):
+        diagnostics = [json.loads(_clippy_msg("x.rs", 1, "clippy::foo", "m"))["message"]]
+        got = lg.ClippyAdapter()._normalize(diagnostics, ".", allowed=set())
+        self.assertEqual(len(got), 1)
+
+
+class ClippyPoliciesUnit(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_default_files_is_rs_glob(self):
+        # sin `files` en la entrada, el default de ClippyAdapter (no el de ruff) debe aplicarse.
+        cfg = _write_cfg(self.root, [{"tool": "clippy", "version": CLIPPY_PIN}])
+        entries, err = lg._load_linters(cfg)
+        self.assertIsNone(err)
+        self.assertEqual(entries[0]["files"], "**/*.rs")
+
+    def test_version_mismatch_exit2(self):
+        cfg = _write_cfg(self.root, [{"tool": "clippy", "version": CLIPPY_PIN}])
+        (self.root / "src").mkdir()
+        (self.root / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+        runner = ClippyFakeRunner(version="0.0.1")
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 2)
+        self.assertIn("0.0.1", payload["error"])
+        self.assertIn(CLIPPY_PIN, payload["error"])
+
+    def test_ausente_required_exit2(self):
+        cfg = _write_cfg(self.root, [{"tool": "clippy", "version": CLIPPY_PIN, "required": True}])
+        (self.root / "src").mkdir()
+        (self.root / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+        runner = ClippyFakeRunner(not_installed=True)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 2)
+        self.assertIn("no instalada", payload["error"])
+
+    def test_ausente_not_required_skip_exit0(self):
+        cfg = _write_cfg(self.root, [{"tool": "clippy", "version": CLIPPY_PIN, "required": False}])
+        (self.root / "src").mkdir()
+        (self.root / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+        runner = ClippyFakeRunner(not_installed=True)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["results"][0]["skipped"], True)
+
+    def test_findings_exit1(self):
+        cfg = _write_cfg(self.root, [{"tool": "clippy", "version": CLIPPY_PIN}])
+        (self.root / "src").mkdir()
+        (self.root / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+        jsonl = _clippy_msg("src/main.rs", 1, "clippy::len_zero", "length comparison to zero")
+        runner = ClippyFakeRunner(jsonl=jsonl, rc=0)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 1)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["results"][0]["findings"][0]["code"], "clippy::len_zero")
+
+    def test_findings_exit1_even_with_rc_101(self):
+        # cargo clippy con -D warnings sale con 101 aunque el problema sea "solo" un lint
+        cfg = _write_cfg(self.root, [{"tool": "clippy", "version": CLIPPY_PIN}])
+        (self.root / "src").mkdir()
+        (self.root / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+        jsonl = _clippy_msg("src/main.rs", 1, "clippy::len_zero", "length comparison to zero")
+        runner = ClippyFakeRunner(jsonl=jsonl, rc=101)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 1)
+
+    def test_clean_exit0(self):
+        cfg = _write_cfg(self.root, [{"tool": "clippy", "version": CLIPPY_PIN}])
+        (self.root / "src").mkdir()
+        (self.root / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+        runner = ClippyFakeRunner(jsonl=CLIPPY_NOISE_LINES, rc=0)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["results"][0]["findings"], [])
+
+    def test_glob_empty_clean_exit0_never_invokes_cargo(self):
+        cfg = _write_cfg(self.root, [{"tool": "clippy", "version": CLIPPY_PIN}])
+        # sin archivos .rs en el tempdir
+        runner = ClippyFakeRunner()
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 0)
+        self.assertTrue(all(c[0][:3] == ["cargo", "clippy", "--version"] for c in runner.calls))
+
+    def test_tool_crash_exit2(self):
+        cfg = _write_cfg(self.root, [{"tool": "clippy", "version": CLIPPY_PIN}])
+        (self.root / "src").mkdir()
+        (self.root / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+        runner = ClippyFakeRunner(rc=1, jsonl="not json at all")  # 1 no esta en (0, 101)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 2)
+        self.assertIn("cargo clippy falló", payload["error"])
+
+
+@unittest.skipUnless(_HAS_CLIPPY, "cargo clippy no disponible (cargo/clippy no instalados)")
+class IntegrationRealClippy(unittest.TestCase):
+    """Integracion REAL con `cargo clippy` sobre un crate minimo generado con `cargo new`."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp)
+        # tempfile.mkdtemp() ya crea el directorio -> `cargo new` lo rechaza ("already exists");
+        # `cargo init` si opera sobre un directorio existente vacio.
+        subprocess.run(["cargo", "init", "--quiet", "--name", "sample", "."],
+                        capture_output=True, encoding="utf-8", cwd=str(self.root))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _cfg(self, **overrides):
+        entry = {"tool": "clippy", "version": CLIPPY_PIN, "files": "src/**/*.rs"}
+        entry.update(overrides)
+        return _write_cfg(self.root, [entry])
+
+    def test_len_zero_exit1_with_normalized_finding(self):
+        (self.root / "src" / "main.rs").write_text(
+            "fn main() {\n    let v: Vec<i32> = Vec::new();\n"
+            "    if v.len() == 0 {\n        println!(\"empty\");\n    }\n}\n",
+            encoding="utf-8")
+        code, payload = lg.gate(self._cfg(), str(self.root))
+        self.assertEqual(code, 1)
+        findings = payload["results"][0]["findings"]
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["file"], "src/main.rs")
+        self.assertEqual(findings[0]["code"], "clippy::len_zero")
+
+    def test_clean_exit0(self):
+        (self.root / "src" / "main.rs").write_text(
+            "fn main() {\n    let v: Vec<i32> = Vec::new();\n"
+            "    if v.is_empty() {\n        println!(\"empty\");\n    }\n}\n",
+            encoding="utf-8")
+        code, payload = lg.gate(self._cfg(), str(self.root))
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["results"][0]["findings"], [])
+
+    def test_version_mismatch_real_exit2(self):
+        (self.root / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+        code, payload = lg.gate(self._cfg(version="0.0.0"), str(self.root))
+        self.assertEqual(code, 2)
         self.assertIn("entorno inválido", payload["error"])
 
 
