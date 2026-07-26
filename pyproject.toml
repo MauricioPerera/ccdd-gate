@@ -17,6 +17,37 @@ dependencies = [
   "cryptography>=42",  # firmas Ed25519 de revisores (gate L2 de gobernanza)
 ]
 
+# Backend UNIVERSAL de métricas/firma para lenguajes no-Python (decisión #7). Deps OPCIONALES:
+# sin ellas, Python (backend nativo) sigue funcionando igual; measure_complexity/lint_task_contract
+# devuelven vacío/aridad genérica para el lenguaje sin su gramática instalada (nunca lanzan).
+# Cada extra instala tree_sitter + la gramática de ESE lenguaje; "all" instala todas.
+[project.optional-dependencies]
+typescript = ["tree_sitter>=0.23", "tree_sitter_typescript>=0.23"]
+rust = ["tree_sitter>=0.23", "tree_sitter_rust>=0.23"]
+go = ["tree_sitter>=0.23", "tree_sitter_go>=0.23"]
+java = ["tree_sitter>=0.23", "tree_sitter_java>=0.23"]
+csharp = ["tree_sitter>=0.23", "tree_sitter_c_sharp>=0.23"]
+php = ["tree_sitter>=0.23", "tree_sitter_php>=0.23"]
+ruby = ["tree_sitter>=0.23", "tree_sitter_ruby>=0.23"]
+kotlin = ["tree_sitter>=0.23", "tree_sitter_kotlin>=0.23"]
+c = ["tree_sitter>=0.23", "tree_sitter_c>=0.23"]
+swift = ["tree_sitter>=0.23", "tree_sitter_swift>=0.23"]
+cpp = ["tree_sitter>=0.23", "tree_sitter_cpp>=0.23"]
+all = [
+  "tree_sitter>=0.23",
+  "tree_sitter_typescript>=0.23",
+  "tree_sitter_rust>=0.23",
+  "tree_sitter_go>=0.23",
+  "tree_sitter_java>=0.23",
+  "tree_sitter_c_sharp>=0.23",
+  "tree_sitter_php>=0.23",
+  "tree_sitter_ruby>=0.23",
+  "tree_sitter_kotlin>=0.23",
+  "tree_sitter_c>=0.23",
+  "tree_sitter_swift>=0.23",
+  "tree_sitter_cpp>=0.23",
+]
+
 [project.urls]
 Homepage = "https://github.com/MauricioPerera/ccdd-gate"
 Issues = "https://github.com/MauricioPerera/ccdd-gate/issues"
