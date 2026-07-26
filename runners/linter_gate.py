@@ -14,7 +14,7 @@ NO es PASS). Tool no instalada: required:false -> skip anunciado por stderr + ex
 
 Arquitectura extensible: registro ADAPTERS por nombre de tool. Cada adaptador sabe
 (a) leer su version instalada, (b) invocar con salida machine-readable, (c) normalizar.
-HOY solo ruff; el registro queda listo para clippy/eslint/golangci-lint sin implementarlos.
+HOY ruff y clippy; el registro queda listo para eslint/golangci-lint sin implementarlos.
 
 Config (YAML): lista de entradas { tool, version, files?, args?, required? }.
 Uso:  python linter_gate.py [linters.yaml] [root]
@@ -44,6 +44,7 @@ def _real_runner(args, cwd):
 class RuffAdapter:
     """Adaptador ruff: `ruff check --output-format json` normalizado a findings."""
     name = "ruff"
+    default_files = "**/*.py"
 
     def installed_version(self, runner):
         """String de version instalada, o None si ruff no esta instalada (FileNotFoundError)."""
@@ -88,9 +89,88 @@ class RuffAdapter:
         return findings
 
 
-# Registro de adaptadores por nombre de tool. Hoy solo ruff; clippy/eslint/golangci-lint
-# se registran aqui (misma interfaz: installed_version/collect) cuando se implementen.
-ADAPTERS = {"ruff": RuffAdapter()}
+class ClippyAdapter:
+    """Adaptador clippy: `cargo clippy --message-format=json` normalizado a findings.
+
+    A diferencia de ruff (linter por-archivo), clippy linta el crate/workspace COMPLETO desde
+    `root` -- no acepta una lista de archivos como input. `files` (el glob de la entrada YAML)
+    se usa solo para dos cosas: (1) decidir si hay algo que lintear (glob vacio -> skip sin
+    invocar clippy, mismo contrato que ruff) y (2) post-filtrar los findings a esos paths tras
+    normalizarlos, para que un `files: "crates/topcoat-core/**/*.rs"` no reporte lints de otros
+    crates del mismo workspace.
+    """
+    name = "clippy"
+    default_files = "**/*.rs"
+
+    def installed_version(self, runner):
+        """String de version instalada, o None si clippy no esta (FileNotFoundError)."""
+        try:
+            rc, out, _ = runner(["cargo", "clippy", "--version"], None)
+        except FileNotFoundError:
+            return None
+        if rc != 0:
+            return None
+        # salida: "clippy 0.1.96 (ac68faa20c 2026-05-25)"
+        parts = out.strip().split()
+        return parts[1] if len(parts) >= 2 else out.strip()
+
+    def collect(self, files, args, root, runner):
+        """Invoca `cargo clippy` una vez sobre TODO `root` y filtra a `files`, normalizado."""
+        cmd = ["cargo", "clippy", "--message-format=json"] + list(args or [])
+        rc, out, err = runner(cmd, root)
+        # 0 limpio (o con warnings sin -D warnings) · 101 clippy deniega (-D warnings) o error de
+        # compilacion (ese error TAMBIEN es un finding, no un crash) · otro = entorno invalido.
+        if rc not in (0, 101):
+            raise ToolError(f"cargo clippy falló (exit {rc}): {err.strip() or out.strip()}")
+        diagnostics = self._parse_messages(out)
+        allowed = {f.replace("\\", "/") for f in files}
+        return self._normalize(diagnostics, root, allowed)
+
+    def _parse_messages(self, out):
+        """Diagnosticos de nivel warning/error de la salida JSON-lines de cargo. Nunca lanza por
+        una linea no-JSON o sin 'code' (mensajes de resumen del propio cargo, sin lint asociado)."""
+        out_msgs = []
+        for line in out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if data.get("reason") != "compiler-message":
+                continue
+            msg = data.get("message") or {}
+            if msg.get("level") not in ("warning", "error"):
+                continue
+            if not (msg.get("code") or {}).get("code"):
+                continue  # sin codigo de lint = resumen ("N warnings emitted"), no un finding
+            out_msgs.append(msg)
+        return out_msgs
+
+    def _normalize(self, diagnostics, root, allowed):
+        """[{file (relativo, /), line, code, msg}] ordenado, filtrado a `allowed` si no vacio."""
+        findings = []
+        for msg in diagnostics:
+            spans = msg.get("spans") or []
+            primary = next((s for s in spans if s.get("is_primary")), spans[0] if spans else None)
+            raw_file = (primary or {}).get("file_name", "")
+            rel = raw_file.replace("\\", "/")
+            if allowed and rel not in allowed:
+                continue
+            findings.append({
+                "file": rel,
+                "line": (primary or {}).get("line_start") or 0,
+                "code": (msg.get("code") or {}).get("code") or "",
+                "msg": msg.get("message") or "",
+            })
+        findings.sort(key=lambda f: (f["file"], f["line"], f["code"]))
+        return findings
+
+
+# Registro de adaptadores por nombre de tool. Hoy ruff y clippy; eslint/golangci-lint se
+# registran aqui (misma interfaz: installed_version/collect) cuando se implementen.
+ADAPTERS = {"ruff": RuffAdapter(), "clippy": ClippyAdapter()}
 
 
 def _load_linters(path):
@@ -110,7 +190,7 @@ def _load_linters(path):
         entries.append({
             "tool": e["tool"],
             "version": e["version"],
-            "files": e.get("files", "**/*.py"),
+            "files": e.get("files", ADAPTERS[e["tool"]].default_files),
             "args": list(e.get("args", [])),
             "required": bool(e.get("required", False)),
         })
