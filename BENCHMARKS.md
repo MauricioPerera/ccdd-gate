@@ -103,3 +103,36 @@ actual. Validación: reconstruir el loop naïve inline (sin tocar código del re
 orden de magnitud — ~21x en `audit_annotations` (coherente con ~20x); en `audit_composition` el
 factor escala con el costo de parseo del target, por lo que ~29x es la cifra del commit sobre su
 escenario y targets más pesados lo amplifican.
+
+---
+
+## 4. Costo de Rust vs Python en el gate (reproducible)
+
+`python benchmarks/bench_rust_backend.py [ruta_a_proyecto_rust_con_linters.yaml]` — companero de
+la sección 1, pero comparando el backend Python nativo (AST) contra el backend Rust (tree-sitter)
+sobre el MISMO dispatcher (`metrics_backends.get_backend`) que usa el gate real, con funciones
+EQUIVALENTES (misma forma lógica) en ambos lenguajes.
+
+| Operación | Python (AST nativo) | Rust (tree-sitter) | Rust/Python |
+|---|---|---|---|
+| Métricas de complejidad | ~0.10 ms/op | ~0.12 ms/op | 1.1x |
+| Chequeo de firma | ~0.05 ms/op | ~0.08 ms/op | 1.6x |
+
+*Medido en Windows, Python 3.14, una corrida. Mismo orden de magnitud que la sección 1: el gate
+en sí es sub-milisegundo, el lenguaje del target no cambia eso.*
+
+**Tercera medición, rotulada EXPLÍCITAMENTE como NO apples-to-apples** (depende del proyecto y del
+estado de la caché de compilación): el gate de lint end-to-end, `ruff` (análisis estático) vs
+`clippy` (compila), sobre un proyecto Rust real que consume Topcoat vía KDD (`topcoat-app`):
+
+| Escenario | Tiempo | vs ruff |
+|---|---|---|
+| ruff sobre 1 archivo | ~21-25 ms | — |
+| clippy, caché tibia (incremental) | ~340-350 ms | ~16x |
+| clippy, en frío (`cargo clean` previo, una corrida real) | ~58 900 ms | ~2800x |
+
+**Lectura honesta:** el costo real de adoptar KDD con Rust no está en la lógica del gate (sección
+de arriba: sub-milisegundo, igual que Python) — está en que Rust es un lenguaje **compilado** y
+`clippy` paga ese precio. Con caché tibia (el caso típico de desarrollo día a día) el costo es
+chico; en frío (un checkout limpio de CI, o `cargo clean` local) es del orden del **minuto**, no
+del milisegundo. Es un costo de Rust como lenguaje, no un defecto del gate.
