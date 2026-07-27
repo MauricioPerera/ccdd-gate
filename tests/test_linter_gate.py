@@ -573,6 +573,24 @@ class GoVetNormalize(unittest.TestCase):
         self.assertEqual(msgs[0]["file"], "pkgb/pkgb.go")
         self.assertNotIn("\\", msgs[0]["file"])
 
+    def test_dot_slash_prefix_stripped(self):
+        # Go < 1.25 prefija la ruta con `./` (Linux) o `.\` (Windows): `./main.go:6:2:`.
+        # El glob de `files` da paths relativos SIN prefijo (`main.go`), asi que hay que
+        # strippearlo o el finding se filtra contra `allowed` y se pierde (gate -> code 0).
+        adapter = lg.GoVetAdapter()
+        for stderr in (
+            "./main.go:6:2: fmt.Printf format %d has arg x of wrong type string",
+            ".\\main.go:6:2: fmt.Printf format %d has arg x of wrong type string",
+            "./pkgb/pkgb.go:6:2: copylocks: foo",
+        ):
+            msgs = adapter._parse_messages(stderr)
+            self.assertEqual(len(msgs), 1, stderr)
+            self.assertFalse(msgs[0]["file"].startswith("./"), stderr)
+            self.assertNotIn("\\", msgs[0]["file"], stderr)
+        self.assertEqual(adapter._parse_messages("./main.go:6:2: m")[0]["file"], "main.go")
+        self.assertEqual(adapter._parse_messages("./pkgb/pkgb.go:6:2: m")[0]["file"],
+                         "pkgb/pkgb.go")
+
     def test_normalize_filters_to_allowed(self):
         msgs = lg.GoVetAdapter()._parse_messages("\n".join([
             "a/a.go:1:1: m",
@@ -648,6 +666,38 @@ class GoVetPoliciesUnit(unittest.TestCase):
         self.assertEqual(f["code"], "govet")
         self.assertEqual(f["file"], "main.go")
         self.assertEqual(f["line"], 6)
+
+    def test_findings_exit1_dot_slash_prefix_survives_filter(self):
+        # Regresion del fallo de CI: en Go < 1.25 `go vet` reporta la ruta con prefijo `./`
+        # (Linux) / `.\` (Windows): `./main.go:6:2:`. Como el glob `**/*.go` expande a paths
+        # relativos SIN prefijo (`main.go`), el finding se filtraba contra `allowed` y se
+        # perdia -> gate devolvia code 0 pese a haber hallazgo. El adapter debe strippear el
+        # prefijo para que el finding sobreviva en cualquier version de Go.
+        cfg = _write_cfg(self.root, [{"tool": "govet", "version": GOVET_PIN, "files": "**/*.go"}])
+        (self.root / "main.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+        stderr = './main.go:6:2: fmt.Printf format %d has arg "not a number" of wrong type string\n'
+        runner = GoVetFakeRunner(vet_stderr=stderr, rc=1)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 1)
+        self.assertFalse(payload["ok"])
+        findings = payload["results"][0]["findings"]
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["file"], "main.go")
+        self.assertEqual(findings[0]["line"], 6)
+        self.assertEqual(findings[0]["code"], "govet")
+
+    def test_findings_exit1_backslash_dot_prefix_survives_filter(self):
+        # Idem anterior pero con el prefijo `.\` que emite Go < 1.25 en Windows.
+        cfg = _write_cfg(self.root, [{"tool": "govet", "version": GOVET_PIN, "files": "**/*.go"}])
+        (self.root / "main.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+        stderr = '.\\main.go:6:2: fmt.Printf format %d has arg "not a number" of wrong type string\n'
+        runner = GoVetFakeRunner(vet_stderr=stderr, rc=1)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 1)
+        f = payload["results"][0]["findings"]
+        self.assertEqual(len(f), 1)
+        self.assertEqual(f[0]["file"], "main.go")
+        self.assertEqual(f[0]["line"], 6)
 
     def test_clean_exit0(self):
         cfg = _write_cfg(self.root, [{"tool": "govet", "version": GOVET_PIN}])

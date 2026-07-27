@@ -170,8 +170,11 @@ class ClippyAdapter:
 
 
 # Una linea de `go vet` hallazgo: `<ruta-relativa>:<linea>:<columna>: <mensaje>`. La ruta puede
-# venir con backslash en Windows (ej. `pkgb\pkgb.go`) -- se normaliza a forward-slash. Lineas que
-# no matchean (encabezados de paquete `# example.com/probe`, etc.) se ignoran silenciosamente.
+# venir con backslash en Windows (ej. `pkgb\pkgb.go`) -- se normaliza a forward-slash. En Go < 1.25
+# la ruta trae prefijo `./` (Linux) / `.\` (Windows): `./main.go:6:2:`. Como el glob de `files` da
+# paths relativos SIN prefijo (ej. `main.go`), hay que strippear ese `./` o el finding se filtraria
+# contra `allowed` y se perderia (gate devolveria code 0 pese a haber hallazgo). Lineas que no
+# matchean (encabezados `# example.com/probe`, etc.) se ignoran silenciosamente.
 GOVET_LINE_RE = re.compile(r"^(.+?):(\d+):(\d+):\s*(.+)$")
 
 
@@ -217,14 +220,18 @@ class GoVetAdapter:
 
     def _parse_messages(self, out):
         """Findings crudos de `go vet` desde stderr: lista de {file, line, col, msg} (file ya con
-        forward-slash). Lineas que no matchean GOVET_LINE_RE se ignoran silenciosamente; nunca lanza."""
+        forward-slash y sin prefijo `./`). Lineas que no matchean GOVET_LINE_RE se ignoran
+        silenciosamente; nunca lanza."""
         out_msgs = []
         for line in (out or "").splitlines():
             m = GOVET_LINE_RE.match(line)
             if not m:
                 continue
+            rel = m.group(1).replace("\\", "/")
+            if rel.startswith("./"):  # Go < 1.25 prefija `./`; el glob de `files` no lo trae
+                rel = rel[2:]
             out_msgs.append({
-                "file": m.group(1).replace("\\", "/"),
+                "file": rel,
                 "line": int(m.group(2)),
                 "col": int(m.group(3)),
                 "msg": m.group(4),
