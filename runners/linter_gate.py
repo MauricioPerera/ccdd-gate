@@ -14,12 +14,13 @@ NO es PASS). Tool no instalada: required:false -> skip anunciado por stderr + ex
 
 Arquitectura extensible: registro ADAPTERS por nombre de tool. Cada adaptador sabe
 (a) leer su version instalada, (b) invocar con salida machine-readable, (c) normalizar.
-HOY ruff y clippy; el registro queda listo para eslint/golangci-lint sin implementarlos.
+HOY ruff, clippy y govet; el registro queda listo para eslint/golangci-lint sin implementarlos.
 
 Config (YAML): lista de entradas { tool, version, files?, args?, required? }.
 Uso:  python linter_gate.py [linters.yaml] [root]
 Exit: 0 limpio · 1 findings · 2 config/entorno invalido. Sin LLM."""
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -168,9 +169,85 @@ class ClippyAdapter:
         return findings
 
 
-# Registro de adaptadores por nombre de tool. Hoy ruff y clippy; eslint/golangci-lint se
+# Una linea de `go vet` hallazgo: `<ruta-relativa>:<linea>:<columna>: <mensaje>`. La ruta puede
+# venir con backslash en Windows (ej. `pkgb\pkgb.go`) -- se normaliza a forward-slash. Lineas que
+# no matchean (encabezados de paquete `# example.com/probe`, etc.) se ignoran silenciosamente.
+GOVET_LINE_RE = re.compile(r"^(.+?):(\d+):(\d+):\s*(.+)$")
+
+
+class GoVetAdapter:
+    """Adaptador go vet: `go vet` normalizado a findings.
+
+    Como clippy (no como ruff), `go vet` linta el MODULO/PAQUETE COMPLETO desde `root` -- no
+    acepta archivos sueltos como input. `files` (el glob de la entrada YAML) se usa solo para
+    dos cosas: (1) decidir si hay algo que lintear (glob vacio -> skip sin invocar go vet, mismo
+    contrato que ruff/clippy) y (2) post-filtrar los findings a esos paths tras normalizarlos.
+
+    Salida verificada de `go vet ./...` (cwd=root): exit 0 limpio sin output; exit 1 con un
+    hallazgo POR LINEA en STDERR (no stdout) con formato `<ruta-relativa>:<linea>:<col>: <msg>`.
+    `go vet` no tiene codigos de regla por hallazgo (a diferencia de ruff F401 o clippy::foo), por
+    eso el campo `code` de cada finding es la constante "govet". Version via `go version` (no
+    existe `go vet --version`): 3er token = "go1.26.4" (prefijo "go" incluido, igual que el pin).
+    """
+    name = "go"  # binario invocado; registrado en ADAPTERS bajo la clave "govet"
+    default_files = "**/*.go"
+
+    def installed_version(self, runner):
+        """String de version instalada (ej. "go1.26.4"), o None si go no esta (FileNotFoundError)."""
+        try:
+            rc, out, _ = runner([self.name, "version"], None)
+        except FileNotFoundError:
+            return None
+        if rc != 0:
+            return None
+        # salida: "go version go1.26.4 windows/amd64" -> 3er token = "go1.26.4"
+        parts = out.strip().split()
+        return parts[2] if len(parts) >= 3 else out.strip()
+
+    def collect(self, files, args, root, runner):
+        """Invoca `go vet` una vez sobre TODO `root` (default `./...` si args vacio) y filtra a
+        `files`, normalizado. exit 0 limpio · 1 findings · otro = entorno invalido (ToolError)."""
+        cmd = [self.name, "vet"] + (list(args) if args else ["./..."])
+        rc, out, err = runner(cmd, root)
+        if rc not in (0, 1):  # 0 limpio · 1 findings · otro = crash/entorno invalido
+            raise ToolError(f"go vet falló (exit {rc}): {(err or '').strip() or (out or '').strip()}")
+        messages = self._parse_messages(err)
+        allowed = {f.replace("\\", "/") for f in files}
+        return self._normalize(messages, root, allowed)
+
+    def _parse_messages(self, out):
+        """Findings crudos de `go vet` desde stderr: lista de {file, line, col, msg} (file ya con
+        forward-slash). Lineas que no matchean GOVET_LINE_RE se ignoran silenciosamente; nunca lanza."""
+        out_msgs = []
+        for line in (out or "").splitlines():
+            m = GOVET_LINE_RE.match(line)
+            if not m:
+                continue
+            out_msgs.append({
+                "file": m.group(1).replace("\\", "/"),
+                "line": int(m.group(2)),
+                "col": int(m.group(3)),
+                "msg": m.group(4),
+            })
+        return out_msgs
+
+    def _normalize(self, messages, root, allowed):
+        """[{file (relativo, /), line, code:"govet", msg}] ordenado por (file, line, code), filtrado
+        a `allowed` si no vacio. `root` se conserva por simetria con ClippyAdapter (paths de go vet
+        ya son relativos al cwd, no hace falta relativizar)."""
+        findings = []
+        for m in messages:
+            rel = m["file"]
+            if allowed and rel not in allowed:
+                continue
+            findings.append({"file": rel, "line": m["line"], "code": "govet", "msg": m["msg"]})
+        findings.sort(key=lambda f: (f["file"], f["line"], f["code"]))
+        return findings
+
+
+# Registro de adaptadores por nombre de tool. Hoy ruff, clippy y govet; eslint/golangci-lint se
 # registran aqui (misma interfaz: installed_version/collect) cuando se implementen.
-ADAPTERS = {"ruff": RuffAdapter(), "clippy": ClippyAdapter()}
+ADAPTERS = {"ruff": RuffAdapter(), "clippy": ClippyAdapter(), "govet": GoVetAdapter()}
 
 
 def _load_linters(path):
