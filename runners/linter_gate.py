@@ -14,7 +14,7 @@ NO es PASS). Tool no instalada: required:false -> skip anunciado por stderr + ex
 
 Arquitectura extensible: registro ADAPTERS por nombre de tool. Cada adaptador sabe
 (a) leer su version instalada, (b) invocar con salida machine-readable, (c) normalizar.
-HOY ruff, clippy y govet; el registro queda listo para eslint/golangci-lint sin implementarlos.
+HOY ruff, clippy, govet y sqlfluff; el registro queda listo para eslint/golangci-lint sin implementarlos.
 
 Config (YAML): lista de entradas { tool, version, files?, args?, required? }.
 Uso:  python linter_gate.py [linters.yaml] [root]
@@ -252,9 +252,81 @@ class GoVetAdapter:
         return findings
 
 
-# Registro de adaptadores por nombre de tool. Hoy ruff, clippy y govet; eslint/golangci-lint se
-# registran aqui (misma interfaz: installed_version/collect) cuando se implementen.
-ADAPTERS = {"ruff": RuffAdapter(), "clippy": ClippyAdapter(), "govet": GoVetAdapter()}
+class SqlfluffAdapter:
+    """Adaptador sqlfluff: `sqlfluff lint --format json` normalizado a findings.
+
+    Por-archivo como ruff (NO de modulo completo como clippy/govet): acepta una LISTA de archivos
+    como argumentos posicionales al final y puede lintear varios en una sola invocacion. El
+    dialecto SQL (postgres, ansi, mysql, ...) se pasa via `--dialect <nombre>` como parte de `args`
+    en la config YAML -- no se hardcodea aca; es responsabilidad de quien escribe el linters.yaml
+    declarar el dialecto de su proyecto.
+
+    Salida verificada de `sqlfluff lint <args> <files...> --format json` (v4.2.2): exit 0 limpio ·
+    1 con violaciones · otro = crash/entorno invalido. A diferencia de ruff (array plano de
+    findings individuales ya con su filename), sqlfluff anida: la salida es una LISTA con un item
+    POR ARCHIVO `{filepath, violations:[...]}`, y los hallazgos van DENTRO de cada archivo. Cada
+    violation tiene su propio `code` de regla (ej. LT09, LT01) -- a diferencia de go vet. Version
+    via `sqlfluff --version`: "sqlfluff, version 4.2.2" -> ultimo token = "4.2.2" (3 tokens con una
+    coma pegada al primero; NO usar parts[1] como hace RuffAdapter).
+    """
+    name = "sqlfluff"
+    default_files = "**/*.sql"
+
+    def installed_version(self, runner):
+        """String de version instalada, o None si sqlfluff no esta (FileNotFoundError)."""
+        try:
+            rc, out, _ = runner([self.name, "--version"], None)
+        except FileNotFoundError:
+            return None
+        if rc != 0:
+            return None
+        # salida: "sqlfluff, version 4.2.2" -> ultimo token = "4.2.2"
+        parts = out.strip().split()
+        return parts[-1] if parts else out.strip()
+
+    def collect(self, files, args, root, runner):
+        """Invoca sqlfluff sobre `files` (paths relativos a root) y normaliza a findings ordenados."""
+        cmd = [self.name, "lint"] + list(args or []) + list(files) + ["--format", "json"]
+        rc, out, err = runner(cmd, root)
+        if rc not in (0, 1):  # 0 limpio · 1 findings · otro = crash/error -> entorno invalido
+            raise ToolError(f"sqlfluff falló (exit {rc}): {err.strip() or out.strip()}")
+        try:
+            data = json.loads(out) if out.strip() else []
+        except json.JSONDecodeError as e:
+            raise ToolError(f"sqlfluff devolvió JSON inválido: {e}")
+        return self._normalize(data, root)
+
+    def _normalize(self, data, root):
+        """[{file (relativo, /), line, code, msg}] ordenado deterministicamente por (file, line, code).
+
+        Itera la lista externa (un item por archivo, `filepath` = path -- suele ser relativo al
+        cwd, pero se normaliza defensivamente relativizando a `root` con fallback igual que
+        RuffAdapter) y por cada archivo itera su lista interna `violations` extrayendo
+        `start_line_no`/`code`/`description`. Archivos con `violations: []` no generan findings.
+        """
+        rootp = Path(root).resolve()
+        findings = []
+        for fobj in data or []:
+            fn = fobj.get("filepath", "") or ""
+            try:
+                rel = Path(fn).resolve().relative_to(rootp).as_posix()
+            except (ValueError, OSError):
+                rel = Path(fn).as_posix()
+            for v in fobj.get("violations") or []:
+                findings.append({
+                    "file": rel,
+                    "line": v.get("start_line_no") or 0,
+                    "code": v.get("code") or "",
+                    "msg": v.get("description") or "",
+                })
+        findings.sort(key=lambda f: (f["file"], f["line"], f["code"]))
+        return findings
+
+
+# Registro de adaptadores por nombre de tool. Hoy ruff, clippy, govet y sqlfluff; eslint/golangci-lint
+# se registran aqui (misma interfaz: installed_version/collect) cuando se implementen.
+ADAPTERS = {"ruff": RuffAdapter(), "clippy": ClippyAdapter(), "govet": GoVetAdapter(),
+            "sqlfluff": SqlfluffAdapter()}
 
 
 def _load_linters(path):
