@@ -497,5 +497,292 @@ class IntegrationRealClippy(unittest.TestCase):
         self.assertIn("entorno inválido", payload["error"])
 
 
+# --- govet: mismo contrato que clippy (linta el MODULO/PAQUETE COMPLETO, no archivos sueltos
+# como input). `files` solo para skip-si-vacio + post-filtro. Salida en stderr, una linea por
+# hallazgo `path:line:col: msg`; sin codigos de regla -> code="govet". ---
+
+def _installed_go():
+    """Version instalada de go, o None si go no esta (subprocess real, sin mock)."""
+    try:
+        out = subprocess.run(["go", "version"], capture_output=True, encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    if out.returncode != 0:
+        return None
+    # "go version go1.26.4 windows/amd64" -> 3er token = "go1.26.4"
+    parts = out.stdout.strip().split()
+    return parts[2] if len(parts) >= 3 else out.stdout.strip()
+
+
+_INSTALLED_GO = _installed_go()  # pin = lo instalado; sin go, integracion salta
+GOVET_PIN = _INSTALLED_GO or "go0.0.0"
+_HAS_GO = _INSTALLED_GO is not None
+
+
+class GoVetFakeRunner:
+    """Runner inyectable: despacha `go version` y `go vet ./...` (findings en stderr)."""
+    def __init__(self, version=GOVET_PIN, not_installed=False, vet_stderr="", rc=0):
+        self.version = version
+        self.not_installed = not_installed
+        self.vet_stderr = vet_stderr
+        self.rc = rc
+        self.calls = []
+
+    def __call__(self, args, cwd):
+        self.calls.append((list(args), cwd))
+        if args[:2] == ["go", "version"]:
+            if self.not_installed:
+                raise FileNotFoundError("go")
+            return 0, f"go version {self.version} windows/amd64\n", ""
+        return self.rc, "", self.vet_stderr
+
+
+class GoVetNormalize(unittest.TestCase):
+    def test_parse_and_normalize_sorted(self):
+        stderr = "\n".join([
+            "main.go:6:14: fmt.Printf format %d has arg \"not a number\" of wrong type string",
+            "pkgb\\pkgb.go:6:14: b lint",
+            "other.go:1:2: a lint early",
+        ])
+        adapter = lg.GoVetAdapter()
+        msgs = adapter._parse_messages(stderr)
+        self.assertEqual(len(msgs), 3)
+        got = adapter._normalize(msgs, ".", allowed=set())
+        self.assertEqual(got, [
+            {"file": "main.go", "line": 6, "code": "govet",
+             "msg": "fmt.Printf format %d has arg \"not a number\" of wrong type string"},
+            {"file": "other.go", "line": 1, "code": "govet", "msg": "a lint early"},
+            {"file": "pkgb/pkgb.go", "line": 6, "code": "govet", "msg": "b lint"},
+        ])
+
+    def test_non_matching_line_ignored(self):
+        # encabezados de paquete / lineas raras que no matchean el patron -> ignoradas
+        stderr = "\n".join([
+            "# example.com/probe",
+            "# [example.com/probe]",
+            "main.go:6:14: real finding here",
+        ])
+        adapter = lg.GoVetAdapter()
+        msgs = adapter._parse_messages(stderr)
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0]["file"], "main.go")
+        self.assertEqual(msgs[0]["line"], 6)
+
+    def test_windows_backslash_normalized(self):
+        msgs = lg.GoVetAdapter()._parse_messages("pkgb\\pkgb.go:6:14: m")
+        self.assertEqual(msgs[0]["file"], "pkgb/pkgb.go")
+        self.assertNotIn("\\", msgs[0]["file"])
+
+    def test_dot_slash_prefix_stripped(self):
+        # Go < 1.25 prefija la ruta con `./` (Linux) o `.\` (Windows): `./main.go:6:2:`.
+        # El glob de `files` da paths relativos SIN prefijo (`main.go`), asi que hay que
+        # strippearlo o el finding se filtra contra `allowed` y se pierde (gate -> code 0).
+        adapter = lg.GoVetAdapter()
+        for stderr in (
+            "./main.go:6:2: fmt.Printf format %d has arg x of wrong type string",
+            ".\\main.go:6:2: fmt.Printf format %d has arg x of wrong type string",
+            "./pkgb/pkgb.go:6:2: copylocks: foo",
+        ):
+            msgs = adapter._parse_messages(stderr)
+            self.assertEqual(len(msgs), 1, stderr)
+            self.assertFalse(msgs[0]["file"].startswith("./"), stderr)
+            self.assertNotIn("\\", msgs[0]["file"], stderr)
+        self.assertEqual(adapter._parse_messages("./main.go:6:2: m")[0]["file"], "main.go")
+        self.assertEqual(adapter._parse_messages("./pkgb/pkgb.go:6:2: m")[0]["file"],
+                         "pkgb/pkgb.go")
+
+    def test_normalize_filters_to_allowed(self):
+        msgs = lg.GoVetAdapter()._parse_messages("\n".join([
+            "a/a.go:1:1: m",
+            "b/b.go:1:1: m",
+        ]))
+        got = lg.GoVetAdapter()._normalize(msgs, ".", allowed={"a/a.go"})
+        self.assertEqual([f["file"] for f in got], ["a/a.go"])
+
+    def test_normalize_empty_allowed_means_no_filter(self):
+        msgs = lg.GoVetAdapter()._parse_messages("x.go:1:1: m")
+        got = lg.GoVetAdapter()._normalize(msgs, ".", allowed=set())
+        self.assertEqual(len(got), 1)
+
+    def test_parse_empty(self):
+        self.assertEqual(lg.GoVetAdapter()._parse_messages(""), [])
+        self.assertEqual(lg.GoVetAdapter()._parse_messages(None), [])
+
+    def test_code_is_constant_govet(self):
+        msgs = lg.GoVetAdapter()._parse_messages("x.go:1:1: m")
+        got = lg.GoVetAdapter()._normalize(msgs, ".", allowed=set())
+        self.assertEqual(got[0]["code"], "govet")
+
+
+class GoVetPoliciesUnit(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_default_files_is_go_glob(self):
+        # sin `files` en la entrada, el default de GoVetAdapter debe aplicarse.
+        cfg = _write_cfg(self.root, [{"tool": "govet", "version": GOVET_PIN}])
+        entries, err = lg._load_linters(cfg)
+        self.assertIsNone(err)
+        self.assertEqual(entries[0]["files"], "**/*.go")
+
+    def test_version_mismatch_exit2(self):
+        cfg = _write_cfg(self.root, [{"tool": "govet", "version": GOVET_PIN}])
+        (self.root / "main.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+        runner = GoVetFakeRunner(version="go0.0.1")
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 2)
+        self.assertIn("go0.0.1", payload["error"])
+        self.assertIn(GOVET_PIN, payload["error"])
+
+    def test_ausente_required_exit2(self):
+        cfg = _write_cfg(self.root, [{"tool": "govet", "version": GOVET_PIN, "required": True}])
+        (self.root / "main.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+        runner = GoVetFakeRunner(not_installed=True)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 2)
+        self.assertIn("no instalada", payload["error"])
+
+    def test_ausente_not_required_skip_exit0(self):
+        cfg = _write_cfg(self.root, [{"tool": "govet", "version": GOVET_PIN, "required": False}])
+        (self.root / "main.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+        runner = GoVetFakeRunner(not_installed=True)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["results"][0]["skipped"], True)
+
+    def test_findings_exit1(self):
+        cfg = _write_cfg(self.root, [{"tool": "govet", "version": GOVET_PIN}])
+        (self.root / "main.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+        stderr = 'main.go:6:14: fmt.Printf format %d has arg "not a number" of wrong type string\n'
+        runner = GoVetFakeRunner(vet_stderr=stderr, rc=1)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 1)
+        self.assertFalse(payload["ok"])
+        f = payload["results"][0]["findings"][0]
+        self.assertEqual(f["code"], "govet")
+        self.assertEqual(f["file"], "main.go")
+        self.assertEqual(f["line"], 6)
+
+    def test_findings_exit1_dot_slash_prefix_survives_filter(self):
+        # Regresion del fallo de CI: en Go < 1.25 `go vet` reporta la ruta con prefijo `./`
+        # (Linux) / `.\` (Windows): `./main.go:6:2:`. Como el glob `**/*.go` expande a paths
+        # relativos SIN prefijo (`main.go`), el finding se filtraba contra `allowed` y se
+        # perdia -> gate devolvia code 0 pese a haber hallazgo. El adapter debe strippear el
+        # prefijo para que el finding sobreviva en cualquier version de Go.
+        cfg = _write_cfg(self.root, [{"tool": "govet", "version": GOVET_PIN, "files": "**/*.go"}])
+        (self.root / "main.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+        stderr = './main.go:6:2: fmt.Printf format %d has arg "not a number" of wrong type string\n'
+        runner = GoVetFakeRunner(vet_stderr=stderr, rc=1)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 1)
+        self.assertFalse(payload["ok"])
+        findings = payload["results"][0]["findings"]
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["file"], "main.go")
+        self.assertEqual(findings[0]["line"], 6)
+        self.assertEqual(findings[0]["code"], "govet")
+
+    def test_findings_exit1_backslash_dot_prefix_survives_filter(self):
+        # Idem anterior pero con el prefijo `.\` que emite Go < 1.25 en Windows.
+        cfg = _write_cfg(self.root, [{"tool": "govet", "version": GOVET_PIN, "files": "**/*.go"}])
+        (self.root / "main.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+        stderr = '.\\main.go:6:2: fmt.Printf format %d has arg "not a number" of wrong type string\n'
+        runner = GoVetFakeRunner(vet_stderr=stderr, rc=1)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 1)
+        f = payload["results"][0]["findings"]
+        self.assertEqual(len(f), 1)
+        self.assertEqual(f[0]["file"], "main.go")
+        self.assertEqual(f[0]["line"], 6)
+
+    def test_clean_exit0(self):
+        cfg = _write_cfg(self.root, [{"tool": "govet", "version": GOVET_PIN}])
+        (self.root / "main.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+        runner = GoVetFakeRunner(vet_stderr="", rc=0)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["results"][0]["findings"], [])
+
+    def test_glob_empty_clean_exit0_never_invokes_go_vet(self):
+        cfg = _write_cfg(self.root, [{"tool": "govet", "version": GOVET_PIN}])
+        # sin archivos .go en el tempdir -> solo se llama a `go version`, nunca a `go vet`
+        runner = GoVetFakeRunner()
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 0)
+        self.assertTrue(all(c[0][:2] == ["go", "version"] for c in runner.calls))
+
+    def test_tool_crash_exit2(self):
+        cfg = _write_cfg(self.root, [{"tool": "govet", "version": GOVET_PIN}])
+        (self.root / "main.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+        runner = GoVetFakeRunner(rc=2, vet_stderr="go: boom")  # 2 no esta en (0, 1)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 2)
+        self.assertIn("go vet falló", payload["error"])
+
+    def test_uses_args_when_provided(self):
+        cfg = _write_cfg(self.root, [{"tool": "govet", "version": GOVET_PIN, "args": ["./..."]}])
+        (self.root / "main.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+        runner = GoVetFakeRunner(vet_stderr="", rc=0)
+        lg.gate(cfg, str(self.root), runner=runner)
+        vet_calls = [c for c in runner.calls if c[0][:2] == ["go", "vet"]]
+        self.assertEqual(vet_calls[0][0], ["go", "vet", "./..."])
+
+
+@unittest.skipUnless(_HAS_GO, "go no disponible (toolchain de Go no instalado)")
+class IntegrationRealGoVet(unittest.TestCase):
+    """Integracion REAL con `go vet` sobre un modulo minimo generado con `go mod init`."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp)
+        # `go mod init` opera sobre un directorio existente (a diferencia de `cargo new`).
+        subprocess.run(["go", "mod", "init", "example.com/probe"],
+                       capture_output=True, encoding="utf-8", cwd=str(self.root))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _cfg(self, **overrides):
+        entry = {"tool": "govet", "version": GOVET_PIN, "files": "**/*.go"}
+        entry.update(overrides)
+        return _write_cfg(self.root, [entry])
+
+    def test_printf_wrong_type_exit1_with_normalized_finding(self):
+        (self.root / "main.go").write_text(
+            "package main\n\nimport \"fmt\"\n\nfunc main() {\n"
+            "\tfmt.Printf(\"%d\\n\", \"not a number\")\n}\n",
+            encoding="utf-8")
+        code, payload = lg.gate(self._cfg(), str(self.root))
+        self.assertEqual(code, 1)
+        self.assertFalse(payload["ok"])
+        findings = payload["results"][0]["findings"]
+        self.assertEqual(len(findings), 1)
+        f = findings[0]
+        self.assertEqual(f["file"], "main.go")
+        self.assertEqual(f["code"], "govet")
+        self.assertEqual(f["line"], 6)
+        self.assertIn("Printf", f["msg"])
+
+    def test_clean_exit0(self):
+        (self.root / "main.go").write_text(
+            "package main\n\nimport \"fmt\"\n\nfunc main() {\n"
+            "\tfmt.Printf(\"%d\\n\", 5)\n}\n",
+            encoding="utf-8")
+        code, payload = lg.gate(self._cfg(), str(self.root))
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["results"][0]["findings"], [])
+
+    def test_version_mismatch_real_exit2(self):
+        (self.root / "main.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+        code, payload = lg.gate(self._cfg(version="go0.0.0"), str(self.root))
+        self.assertEqual(code, 2)
+        self.assertIn("entorno inválido", payload["error"])
+
+
 if __name__ == "__main__":
     unittest.main()
