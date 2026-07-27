@@ -21,6 +21,9 @@ jobs:
       - name: Install optional ruff (linter_gate)
         run: pip install ruff==0.15.20
 
+      - name: Install optional sqlfluff (linter_gate)
+        run: pip install sqlfluff
+
       - name: linter gate sobre el propio codigo (dogfooding)
         run: python runners/linter_gate.py linters.yaml .
 
