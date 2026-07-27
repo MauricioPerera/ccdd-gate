@@ -411,11 +411,13 @@ TOOLS = [
         "name": "run_linter_gate",
         "description": "Envuelve LINTERS EXTERNOS deterministas como checks opt-in desde un linters.yaml "
                        "(lista de {tool, version, files?, args?, required?}). Hermano de run_rules_gate pero el "
-                       "veredicto lo emite un lexterno invocado como subproceso con salida machine-readable, NO un "
-                       "LLM ni AST propio. Version pineada (pin exacto por entrada): version instalada != pin -> "
-                       "entorno invalido (no es PASS). Tool ausente + required:false -> skip anunciado; required:true "
-                       "-> entorno invalido. HOY solo hay adaptador ruff (ruff NO es dependencia del paquete). "
-                       "Devuelve {ok, results:[{tool, version, skipped?, findings:[{file,line,code,msg}]}]}.",
+                       "veredicto lo emite un linter externo invocado como subproceso con salida machine-readable, "
+                       "NO un LLM ni AST propio. Version pineada (pin exacto por entrada): version instalada != pin "
+                       "-> entorno invalido (no es PASS). Tool ausente + required:false -> skip anunciado; "
+                       "required:true -> entorno invalido. Adaptadores disponibles hoy: ruff (Python), clippy "
+                       "(Rust, crate completo), govet (Go, paquete completo), sqlfluff (SQL, dialecto via 'args'). "
+                       "Ninguno es dependencia del paquete: cada uno se instala aparte y degrada a skip anunciado "
+                       "si falta. Devuelve {ok, results:[{tool, version, skipped?, findings:[{file,line,code,msg}]}]}.",
         "inputSchema": {"type": "object", "properties": {
             "linters_path": {"type": "string", "description": "Ruta al linters.yaml (default: linters.yaml)."},
             "root": {"type": "string", "description": "Raíz del repo a escanear (default: directorio actual)."}}},
