@@ -784,5 +784,251 @@ class IntegrationRealGoVet(unittest.TestCase):
         self.assertIn("entorno inválido", payload["error"])
 
 
+# --- sqlfluff: por-archivo como ruff (acepta una LISTA de archivos como input y lints varios en
+# una sola invocacion), NO de modulo completo como clippy/govet. Salida JSON anidada: lista con un
+# item POR ARCHIVO {filepath, violations:[...]}; cada violation tiene su propio `code` (LT09, ...).
+# El dialecto SQL se declara via `args: ["--dialect", "postgres"]` en la config YAML. ---
+
+def _installed_sqlfluff():
+    """Version instalada de sqlfluff, o None si no esta (subprocess real, sin mock)."""
+    try:
+        out = subprocess.run(["sqlfluff", "--version"], capture_output=True, encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    if out.returncode != 0:
+        return None
+    # "sqlfluff, version 4.2.2" -> ultimo token = "4.2.2"
+    parts = out.stdout.strip().split()
+    return parts[-1] if parts else out.stdout.strip()
+
+
+_INSTALLED_SQLFLUFF = _installed_sqlfluff()  # pin = lo instalado; sin sqlfluff, integracion salta
+SQLFLUFF_PIN = _INSTALLED_SQLFLUFF or "0.0.0"
+_HAS_SQLFLUFF = _INSTALLED_SQLFLUFF is not None
+
+
+class SqlfluffFakeRunner:
+    """Runner inyectable: despacha `sqlfluff --version` y `sqlfluff lint ... --format json`."""
+    def __init__(self, version=SQLFLUFF_PIN, not_installed=False, lint_json="[]", lint_rc=0,
+                 lint_raises=None):
+        self.version = version
+        self.not_installed = not_installed
+        self.lint_json = lint_json
+        self.lint_rc = lint_rc
+        self.lint_raises = lint_raises
+        self.calls = []
+
+    def __call__(self, args, cwd):
+        self.calls.append((list(args), cwd))
+        if args[:2] == ["sqlfluff", "--version"]:
+            if self.not_installed:
+                raise FileNotFoundError("sqlfluff")
+            return 0, f"sqlfluff, version {self.version}\n", ""
+        if self.lint_raises is not None:
+            raise self.lint_raises
+        return self.lint_rc, self.lint_json, ""
+
+
+def _sqlfluff_violation(line, code, description):
+    """Una violation como las que anida sqlfluff dentro de cada archivo (campos que importan)."""
+    return {"start_line_no": line, "start_line_pos": 1, "code": code,
+            "description": description, "name": "layout.dummy", "warning": False, "fixes": []}
+
+
+def _sqlfluff_file(filepath, violations):
+    """Un item de la lista externa que devuelve `sqlfluff lint --format json`."""
+    return {"filepath": filepath, "violations": violations,
+            "statistics": {}, "timings": {}}
+
+
+class SqlfluffNormalize(unittest.TestCase):
+    def test_normalize_basic_and_sorted(self):
+        # un archivo con 2 violaciones + multiples archivos en una sola respuesta; orden por
+        # (file, line, code); forward-slash.
+        root = "D:/proj"
+        data = [
+            _sqlfluff_file(f"{root}/b.sql", [
+                _sqlfluff_violation(2, "LT01", "b spacing"),
+            ]),
+            _sqlfluff_file(f"{root}/a.sql", [
+                _sqlfluff_violation(5, "LT01", "a spacing late"),
+                _sqlfluff_violation(1, "LT09", "a targets"),
+            ]),
+        ]
+        got = lg.SqlfluffAdapter()._normalize(data, root)
+        self.assertEqual(got, [
+            {"file": "a.sql", "line": 1, "code": "LT09", "msg": "a targets"},
+            {"file": "a.sql", "line": 5, "code": "LT01", "msg": "a spacing late"},
+            {"file": "b.sql", "line": 2, "code": "LT01", "msg": "b spacing"},
+        ])
+
+    def test_normalize_uses_forward_slashes(self):
+        data = [_sqlfluff_file("C:/repo/src/x/y.sql", [_sqlfluff_violation(3, "LT01", "m")])]
+        got = lg.SqlfluffAdapter()._normalize(data, "C:/repo")
+        self.assertEqual(got[0]["file"], "src/x/y.sql")
+        self.assertNotIn("\\", got[0]["file"])
+
+    def test_normalize_empty_violations_no_findings(self):
+        # un archivo con violations: [] no genera findings (sigue apareciendo el item, pero vacio)
+        data = [_sqlfluff_file("D:/proj/clean.sql", [])]
+        self.assertEqual(lg.SqlfluffAdapter()._normalize(data, "D:/proj"), [])
+
+    def test_normalize_empty(self):
+        self.assertEqual(lg.SqlfluffAdapter()._normalize([], "."), [])
+
+    def test_normalize_outside_root_falls_back(self):
+        data = [_sqlfluff_file("C:/elsewhere/x.sql", [_sqlfluff_violation(1, "LT01", "m")])]
+        got = lg.SqlfluffAdapter()._normalize(data, "D:/repo")
+        self.assertEqual(got[0]["file"], "C:/elsewhere/x.sql")
+
+
+class SqlfluffPoliciesUnit(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_default_files_is_sql_glob(self):
+        # sin `files` en la entrada, el default de SqlfluffAdapter debe aplicarse.
+        cfg = _write_cfg(self.root, [{"tool": "sqlfluff", "version": SQLFLUFF_PIN}])
+        entries, err = lg._load_linters(cfg)
+        self.assertIsNone(err)
+        self.assertEqual(entries[0]["files"], "**/*.sql")
+
+    def test_version_mismatch_exit2(self):
+        cfg = _write_cfg(self.root, [{"tool": "sqlfluff", "version": SQLFLUFF_PIN}])
+        (self.root / "bad.sql").write_text("select 1\n", encoding="utf-8")
+        runner = SqlfluffFakeRunner(version="0.0.1")  # instalada 0.0.1 != pin
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 2)
+        self.assertIn("0.0.1", payload["error"])
+        self.assertIn(SQLFLUFF_PIN, payload["error"])
+
+    def test_ausente_required_exit2(self):
+        cfg = _write_cfg(self.root, [{"tool": "sqlfluff", "version": SQLFLUFF_PIN, "required": True}])
+        (self.root / "bad.sql").write_text("select 1\n", encoding="utf-8")
+        runner = SqlfluffFakeRunner(not_installed=True)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 2)
+        self.assertIn("no instalada", payload["error"])
+
+    def test_ausente_not_required_skip_exit0(self):
+        cfg = _write_cfg(self.root, [{"tool": "sqlfluff", "version": SQLFLUFF_PIN, "required": False}])
+        (self.root / "bad.sql").write_text("select 1\n", encoding="utf-8")
+        runner = SqlfluffFakeRunner(not_installed=True)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["results"][0]["skipped"], True)
+        self.assertEqual(payload["results"][0]["findings"], [])
+
+    def test_findings_exit1(self):
+        cfg = _write_cfg(self.root, [{"tool": "sqlfluff", "version": SQLFLUFF_PIN,
+                                      "args": ["--dialect", "postgres"]}])
+        (self.root / "bad.sql").write_text("select id,name from users where id=1\n", encoding="utf-8")
+        js = json.dumps([_sqlfluff_file(
+            f"{self.root.as_posix()}/bad.sql",
+            [_sqlfluff_violation(1, "LT09", "Select targets should be on a new line.")])])
+        runner = SqlfluffFakeRunner(lint_json=js, lint_rc=1)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 1)
+        self.assertFalse(payload["ok"])
+        findings = payload["results"][0]["findings"]
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["code"], "LT09")
+        self.assertEqual(findings[0]["file"], "bad.sql")
+        self.assertEqual(findings[0]["line"], 1)
+
+    def test_clean_exit0(self):
+        cfg = _write_cfg(self.root, [{"tool": "sqlfluff", "version": SQLFLUFF_PIN,
+                                      "args": ["--dialect", "postgres"]}])
+        (self.root / "ok.sql").write_text("SELECT\n    id\nFROM users\n", encoding="utf-8")
+        js = json.dumps([_sqlfluff_file(f"{self.root.as_posix()}/ok.sql", [])])
+        runner = SqlfluffFakeRunner(lint_json=js, lint_rc=0)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["results"][0]["findings"], [])
+        self.assertNotIn("skipped", payload["results"][0])
+
+    def test_glob_empty_clean_exit0_never_invokes_lint(self):
+        cfg = _write_cfg(self.root, [{"tool": "sqlfluff", "version": SQLFLUFF_PIN,
+                                      "files": "src/**/*.sql"}])
+        runner = SqlfluffFakeRunner()  # no deberia invocarse el lint
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["results"][0]["findings"], [])
+        # solo se llamo a --version, nunca a `sqlfluff lint`
+        self.assertTrue(all(c[0][:2] == ["sqlfluff", "--version"] for c in runner.calls))
+
+    def test_tool_crash_exit2(self):
+        cfg = _write_cfg(self.root, [{"tool": "sqlfluff", "version": SQLFLUFF_PIN,
+                                      "args": ["--dialect", "postgres"]}])
+        (self.root / "bad.sql").write_text("select 1\n", encoding="utf-8")
+        runner = SqlfluffFakeRunner(lint_rc=2, lint_json="")  # 2 no esta en (0, 1)
+        code, payload = lg.gate(cfg, str(self.root), runner=runner)
+        self.assertEqual(code, 2)
+        self.assertIn("sqlfluff falló", payload["error"])
+
+    def test_uses_args_and_files_when_provided(self):
+        cfg = _write_cfg(self.root, [{"tool": "sqlfluff", "version": SQLFLUFF_PIN,
+                                      "args": ["--dialect", "ansi"]}])
+        (self.root / "bad.sql").write_text("select 1\n", encoding="utf-8")
+        runner = SqlfluffFakeRunner(lint_json="[]", lint_rc=0)
+        lg.gate(cfg, str(self.root), runner=runner)
+        lint_calls = [c for c in runner.calls if c[0][:2] == ["sqlfluff", "lint"]]
+        self.assertEqual(len(lint_calls), 1)
+        # args antes de los archivos, --format json al final
+        self.assertEqual(lint_calls[0][0],
+                         ["sqlfluff", "lint", "--dialect", "ansi", "bad.sql", "--format", "json"])
+
+
+@unittest.skipUnless(_HAS_SQLFLUFF, "sqlfluff no disponible (no instalado)")
+class IntegrationRealSqlfluff(unittest.TestCase):
+    """Integracion REAL con `sqlfluff lint` (runner por defecto = subprocess). Corre solo si
+    sqlfluff esta instalado y su version matchea el pin del test."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _cfg(self, **overrides):
+        entry = {"tool": "sqlfluff", "version": SQLFLUFF_PIN, "files": "**/*.sql",
+                 "args": ["--dialect", "postgres"]}
+        entry.update(overrides)
+        return _write_cfg(self.root, [entry])
+
+    def test_style_violation_exit1_with_normalized_finding(self):
+        (self.root / "bad.sql").write_text("select id,name from users where id=1\n",
+                                           encoding="utf-8")
+        code, payload = lg.gate(self._cfg(), str(self.root))
+        self.assertEqual(code, 1)
+        self.assertFalse(payload["ok"])
+        findings = payload["results"][0]["findings"]
+        self.assertGreaterEqual(len(findings), 1)
+        f = findings[0]
+        self.assertEqual(f["file"], "bad.sql")
+        self.assertEqual(f["line"], 1)
+        self.assertTrue(f["code"], "code de regla vacio")  # codigo alfanumerico tipo LT09
+
+    def test_clean_exit0(self):
+        (self.root / "ok.sql").write_text(
+            "SELECT\n    id,\n    name\nFROM users\nWHERE id = 1\n", encoding="utf-8")
+        code, payload = lg.gate(self._cfg(), str(self.root))
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["results"][0]["findings"], [])
+
+    def test_version_mismatch_real_exit2(self):
+        (self.root / "ok.sql").write_text("select 1\n", encoding="utf-8")
+        code, payload = lg.gate(self._cfg(version="0.0.0"), str(self.root))
+        self.assertEqual(code, 2)
+        self.assertIn("entorno inválido", payload["error"])
+
+
 if __name__ == "__main__":
     unittest.main()
